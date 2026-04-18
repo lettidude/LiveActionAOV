@@ -1,0 +1,184 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "live-action-aov"
+version = "0.1.0"
+description = "AI-driven VFX plate preprocessor: depth, normals, motion, mattes as sidecar EXRs"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "TODO", email = "TODO@TODO" }
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Multimedia :: Video :: Non-Linear Editor",
+]
+
+dependencies = [
+    # Core
+    "pydantic>=2.5",
+    "typer>=0.12",
+    "pyyaml>=6.0",
+    "numpy>=1.26,<2.0",
+    # I/O
+    "oiio-python>=2.5",
+    "opencolorio>=2.3",
+    # Torch stack (CUDA 12.1 wheels)
+    "torch>=2.3,<3.0",
+    "torchvision>=0.18",
+    # Model hub + transformers (DepthAnythingV2 ships via transformers pipeline)
+    "huggingface-hub>=0.23",
+    "transformers>=4.45",
+    # GUI
+    "PySide6>=6.6",
+    # Misc
+    "tqdm>=4.66",
+    "rich>=13.7",
+    "platformdirs>=4.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "pre-commit>=3.7",
+]
+
+# Model-specific extras (user installs what they need)
+depthcrafter = ["diffusers>=0.30"]
+normalcrafter = ["diffusers>=0.30"]
+# DepthPro ships through transformers (already a core dep), but we leave the
+# extra defined so users have a discoverable `pip install live-action-aov[depthpro]`
+# entry and future revisions can swap in apple-ml-depth-pro if needed.
+depthpro = []
+# SAM 3 ships through transformers (already a core dep) via `AutoModel` +
+# `trust_remote_code=True`. Extra reserved for future pinning of any extra
+# deps (e.g. sam3's own preprocessor package) without a release bump.
+sam3 = []
+# RVM loads via `torch.hub.load('PeterL1n/RobustVideoMatting', ...)` — torch
+# is already core. Extra kept for discoverability.
+rvm = []
+matanyone2 = []
+# `matte` meta-extra — installs both the detector (sam3) and the default
+# commercial-safe refiner (rvm) in one shot.
+matte = ["live-action-aov[sam3]", "live-action-aov[rvm]"]
+
+[project.urls]
+Homepage = "https://github.com/TODO/live-action-aov"
+Documentation = "https://github.com/TODO/live-action-aov/blob/main/docs/user-guide.md"
+Repository = "https://github.com/TODO/live-action-aov"
+Issues = "https://github.com/TODO/live-action-aov/issues"
+
+[project.scripts]
+liveaov = "live_action_aov.cli.app:main"
+liveaov-gui = "live_action_aov.gui.app:main"
+
+# -----------------------------------------------------------------------------
+# PLUGIN ENTRY POINTS
+# -----------------------------------------------------------------------------
+# All built-in passes declared here. Third-party plugins declare the same
+# groups in their own pyproject.toml. Core has zero hardcoded imports.
+
+[project.entry-points."live_action_aov.passes"]
+flow               = "live_action_aov.passes.flow.raft:RAFTPass"
+depth_anything_v2  = "live_action_aov.passes.depth.depth_anything_v2:DepthAnythingV2Pass"
+depthcrafter       = "live_action_aov.passes.depth.depthcrafter:DepthCrafterPass"
+depthpro           = "live_action_aov.passes.depth.depthpro:DepthProPass"
+dsine              = "live_action_aov.passes.normals.dsine:DSINEPass"
+normalcrafter      = "live_action_aov.passes.normals.normalcrafter:NormalCrafterPass"
+sam3_matte         = "live_action_aov.passes.matte.sam3:SAM3MattePass"
+rvm_refiner        = "live_action_aov.passes.matte.rvm:RVMRefinerPass"
+matanyone2         = "live_action_aov.passes.matte.matanyone2:MatAnyone2RefinerPass"
+
+[project.entry-points."live_action_aov.post"]
+temporal_smooth = "live_action_aov.post.temporal_smooth:TemporalSmoother"
+
+[project.entry-points."live_action_aov.executors"]
+local    = "live_action_aov.executors.local:LocalExecutor"
+deadline = "live_action_aov.executors.deadline:DeadlineExecutorStub"
+
+[project.entry-points."live_action_aov.io.readers"]
+oiio_exr = "live_action_aov.io.readers.oiio_exr:OIIOExrReader"
+
+[project.entry-points."live_action_aov.io.writers"]
+exr  = "live_action_aov.io.writers.exr:ExrSidecarWriter"
+json = "live_action_aov.io.writers.json:JsonSidecarWriter"
+
+[project.entry-points."live_action_aov.integrations"]
+standalone = "live_action_aov.integrations.standalone:StandaloneAdapter"
+prism      = "live_action_aov.integrations.prism:PrismAdapterStub"
+shotgrid   = "live_action_aov.integrations.shotgrid:ShotGridAdapterStub"
+openpype   = "live_action_aov.integrations.openpype:OpenPypeAdapterStub"
+
+# -----------------------------------------------------------------------------
+# TOOL CONFIGURATIONS
+# -----------------------------------------------------------------------------
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/live_action_aov"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",
+    "I",
+    "N",
+    "UP",
+    "B",
+    "C4",
+    "SIM",
+    "RUF",
+]
+ignore = [
+    "E501",
+    "B008",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+]
+markers = [
+    "gpu: tests that require a GPU (deselect with '-m \"not gpu\"')",
+    "slow: tests that take >10s",
+    "integration: full-pipeline tests",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "pre-commit>=3.7",
+]
