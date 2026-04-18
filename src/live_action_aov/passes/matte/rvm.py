@@ -235,12 +235,18 @@ class RVMRefinerPass(UtilityPass):
 
         for t in range(T):
             # (1, 3, H, W) frame, masked by the (possibly dilated) seed.
+            # Clip to [0, 1] — RVM was trained on sRGB display values and
+            # produces zero / garbage alpha on scene-referred plates that
+            # occasionally exceed 1.0. (Our plates are already sRGB-ish,
+            # but the HDR headroom in the test plate generator pushes
+            # highlights to ~2.3; a cheap clamp here is the robust fix.)
             frame_np = plate_stack[t]
             frame_t = (
                 torch.from_numpy(frame_np)
                 .to(device=device, dtype=dtype)
                 .permute(2, 0, 1)
                 .unsqueeze(0)
+                .clamp_(0.0, 1.0)
             )
             mask_t = dilated_t[t : t + 1]  # (1, 1, H, W)
             masked_frame = frame_t * mask_t
