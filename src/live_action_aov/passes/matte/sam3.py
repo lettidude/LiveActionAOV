@@ -147,18 +147,54 @@ class SAM3MattePass(UtilityPass):
     # ------------------------------------------------------------------
 
     def _load_model(self) -> None:
+        """Load BOTH the detector and the tracker.
+
+        SAM 3 ships two models that live under the same HF repo:
+
+        - `Sam3Model` / `Sam3Processor`  — single-image, concept-conditioned
+          instance segmentation. Used by `_detect_seed`. `AutoProcessor` on
+          `facebook/sam3` resolves to the *video* processor instead of this
+          one (the checkpoint's `model_type` is `sam3_video`), so we import
+          the image classes explicitly to force the correct path.
+        - `Sam3TrackerVideoModel` / `Sam3TrackerVideoProcessor` — inference
+          session API with `input_masks=` seeding and
+          `propagate_in_video_iterator`. Used by `_track_instance`.
+
+        Tracker runs in bf16 on CUDA (per the SAM 3 model card); the
+        detector stays in float32 because it fires once per concept and
+        is not the hot loop.
+        """
         if self._model is not None:
             return
         import torch
-        from transformers import AutoModel, AutoProcessor
+        from transformers import (
+            Sam3Model,
+            Sam3Processor,
+            Sam3TrackerVideoModel,
+            Sam3TrackerVideoProcessor,
+        )
 
         repo = str(self.params["model_id"])
-        self._processor = AutoProcessor.from_pretrained(repo)
-        model = AutoModel.from_pretrained(repo, trust_remote_code=True)
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._dtype = torch.float32
-        model.to(self._device).eval()
-        self._model = model
+
+        self._det_processor = Sam3Processor.from_pretrained(repo)
+        det_model = Sam3Model.from_pretrained(repo)
+        det_model.to(self._device).eval()
+        self._det_model = det_model
+
+        self._trk_processor = Sam3TrackerVideoProcessor.from_pretrained(repo)
+        trk_dtype = (
+            torch.bfloat16 if self._device.type == "cuda" else torch.float32
+        )
+        trk_model = Sam3TrackerVideoModel.from_pretrained(repo, dtype=trk_dtype)
+        trk_model.to(self._device).eval()
+        self._trk_model = trk_model
+        self._trk_dtype = trk_dtype
+
+        # Sentinel that the other guard checks — any of the four attrs
+        # set above would work; pick one that's definitely non-None.
+        self._model = det_model
 
     # ------------------------------------------------------------------
     # Detection + tracking — split so tests can override either.
@@ -171,15 +207,73 @@ class SAM3MattePass(UtilityPass):
     ) -> list[tuple[int, str, np.ndarray]]:
         """Run SAM 3 on one frame, return a list of (track_id, label, mask).
 
-        The real implementation dispatches to the HF pipeline with each
-        concept prompt and filters by `confidence_threshold`. Tests
-        override this to emit synthetic rectangles.
+        Single-image, open-vocabulary instance segmentation: for each
+        concept in `concepts`, run one forward pass and collect every
+        detected instance whose score exceeds `confidence_threshold`.
+        Track IDs are assigned sequentially starting at 1 — the tracker
+        uses them as SAM 3 `obj_ids` in the downstream session.
+
+        SAM 3's classification head is single-concept per forward, so we
+        loop over concepts. For the "person + vehicle + tree" style job
+        this means ~3 forward passes on the seed frame — cheap.
         """
-        raise NotImplementedError(
-            "Real SAM 3 seed-detection requires the upstream pipeline. "
-            "Install via `pip install live-action-aov[sam3]` and/or "
-            "override `_detect_seed` in tests."
-        )
+        import torch
+        from PIL import Image
+
+        self._load_model()
+        assert self._det_model is not None
+        processor = self._det_processor
+        model = self._det_model
+        device = self._device
+
+        H, W = int(seed_frame.shape[0]), int(seed_frame.shape[1])
+        # Processor expects PIL RGB uint8 (or a torch/numpy tensor the
+        # image processor can rescale). PIL is the least-surprising path.
+        arr_u8 = (np.clip(seed_frame, 0.0, 1.0) * 255.0).astype(np.uint8)
+        pil = Image.fromarray(arr_u8, "RGB")
+
+        threshold = float(self.params.get("confidence_threshold", 0.4))
+        mask_threshold = 0.5
+        area_floor = float(self.params["min_area_fraction"]) * H * W
+
+        seeds: list[tuple[int, str, np.ndarray]] = []
+        next_track_id = 1
+        for concept in concepts:
+            inputs = processor(
+                images=pil, text=concept, return_tensors="pt"
+            ).to(device)
+            with torch.no_grad():
+                outputs = model(**inputs)
+            # target_sizes is (H, W) not (W, H) — the post-processor
+            # asserts this ordering when upsampling the mask logits.
+            results = processor.post_process_instance_segmentation(
+                outputs,
+                threshold=threshold,
+                mask_threshold=mask_threshold,
+                target_sizes=[(H, W)],
+            )
+            if not results:
+                continue
+            result = results[0]
+            masks = result.get("masks")
+            scores = result.get("scores")
+            if masks is None or scores is None:
+                continue
+            n = int(masks.shape[0]) if hasattr(masks, "shape") else 0
+            for i in range(n):
+                m = masks[i]
+                mask_np = (
+                    m.float().cpu().numpy()
+                    if hasattr(m, "float")
+                    else np.asarray(m, dtype=np.float32)
+                ).astype(np.float32)
+                # Belt-and-braces area floor — the ranker will drop them
+                # too, but skipping here saves a tracker session.
+                if float(mask_np.sum()) < area_floor:
+                    continue
+                seeds.append((next_track_id, concept, mask_np))
+                next_track_id += 1
+        return seeds
 
     def _track_instance(
         self,
@@ -189,15 +283,119 @@ class SAM3MattePass(UtilityPass):
     ) -> np.ndarray:
         """Propagate `seed_mask` across all frames with SAM 3's tracker.
 
+        Uses SAM 3's inference-session API: seed the mask at
+        `seed_frame_idx` via `add_inputs_to_inference_session(input_masks=)`,
+        then propagate forward + backward with
+        `propagate_in_video_iterator`. Each yielded step carries the logits
+        for its frame, which `post_process_masks` upsamples + binarizes.
+
         Input: `frames` is (N, H, W, 3) float32 in [0, 1]; `seed_frame_idx`
         is the local index within `frames`; `seed_mask` is (H, W) float32
         in [0, 1] at plate resolution. Output: (N, H, W) float32 stack of
-        hard(-ish) masks.
+        hard-ish masks.
         """
-        raise NotImplementedError(
-            "Real SAM 3 tracking requires the upstream pipeline. "
-            "Override `_track_instance` in tests."
+        import torch
+        from PIL import Image
+
+        self._load_model()
+        assert self._trk_model is not None
+        processor = self._trk_processor
+        model = self._trk_model
+        device = self._device
+        dtype = self._trk_dtype
+
+        N = int(frames.shape[0])
+        H, W = int(frames.shape[1]), int(frames.shape[2])
+
+        # Processor accepts a list of PIL images (or a 4D torch tensor);
+        # PIL matches the detector path and dodges dtype surprises.
+        frame_pils = [
+            Image.fromarray(
+                (np.clip(frames[i], 0.0, 1.0) * 255.0).astype(np.uint8),
+                "RGB",
+            )
+            for i in range(N)
+        ]
+
+        session = processor.init_video_session(
+            video=frame_pils,
+            inference_device=device,
+            dtype=dtype,
         )
+
+        # SAM 3 wants a bool / {0,1} mask. Threshold at 0.5.
+        seed_bool = (seed_mask > 0.5).astype(np.uint8)
+        processor.add_inputs_to_inference_session(
+            session,
+            frame_idx=int(seed_frame_idx),
+            obj_ids=1,               # single-object track; we repeat per instance
+            input_masks=seed_bool,
+            original_size=(H, W),
+        )
+
+        out = np.zeros((N, H, W), dtype=np.float32)
+
+        def _consume(step_iter: Any) -> None:
+            """Drain a propagate_in_video_iterator into `out`.
+
+            Each `step` is a Sam3TrackerVideoSegmentationOutput. We try the
+            two field names transformers has used historically
+            (`frame_idx` / `frame_index`) and skip the step if neither is
+            present — defensive against minor API drift between versions.
+            """
+            for step in step_iter:
+                frame_idx = getattr(step, "frame_idx", None)
+                if frame_idx is None:
+                    frame_idx = getattr(step, "frame_index", None)
+                pred_masks = getattr(step, "pred_masks", None)
+                if frame_idx is None or pred_masks is None:
+                    continue
+                # Step yields pred_masks of shape (batch, obj_ids, h, w) — 4D.
+                # post_process_masks expects a 5D input (list-of-batches
+                # style: batch, frames_per_batch, obj_ids, h, w) and upsamples
+                # the trailing 2D to original_sizes. Add the leading dim here.
+                if pred_masks.ndim == 4:
+                    pred_masks_5d = pred_masks.unsqueeze(0)
+                else:
+                    pred_masks_5d = pred_masks
+                post = processor.post_process_masks(
+                    pred_masks_5d,
+                    original_sizes=[(H, W)],
+                    mask_threshold=0.0,
+                    binarize=True,
+                )
+                # post_process_masks returns list-per-batch; we have one batch.
+                if not post:
+                    continue
+                m = post[0]
+                if hasattr(m, "float"):
+                    arr = m.float().cpu().numpy()
+                else:
+                    arr = np.asarray(m, dtype=np.float32)
+                # Collapse leading non-spatial dims — post is either
+                # (frames_in_batch, obj_ids, H, W) or (obj_ids, H, W).
+                # We asked for obj_ids=[1], so the first slice along any
+                # non-spatial dim is the single object.
+                while arr.ndim > 2:
+                    arr = arr[0]
+                out[int(frame_idx)] = arr.astype(np.float32, copy=False)
+
+        # Forward from seed to end; then backward from seed to start. The
+        # seed frame itself is emitted by forward propagation.
+        _consume(
+            model.propagate_in_video_iterator(
+                session, start_frame_idx=int(seed_frame_idx)
+            )
+        )
+        _consume(
+            model.propagate_in_video_iterator(
+                session,
+                start_frame_idx=int(seed_frame_idx),
+                reverse=True,
+            )
+        )
+
+        return out
 
     # ------------------------------------------------------------------
     # Per-window lifecycle — SAM 3 is VIDEO_CLIP-native, so `preprocess` /

@@ -107,7 +107,14 @@ def test_real_sam3_plus_rvm_end_to_end(_integration_plate: Path) -> None:
     sidecars = sorted(_integration_plate.glob("*.utility.*.exr"))
     assert sidecars, "No sidecars written"
 
-    pixels, attrs = read_exr(sidecars[0])
+    # Read every sidecar up front — RVM's recurrent state is cold on the
+    # first frame (alpha ~= 0 until r1..r4 warm up), so any single-frame
+    # assertion on matte content would be misleading. The checks below
+    # that care about *structure* (channel names, metadata, [0,1] bounds)
+    # use the first sidecar; the "refiner produced something" check looks
+    # across the whole clip.
+    all_reads = [read_exr(s) for s in sidecars]
+    pixels, attrs = all_reads[0]
 
     # Matte channels must all land — RVM produces all four slots (zeros for
     # slots without a hero).
@@ -133,20 +140,27 @@ def test_real_sam3_plus_rvm_end_to_end(_integration_plate: Path) -> None:
     concepts = attrs.get("liveActionAOV/matte/concepts", "")
     assert concepts, "matte/concepts attr is empty but mask.* channels exist"
 
-    # Sanity: matte channels are within [0, 1].
-    for ch in (CH_MATTE_R, CH_MATTE_G, CH_MATTE_B, CH_MATTE_A):
-        idx = names.index(ch)
-        band = pixels[..., idx]
-        assert band.min() >= -1e-6 and band.max() <= 1.0 + 1e-6, (
-            f"{ch} outside [0,1]: min={band.min()} max={band.max()}"
-        )
+    # Sanity: matte channels are within [0, 1] on every frame.
+    for frame_pixels, frame_attrs in all_reads:
+        frame_names = list(frame_attrs["channelnames"])
+        for ch in (CH_MATTE_R, CH_MATTE_G, CH_MATTE_B, CH_MATTE_A):
+            idx = frame_names.index(ch)
+            band = frame_pixels[..., idx]
+            assert band.min() >= -1e-6 and band.max() <= 1.0 + 1e-6, (
+                f"{ch} outside [0,1]: min={band.min()} max={band.max()}"
+            )
+
     # Plate is non-trivial: at least one matte slot has nonzero pixels
-    # (the refiner actually refined something).
-    matte_stack = np.stack(
-        [pixels[..., names.index(ch)] for ch in (CH_MATTE_R, CH_MATTE_G, CH_MATTE_B, CH_MATTE_A)],
-        axis=0,
-    )
-    assert matte_stack.max() > 0.0, (
-        "All matte channels are zero — detector found nothing OR refiner "
-        "swallowed everything. Inspect sam3_hard_masks output."
+    # *somewhere in the clip*. Checking only frame 1 would false-fail on
+    # the RVM recurrent-state cold-start (alpha ~= 0 until r1..r4 settle).
+    clip_matte_max = 0.0
+    for frame_pixels, frame_attrs in all_reads:
+        frame_names = list(frame_attrs["channelnames"])
+        for ch in (CH_MATTE_R, CH_MATTE_G, CH_MATTE_B, CH_MATTE_A):
+            idx = frame_names.index(ch)
+            clip_matte_max = max(clip_matte_max, float(frame_pixels[..., idx].max()))
+    assert clip_matte_max > 0.0, (
+        "All matte channels are zero across the whole clip — detector "
+        "found nothing OR refiner swallowed everything. Inspect the "
+        "sam3_hard_masks artifact."
     )

@@ -100,8 +100,11 @@ class RVMRefinerPass(UtilityPass):
         "variant": "mobilenetv3",          # "mobilenetv3" | "resnet50"
         "inference_short_edge": 512,       # RVM is tolerant; keep it light
         "precision": "fp16",
-        "downsample_ratio": None,          # None = let backend auto-pick
-        "hard_mask_erode": 0,              # morphological shrink on seed hint
+        "downsample_ratio": 0.25,          # RVM README default for <=2K input
+        "hard_mask_dilate": 3,             # grow the seed mask by N pixels
+                                           # before multiplying the plate —
+                                           # gives RVM a little context around
+                                           # the hard boundary to refine.
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -172,16 +175,97 @@ class RVMRefinerPass(UtilityPass):
         Output:
             (T, H, W) float32 in [0, 1]
 
-        The real implementation downscales to `inference_short_edge`, feeds
-        (plate, hard_mask) through RVM's recurrent forward, and upsamples
-        the alpha back to plate resolution. Tests override this to produce
-        a deterministic soft-ish mask (e.g. a mild Gaussian blur of the
-        hard mask) without any torch dependency.
+        ### Recipe: "plate-masking sandwich"
+
+        RVM is a generic image-matting network; it doesn't accept a prior
+        hard mask as a direct conditioning input. The workaround is to
+        multiply the hard mask into the plate *before* inference, so the
+        network only sees pixels inside (a slightly dilated version of)
+        the seed region. Then the output alpha is bound by the same
+        dilated mask so RVM can't hallucinate matte outside the seed.
+
+        Steps:
+        1. Upload hard mask to GPU, dilate by ``hard_mask_dilate`` pixels
+           via a max-pool — this gives RVM a little context around the
+           hard edge so its refinement has somewhere to grow from.
+        2. Per-frame recurrent loop: mask the plate, forward through RVM
+           (carrying ``r1..r4`` across frames — this is where temporal
+           consistency comes from), clip the alpha to [0, 1], multiply
+           back by the dilated mask.
+        3. Stack the per-frame alphas into an (T, H, W) float32 array.
+
+        Tests override this with a numpy-only fake so we don't need
+        torch.hub weights on CI.
         """
-        raise NotImplementedError(
-            "Real RVM refinement requires torch.hub weights. "
-            "Install torch + internet access, or override `_refine_instance` in tests."
+        import torch
+        import torch.nn.functional as F
+
+        self._load_model()
+        assert self._model is not None
+        device = self._device
+        dtype = self._dtype
+
+        T, H, W, _ = plate_stack.shape
+        dilate_px = max(int(self.params.get("hard_mask_dilate", 3)), 0)
+        downsample_ratio = float(self.params.get("downsample_ratio", 0.25))
+
+        # (T, 1, H, W) on-device copy of the hard mask, dilated via a
+        # max-pool. Dilation on GPU avoids pulling scipy/cv2 into the
+        # hot path. Kernel size 2k+1 keeps the mask centred.
+        hard_t = (
+            torch.from_numpy(hard_stack)
+            .to(device=device, dtype=dtype)
+            .unsqueeze(1)
         )
+        if dilate_px > 0:
+            k = 2 * dilate_px + 1
+            dilated_t = F.max_pool2d(
+                hard_t, kernel_size=k, stride=1, padding=dilate_px
+            )
+        else:
+            dilated_t = hard_t
+
+        # Empty-mask fast path: if every frame's seed is all-zero, RVM
+        # would just refine nothing. Skip the forward pass entirely.
+        if float(dilated_t.sum().item()) == 0.0:
+            return np.zeros((T, H, W), dtype=np.float32)
+
+        r1 = r2 = r3 = r4 = None
+        out_alpha = np.empty((T, H, W), dtype=np.float32)
+
+        for t in range(T):
+            # (1, 3, H, W) frame, masked by the (possibly dilated) seed.
+            # Clip to [0, 1] — RVM was trained on sRGB display values and
+            # produces zero / garbage alpha on scene-referred plates that
+            # occasionally exceed 1.0. (Our plates are already sRGB-ish,
+            # but the HDR headroom in the test plate generator pushes
+            # highlights to ~2.3; a cheap clamp here is the robust fix.)
+            frame_np = plate_stack[t]
+            frame_t = (
+                torch.from_numpy(frame_np)
+                .to(device=device, dtype=dtype)
+                .permute(2, 0, 1)
+                .unsqueeze(0)
+                .clamp_(0.0, 1.0)
+            )
+            mask_t = dilated_t[t : t + 1]  # (1, 1, H, W)
+            masked_frame = frame_t * mask_t
+
+            with torch.no_grad():
+                fgr, pha, r1, r2, r3, r4 = self._model(
+                    masked_frame,
+                    r1,
+                    r2,
+                    r3,
+                    r4,
+                    downsample_ratio=downsample_ratio,
+                )
+            # Bound the alpha by the dilated seed so RVM can't leak
+            # matte into the background beyond our context band.
+            pha = (pha * mask_t).clamp_(0.0, 1.0)
+            out_alpha[t] = pha.squeeze(0).squeeze(0).float().cpu().numpy()
+
+        return out_alpha
 
     # ------------------------------------------------------------------
     # Per-frame lifecycle is unused — refinement is shot-level. We still
