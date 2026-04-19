@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
@@ -32,8 +33,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from live_action_aov.core.pass_base import DisplayTransformParams
 from live_action_aov.gui.shot_state import ShotRegistry, ShotState
 from live_action_aov.io.colorspace_detect import detect_colorspace
+from live_action_aov.io.display_transform import DisplayTransform
 from live_action_aov.io.oiio_io import read_exr
 
 _SIDECAR_TOKENS = (".utility.", ".hero.", ".mask.")
@@ -112,6 +115,14 @@ class ShotListPanel(QWidget):
 
         detected = detect_colorspace(attrs, sample_pixels=pixels)
 
+        # Seed auto-exposure from the first frame so the preview lands
+        # on a sensible look without the user touching the slider. This
+        # mirrors what the executor's display transform computes at
+        # submit time — sampling more frames would be more accurate
+        # but also slow the add step; one-frame seed is good enough for
+        # first-view and the user can refine live via the slider.
+        auto = _seed_auto_exposure(pixels, detected.detected)
+
         shot = ShotState(
             name=folder.name,
             folder=folder,
@@ -121,6 +132,12 @@ class ShotListPanel(QWidget):
             pixel_aspect=pixel_aspect,
             detected=detected,
             current_frame=frame_range[0],
+            auto_ev=auto.get("ev"),
+            auto_ev_source=str(auto.get("source", "")),
+            sampled_luma=auto.get("sampled_luma"),
+            # Seed the slider with the auto value so the first render is
+            # already in the right exposure neighbourhood.
+            exposure_ev=float(auto.get("ev") or 0.0),
         )
         self._registry.add(shot)
 
@@ -148,6 +165,33 @@ class ShotListPanel(QWidget):
     ) -> None:
         shot = current.data(Qt.ItemDataRole.UserRole) if current else None
         self._registry.set_current(shot)
+
+
+def _seed_auto_exposure(pixels: np.ndarray, colorspace: str) -> dict:
+    """Run the real `DisplayTransform.analyze_clip` against a single
+    sampled frame — returns the `{ev, source, sampled_luma}` dict the
+    executor would produce at submit time.
+
+    Previewing with this EV makes the GUI's Transformed mode look like
+    what the pipeline will feed the model. The executor re-runs the
+    same analysis across N frames at submit; the GUI's one-frame seed
+    is a fast approximation of that result.
+    """
+    # Linearize via the same preview path the viewport uses so the
+    # sampled luma is in a consistent scale.
+    from live_action_aov.gui.preview_loader import _preview_to_linear
+
+    linear = _preview_to_linear(pixels, colorspace)
+    # Trim border pixels (frequently pure black from codec padding)
+    # that would drag the median down.
+    params = DisplayTransformParams(
+        auto_exposure_enabled=True, exposure_anchor="median", exposure_target=0.18
+    )
+    return DisplayTransform().analyze_clip(
+        [linear],
+        params,
+        working_space="lin_rec709" if colorspace != "acescg" else "acescg",
+    )
 
 
 def _format_item_label(shot: ShotState) -> str:

@@ -26,7 +26,9 @@ import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QImage
 
+from live_action_aov.core.pass_base import DisplayTransformParams
 from live_action_aov.gui.shot_state import ShotState, ViewMode
+from live_action_aov.io.display_transform import DisplayTransform
 from live_action_aov.io.oiio_io import read_exr
 
 
@@ -207,20 +209,33 @@ def _to_qimage_sRGB_via_colorspace(pixels: np.ndarray, colorspace: str) -> QImag
 def _to_qimage_display_transformed(
     pixels: np.ndarray, colorspace: str, exposure_ev: float
 ) -> QImage:
-    """Apply the "what the model will see" display transform:
-    colorspace → linear → exposure scale → approximate AgX → sRGB.
+    """Apply the exact display transform the executor will use.
 
-    The AgX curve here is a simplified reinhard-style rational that
-    matches the PASS display_transform's qualitative look well enough
-    for the preview. The executor uses the real AgX LUT at submit time
-    — this is just a fast approximation so the preview stays snappy.
+    Preview is byte-identical to what the model sees at submit time:
+    colorspace → linear → exposure (2^EV) → AgX sigmoid → clamp.
+    AgX already bakes the display gamma, so no additional sRGB EOTF.
+
+    This is the whole point of the preflight UX — if the preview
+    disagrees with the real pipeline, the "what the model sees"
+    guarantee evaporates. Runs in <20ms at 1024×576 proxy res; cheap
+    enough to redo on every slider tick.
     """
     linear = _preview_to_linear(pixels, colorspace)
-    exposed = linear * float(2.0**exposure_ev)
-    tonemapped = exposed / (1.0 + exposed)  # simple reinhard stand-in
-    srgb = _linear_to_srgb(tonemapped)
-    clipped = np.clip(srgb, 0.0, 1.0)
-    return _qimage_from_rgb_float32(clipped)
+    params = DisplayTransformParams(
+        # Manual EV bypasses analyze_clip — the inspector slider IS the
+        # effective exposure for the preview. `exposure_ev` was seeded
+        # from analyze_clip when the shot was added, so the first view
+        # matches what the executor would compute from the same sample.
+        manual_exposure_ev=float(exposure_ev),
+        tonemap="agx",
+        # AgX output is already display-referred (sigmoid bakes the
+        # gamma); tell the transform not to stack another EOTF on top.
+        output_eotf="srgb",
+        clamp=True,
+    )
+    analysis = {"ev": float(exposure_ev), "source": "manual"}
+    out = DisplayTransform().apply(linear, params, analysis)
+    return _qimage_from_rgb_float32(out)
 
 
 # Preview-local colorspace helpers — no OCIO, no config dependency.

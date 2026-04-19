@@ -93,6 +93,14 @@ class InspectorPanel(QWidget):
         exposure_row.addWidget(self._exposure_slider, stretch=1)
         exposure_row.addWidget(self._exposure_spin)
 
+        # Auto-exposure readout — computed when the shot is added.
+        # Shows the user what the pipeline's analyze_clip picked and
+        # why (median luma sample), so they can trust the default or
+        # tweak with evidence.
+        self._auto_ev_label = QLabel("")
+        self._auto_ev_label.setStyleSheet("color: #888; font-size: 10pt;")
+        self._auto_ev_label.setWordWrap(True)
+
         # --- Pass toggles (read-only in M1) ---
         self._pass_checks: dict[str, QCheckBox] = {}
         passes_row = QHBoxLayout()
@@ -125,6 +133,7 @@ class InspectorPanel(QWidget):
         root.addSpacing(12)
         root.addWidget(_section_label("Exposure (EV)"))
         root.addLayout(exposure_row)
+        root.addWidget(self._auto_ev_label)
         root.addSpacing(12)
         root.addWidget(_section_label("Passes"))
         root.addLayout(passes_block)
@@ -184,6 +193,27 @@ class InspectorPanel(QWidget):
             ev = float(shot.exposure_ev)
             self._exposure_slider.setValue(int(round(ev * 10)))
             self._exposure_spin.setValue(ev)
+
+            # Render the auto-EV provenance line. Matches the format
+            # of the colorspace line: value + source + a small evidence
+            # number so the user can sanity-check the pipeline's guess.
+            if shot.auto_ev is not None:
+                luma_str = (
+                    f" (sampled luma p50 = {shot.sampled_luma:.3f})"
+                    if shot.sampled_luma is not None
+                    else ""
+                )
+                delta = ev - float(shot.auto_ev)
+                if abs(delta) < 0.05:
+                    self._auto_ev_label.setText(
+                        f"auto: {shot.auto_ev:+.2f} EV{luma_str}"
+                    )
+                else:
+                    self._auto_ev_label.setText(
+                        f"manual: {ev:+.2f} EV   (auto was {shot.auto_ev:+.2f}{luma_str})"
+                    )
+            else:
+                self._auto_ev_label.setText("")
         finally:
             self._building = False
 

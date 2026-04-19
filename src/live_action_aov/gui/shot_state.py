@@ -54,6 +54,14 @@ class ShotState:
     view_mode: ViewMode = "transformed"
     exposure_ev: float = 0.0
 
+    # Auto-exposure analysis — computed once per shot when it's added,
+    # seeds `exposure_ev` so the first view looks correct without any
+    # slider movement. `auto_ev_source` is one of: "auto", "manual",
+    # "disabled", "no_samples" — surfaced in the inspector.
+    auto_ev: float | None = None
+    auto_ev_source: str = ""
+    sampled_luma: float | None = None
+
     # Passes the user has toggled on (read-only surface in M1).
     enabled_passes: list[str] = field(default_factory=list)
 
