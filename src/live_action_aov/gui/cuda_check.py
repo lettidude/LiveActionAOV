@@ -69,10 +69,12 @@ def cuda_state() -> CudaState:
             advisory = (
                 f"CPU-only PyTorch detected ({ver}). Neural passes "
                 "cannot run until a CUDA build of torch is installed.\n\n"
-                "Fix (Windows PowerShell / cmd, from project root):\n"
-                "    .venv\\Scripts\\pip.exe uninstall -y torch torchvision\n"
-                "    .venv\\Scripts\\pip.exe install torch torchvision "
-                "--index-url https://download.pytorch.org/whl/cu124\n\n"
+                "Fix (from project root):\n"
+                "    uv sync --extra dev\n\n"
+                "If that doesn't swap the wheel (unusual), manual fix:\n"
+                "    .venv\\Scripts\\pip.exe install --reinstall "
+                "torch torchvision "
+                "--index-url https://download.pytorch.org/whl/cu128\n\n"
                 "Linux/macOS: same command, use `.venv/bin/pip` instead."
             )
         else:
@@ -97,6 +99,42 @@ def cuda_state() -> CudaState:
     except Exception:
         count = 0
         name = None
+
+    # Compute-capability sanity check: cuda.is_available() returns
+    # True even when the installed wheel was built without kernels
+    # for this GPU's arch (e.g. RTX 5090 / sm_120 on a cu124 wheel
+    # that only ships sm_50..sm_90). Compare the device's capability
+    # against what the wheel was built for and surface the mismatch
+    # loudly — otherwise the first fp16 matmul crashes at submit time
+    # with a cryptic CUDA error.
+    try:
+        arches = set(torch.cuda.get_arch_list())
+        cap = torch.cuda.get_device_capability(0)
+        cap_str = f"sm_{cap[0]}{cap[1]}"
+        if cap_str not in arches:
+            arches_str = ", ".join(sorted(arches))
+            return CudaState(
+                available=False,
+                torch_version=ver,
+                torch_built_for_cuda=True,
+                device_name=name,
+                device_count=count,
+                advisory=(
+                    f"Your GPU ({name}, {cap_str}) isn't supported by this "
+                    f"PyTorch build ({ver}, compiled for: {arches_str}).\n\n"
+                    "This typically happens on very new GPUs (RTX 50-series "
+                    "needs cu128+) or very old ones (pre-Turing needs an "
+                    "older wheel). Fix from project root:\n\n"
+                    "    uv sync --extra dev\n\n"
+                    "If the default pin still doesn't match your GPU, see "
+                    "`docs/install.md` → Alternate GPU configurations."
+                ),
+            )
+    except Exception:
+        # torch internals can raise on malformed installs; we've
+        # already reported cuda_available, so keep going rather than
+        # fail the whole preflight.
+        pass
 
     return CudaState(
         available=True,

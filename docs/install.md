@@ -11,9 +11,11 @@ Both scripts will:
 2. Check for an NVIDIA driver.
 3. Provision Python 3.11 in a project-local `.venv`.
 4. Install all Python dependencies.
-5. Replace the default PyPI torch wheel with the **CUDA 12.4 build**
-   so neural passes actually run on the GPU (see [Why CUDA
-   matters](#why-cuda-matters)).
+5. Install the **CUDA 12.8 torch wheel** (pinned in `pyproject.toml`
+   via `[tool.uv.sources]`) so neural passes actually run on the GPU
+   (see [Why CUDA matters](#why-cuda-matters)). cu128 covers RTX
+   20/30/40 and the 50-series (Blackwell) — cu124 silently breaks
+   on Blackwell so we standardised on cu128.
 6. Run a smoke test and verify `torch.cuda.is_available()`.
 
 When the script is done you should see `Installation complete.` and
@@ -32,7 +34,7 @@ uv run liveaov-gui          # three-panel prep GUI
   First-time model downloads add another 10–40 GB depending on which
   passes you run.
 - **GPU**: NVIDIA with CUDA 12-capable driver. RTX 20-series and newer
-  all work; RTX 30 / 40 / 50-series are covered by the `cu124` wheel.
+  all work; RTX 30 / 40 / 50-series are covered by the `cu128` wheel.
   RTX 50-series (Blackwell) users: driver must be >= 560.x.
 - **macOS**: MPS works for some passes but is materially slower. CPU
   is not a supported configuration — fp16 kernels don't exist there.
@@ -57,19 +59,19 @@ If you installed manually or suspect something's off:
 .venv\Scripts\python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-Expect `2.x+cu124 True`. If you see `2.x+cpu` or `False`, reinstall
+Expect `2.x+cu128 True`. If you see `2.x+cpu` or `False`, reinstall
 torch:
 
 ```powershell
 .venv\Scripts\pip.exe install --reinstall torch torchvision `
-    --index-url https://download.pytorch.org/whl/cu124
+    --index-url https://download.pytorch.org/whl/cu128
 ```
 
 Linux/macOS:
 
 ```bash
 .venv/bin/pip install --reinstall torch torchvision \
-    --index-url https://download.pytorch.org/whl/cu124
+    --index-url https://download.pytorch.org/whl/cu128
 ```
 
 The GUI shows an amber banner and refuses to Submit when CUDA isn't
@@ -94,6 +96,66 @@ Kitchen-sink:
 ```bash
 uv pip install 'live-action-aov[depthcrafter,normalcrafter,video_depth_anything,matte,camera]'
 ```
+
+## Alternate GPU configurations
+
+The default pin (cu128 via `[tool.uv.sources]` in `pyproject.toml`)
+covers every NVIDIA GPU from Turing onwards (RTX 20 / 30 / 40 / 50
+series, T4, A100, H100, Blackwell). Other hardware needs a manual
+override.
+
+### Older NVIDIA GPUs (Pascal / Volta — GTX 10-series, Tesla P100/V100)
+
+These don't support the cu128 wheel's compiled arches. Use cu121
+instead:
+
+```powershell
+# Windows
+.venv\Scripts\pip.exe install --reinstall torch torchvision ^
+    --index-url https://download.pytorch.org/whl/cu121
+```
+
+```bash
+# Linux
+.venv/bin/pip install --reinstall torch torchvision \
+    --index-url https://download.pytorch.org/whl/cu121
+```
+
+Note: Pascal/Volta don't have first-class fp16 support. Passes that
+load fp16 by default (DepthCrafter, NormalCrafter) will be slow or
+fall back to fp32. Commercial-safe passes (RAFT, DA-V2, DSINE, SAM3,
+RVM) run fine.
+
+### Apple Silicon (M1 / M2 / M3)
+
+The default PyPI torch wheel includes MPS support. Skip the CUDA
+swap entirely — `install.sh` already does this on macOS. Most
+fp32 passes work via MPS (slower than CUDA but useable). fp16 passes
+are hit-or-miss depending on MPS kernel coverage; the GUI will
+refuse Submit and explain when a pass isn't available.
+
+### AMD GPUs (ROCm)
+
+**Not supported today.** ROCm torch wheels exist (from
+`https://download.pytorch.org/whl/rocm6.2`) but we haven't tested
+any pass against them. If you want to experiment, install manually
+and expect rough edges:
+
+```bash
+.venv/bin/pip install --reinstall torch torchvision \
+    --index-url https://download.pytorch.org/whl/rocm6.2
+```
+
+File issues with the model + error output; we'll mark tested
+combinations as supported over time.
+
+### CPU-only
+
+**Not a supported configuration.** fp16 kernels don't exist on CPU;
+every fp16 pass will hard-fail. fp32 passes run at ~1/100 GPU speed,
+which makes the tool impractical. If you only have CPU, use the CLI
+for now and expect multi-hour runs on trivial plates, or wait until
+you have GPU access.
 
 ## Non-commercial model licensing
 
