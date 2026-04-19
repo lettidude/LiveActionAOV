@@ -27,7 +27,6 @@ from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QImage
 
 from live_action_aov.gui.shot_state import ShotState, ViewMode
-from live_action_aov.io.ocio_color import from_linear, to_linear
 from live_action_aov.io.oiio_io import read_exr
 
 
@@ -192,12 +191,15 @@ def _proxy_resize(pixels: np.ndarray, long_edge: int) -> np.ndarray:
 def _to_qimage_sRGB_via_colorspace(pixels: np.ndarray, colorspace: str) -> QImage:
     """Colorspace→scene_linear→sRGB→uint8 for display.
 
-    Uses the existing OCIO wrapper (with numpy fallback). Clamps to
-    [0, 1] — exposure headroom is a display-time concern for the
-    Transformed mode; Original mode is a faithful decode.
+    Deliberately skips OCIO — the GUI preview has to work on any OCIO
+    config (or no config) without tripping over config-specific
+    colorspace names like `Utility - Linear - Rec.709`. We stick to
+    well-known sRGB EOTF + linear primaries, which is visually
+    indistinguishable from an OCIO path for the preview's purposes.
+    The executor still uses the full OCIO stack at submit time.
     """
-    linear = to_linear(pixels, colorspace)
-    srgb = from_linear(linear, "srgb_display")
+    linear = _preview_to_linear(pixels, colorspace)
+    srgb = _linear_to_srgb(linear)
     clipped = np.clip(srgb, 0.0, 1.0)
     return _qimage_from_rgb_float32(clipped)
 
@@ -213,12 +215,70 @@ def _to_qimage_display_transformed(
     for the preview. The executor uses the real AgX LUT at submit time
     — this is just a fast approximation so the preview stays snappy.
     """
-    linear = to_linear(pixels, colorspace)
+    linear = _preview_to_linear(pixels, colorspace)
     exposed = linear * float(2.0**exposure_ev)
     tonemapped = exposed / (1.0 + exposed)  # simple reinhard stand-in
-    srgb = from_linear(tonemapped, "srgb_display")
+    srgb = _linear_to_srgb(tonemapped)
     clipped = np.clip(srgb, 0.0, 1.0)
     return _qimage_from_rgb_float32(clipped)
+
+
+# Preview-local colorspace helpers — no OCIO, no config dependency.
+
+_ALREADY_LINEAR = {
+    "linear",
+    "lin_rec709",
+    "scene_linear",
+    "acescg",
+    "aces2065_1",
+    "linear_srgb",
+    "linear_rec709",
+    "rec709_linear",
+}
+_DISPLAY_SRGB_LIKE = {
+    "srgb",
+    "srgb_display",
+    "srgb_texture",
+    "srgb_encoded",
+    "rec709_display",
+    "rec709",
+    "gamma_2.2",
+    "gamma_22",
+}
+
+
+def _preview_to_linear(pixels: np.ndarray, colorspace: str) -> np.ndarray:
+    """Decode to scene-linear using only well-known math.
+
+    Scene-linear / wide-gamut spaces (acescg etc.) are treated as
+    already-linear; their primaries differ from sRGB but the preview
+    doesn't chromatic-adapt — that's an executor-time concern.
+    Display-referred spaces go through the sRGB inverse EOTF. Unknown
+    names fall through as identity + a silent no-op so the preview
+    never raises.
+    """
+    key = colorspace.strip().lower()
+    if key in _ALREADY_LINEAR:
+        return pixels.astype(np.float32, copy=False)
+    if key in _DISPLAY_SRGB_LIKE:
+        return _srgb_to_linear(pixels)
+    return pixels.astype(np.float32, copy=False)
+
+
+def _srgb_to_linear(x: np.ndarray) -> np.ndarray:
+    x = x.astype(np.float32, copy=False)
+    a = 0.055
+    lo = x / 12.92
+    hi = np.power(np.maximum(x + a, 0.0) / (1 + a), 2.4)
+    return np.where(x <= 0.04045, lo, hi)
+
+
+def _linear_to_srgb(x: np.ndarray) -> np.ndarray:
+    x = np.clip(x.astype(np.float32, copy=False), 0.0, None)
+    a = 0.055
+    lo = x * 12.92
+    hi = (1 + a) * np.power(x, 1 / 2.4) - a
+    return np.where(x <= 0.0031308, lo, hi)
 
 
 def _qimage_from_rgb_float32(rgb: np.ndarray) -> QImage:
