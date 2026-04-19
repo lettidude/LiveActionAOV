@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -101,6 +102,17 @@ class InspectorPanel(QWidget):
         self._auto_ev_label.setStyleSheet("color: #888; font-size: 10pt;")
         self._auto_ev_label.setWordWrap(True)
 
+        # --- Reset button ---
+        # One-click rollback to the auto-detected colorspace + auto-
+        # seeded exposure. Users experimenting with overrides want a
+        # cheap "undo my exploration" escape hatch; saves them
+        # reading the provenance label and re-typing the auto values.
+        self._reset_btn = QPushButton("Reset to auto-detected defaults")
+        self._reset_btn.setToolTip(
+            "Revert colorspace override → auto and exposure → auto-seeded EV."
+        )
+        self._reset_btn.clicked.connect(self._on_reset_clicked)
+
         # --- Pass toggles (read-only in M1) ---
         self._pass_checks: dict[str, QCheckBox] = {}
         passes_row = QHBoxLayout()
@@ -134,6 +146,8 @@ class InspectorPanel(QWidget):
         root.addWidget(_section_label("Exposure (EV)"))
         root.addLayout(exposure_row)
         root.addWidget(self._auto_ev_label)
+        root.addSpacing(12)
+        root.addWidget(self._reset_btn)
         root.addSpacing(12)
         root.addWidget(_section_label("Passes"))
         root.addLayout(passes_block)
@@ -262,6 +276,18 @@ class InspectorPanel(QWidget):
         self._exposure_slider.blockSignals(True)
         self._exposure_slider.setValue(int(round(ev * 10)))
         self._exposure_slider.blockSignals(False)
+        self._registry.notify_updated(self._current)
+
+    def _on_reset_clicked(self) -> None:
+        """Revert both knobs to auto-detected values in one shot."""
+        if self._current is None:
+            return
+        self._current.override = None
+        self._current.exposure_ev = float(self._current.auto_ev or 0.0)
+        # Rebuild flips both controls back and updates the provenance
+        # labels; then a single `notify_updated` triggers the viewport
+        # re-render with the reset settings.
+        self._rebuild_from_shot()
         self._registry.notify_updated(self._current)
 
 

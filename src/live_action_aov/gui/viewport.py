@@ -49,20 +49,30 @@ class ViewportPanel(QWidget):
         self._latest_request_id = 0
 
         # --- View mode radios ---
-        self._radio_original = QRadioButton("Original")
+        # "Transformed" is the default because that's the mode compers
+        # live in — "what the model will see". "Compare" is where the
+        # raw-vs-transformed side-by-side check lives. "Raw" (renamed
+        # from Original) is kept but de-prioritised — it's occasionally
+        # useful to confirm a pure colorspace decode without exposure
+        # or tonemap confusing things, but it's not a primary mode.
         self._radio_transformed = QRadioButton("Transformed")
         self._radio_compare = QRadioButton("Compare")
+        self._radio_original = QRadioButton("Raw")
+        self._radio_original.setToolTip(
+            "Raw colorspace decode — no exposure, no tonemap. "
+            "Useful when sanity-checking a suspicious colorspace tag."
+        )
         self._radio_transformed.setChecked(True)
         self._mode_group = QButtonGroup(self)
-        self._mode_group.addButton(self._radio_original, 0)
         self._mode_group.addButton(self._radio_transformed, 1)
         self._mode_group.addButton(self._radio_compare, 2)
+        self._mode_group.addButton(self._radio_original, 0)
         self._mode_group.idToggled.connect(self._on_mode_toggled)
 
         mode_row = QHBoxLayout()
-        mode_row.addWidget(self._radio_original)
         mode_row.addWidget(self._radio_transformed)
         mode_row.addWidget(self._radio_compare)
+        mode_row.addWidget(self._radio_original)
         mode_row.addStretch()
 
         # --- Image canvas ---
