@@ -48,6 +48,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QRadioButton,
+    QScrollArea,
+    QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -200,32 +202,35 @@ class InspectorPanel(QWidget):
         # without hunting through tooltips.
         self._model_checks: dict[str, QCheckBox] = {}
         passes_block = QVBoxLayout()
-        passes_block.setSpacing(2)
+        passes_block.setSpacing(4)
         for category, entries in PASS_CATALOG.items():
             header = QLabel(category)
             header.setStyleSheet(
-                "font-weight: 600; color: #dcdcdc; padding-top: 6px;"
+                "font-weight: 600; color: #dcdcdc; padding: 8px 0 2px 0;"
             )
+            header.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             passes_block.addWidget(header)
             for entry in entries:
-                row = QHBoxLayout()
-                row.setContentsMargins(12, 0, 0, 0)
+                row = QWidget()
+                row.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(16, 0, 0, 0)
+                row_layout.setSpacing(6)
                 cb = QCheckBox(entry.label)
                 cb.toggled.connect(
                     lambda checked, key=entry.key: self._on_model_toggled(key, checked)
                 )
                 self._model_checks[entry.key] = cb
-                row.addWidget(cb)
-                row.addStretch()
-                license_marker = QLabel(entry.license_tag)
+                row_layout.addWidget(cb)
+                row_layout.addStretch()
                 colour = "#5ec864" if entry.commercial else "#e0a040"
                 prefix = "" if entry.commercial else "⚠ "
-                license_marker.setText(f"{prefix}{entry.license_tag}")
+                license_marker = QLabel(f"{prefix}{entry.license_tag}")
                 license_marker.setStyleSheet(
                     f"color: {colour}; font-size: 10pt; padding-right: 2px;"
                 )
-                row.addWidget(license_marker)
-                passes_block.addLayout(row)
+                row_layout.addWidget(license_marker)
+                passes_block.addWidget(row)
 
         # --- Assemble ---
         form = QFormLayout()
@@ -254,31 +259,50 @@ class InspectorPanel(QWidget):
         passes_hint.setStyleSheet("color: #999; font-size: 9pt;")
         passes_hint.setWordWrap(True)
 
-        root = QVBoxLayout(self)
-        root.addLayout(form)
-        root.addSpacing(8)
-        root.addWidget(passes_header)
-        root.addWidget(passes_hint)
-        root.addLayout(passes_block)
-        root.addSpacing(16)
-        root.addWidget(_section_label("Colorspace"))
-        root.addLayout(cs_block)
-        root.addSpacing(12)
-        root.addWidget(_section_label("Exposure (EV)"))
-        root.addLayout(exposure_row)
-        root.addWidget(self._auto_ev_label)
-        root.addSpacing(12)
-        root.addWidget(self._reset_btn)
-        root.addSpacing(12)
-        root.addWidget(_section_label("Output"))
-        root.addWidget(self._out_inplace)
-        root.addWidget(self._out_subfolder)
-        root.addLayout(subfolder_row)
-        root.addWidget(self._out_external)
-        root.addLayout(out_root_row)
-        root.addLayout(external_name_row)
-        root.addWidget(self._resolved_out_label)
-        root.addStretch()
+        # The inspector can't fit every control on a short window
+        # height (especially once the pass catalog grows). Wrap the
+        # content in a scroll area so Passes gets natural row heights
+        # instead of Qt squishing them into overlap. The outer widget
+        # (self) holds the scroll area; the scroll area holds the
+        # actual content widget with the vertical layout.
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(8, 8, 8, 8)
+        content_layout.addLayout(form)
+        content_layout.addSpacing(8)
+        content_layout.addWidget(passes_header)
+        content_layout.addWidget(passes_hint)
+        content_layout.addLayout(passes_block)
+        content_layout.addSpacing(16)
+        content_layout.addWidget(_section_label("Colorspace"))
+        content_layout.addLayout(cs_block)
+        content_layout.addSpacing(12)
+        content_layout.addWidget(_section_label("Exposure (EV)"))
+        content_layout.addLayout(exposure_row)
+        content_layout.addWidget(self._auto_ev_label)
+        content_layout.addSpacing(12)
+        content_layout.addWidget(self._reset_btn)
+        content_layout.addSpacing(12)
+        content_layout.addWidget(_section_label("Output"))
+        content_layout.addWidget(self._out_inplace)
+        content_layout.addWidget(self._out_subfolder)
+        content_layout.addLayout(subfolder_row)
+        content_layout.addWidget(self._out_external)
+        content_layout.addLayout(out_root_row)
+        content_layout.addLayout(external_name_row)
+        content_layout.addWidget(self._resolved_out_label)
+        content_layout.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setWidget(content)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
 
         # Wire registry signals last (after all widgets exist so the
         # refresh never lands against a half-built layout).
