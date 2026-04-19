@@ -1,29 +1,65 @@
-"""NormalCrafter pass (VIDEO_CLIP, temporal-native normals, spec §13.1 Phase 2).
+"""NormalCrafter pass (VIDEO_CLIP, temporal-native normals).
 
-Backend: `diffusers` + the NormalCrafter weights (Stable-X/NormalCrafter),
-built on Stable Video Diffusion. Same license story as DepthCrafter — the
-weights are Apache-2.0 but the SVD backbone keeps the whole pipeline behind
-`--allow-noncommercial` until upstream clears it. Weights + diffusers are
-an optional extra: `pip install live-action-aov[normalcrafter]`.
+Backend: the vendored NormalCrafter pipeline from
+github.com/Binyr/NormalCrafter plus the `Yanrui95/NormalCrafter` weights
+on HuggingFace. Built on Stable Video Diffusion's UNet backbone, retrained
+by Binyr et al. to output per-frame camera-space normals instead of
+colour frames. Runtime: a handful of minutes for ~100 frames on a 5090
+(one denoising step per window by default).
 
-Lifecycle mirrors DepthCrafter:
-1. `run_shot` reads every frame in the requested range.
-2. Frames are tiled into windows (`plan_window_starts`).
-3. Each window is preprocessed / inferred / postprocessed — the model
-   returns camera-space normals of shape `(window, 3, H, W)`.
-4. `stitch_windowed_predictions` blends the overlap regions with the
-   trapezoid weighting used by DepthCrafter.
-5. After stitching, two spec traps bite:
-   - **Trap 2**: stitching is a weighted *blend* of already-unit normals,
-     which breaks unit length in the overlap. We renormalize each frame
-     in the stitched clip by `N / max(||N||, eps)`.
-   - **Axis convention**: NormalCrafter publishes its normals in OpenCV
-     camera-space (+X right, +Y down, +Z forward-into-scene). Spec §10.3
-     requires OpenGL/Maya (+X right, +Y up, +Z toward camera). The output
-     is converted with the same helper DSINE uses (flip Y and Z).
+Why we vendor the upstream pipeline instead of loading via
+`DiffusionPipeline.from_pretrained`
+---------------------------------------------------------------------
 
-Tests bypass `diffusers` via `_load_model` + `_infer_window` subclass
-overrides so CI stays fast and offline.
+The probe (`scripts/probe_crafter_apis.py`) found that HF's auto-pipeline
+resolves `Yanrui95/NormalCrafter` to a vanilla `StableVideoDiffusionPipeline`
+— the custom `NormalCrafterPipeline` class (with temporal windowing and a
+normal-specific `__call__`) lives only in the Binyr GitHub repo. We fetch
+that source into `src/live_action_aov/vendored/normalcrafter/` (MIT-
+licensed, kept verbatim with its LICENSE alongside) and load through it.
+
+Licence
+-------
+
+NormalCrafter's own code is MIT and the retrained weights are Apache-2.0,
+but the UNet inherits Stable Video Diffusion's architecture + initial
+weights — so the combined package is effectively SVD-NC (non-commercial).
+For internal pipelines that's fine. The pass declares
+`commercial_use=False` and the CLI gates it behind
+`--allow-noncommercial`.
+
+Outputs (spec §5.1, channels.py)
+--------------------------------
+
+Camera-space unit normals packed as three scalar channels:
+- `normal.x`, `normal.y`, `normal.z`  (each ∈ [-1, 1])
+
+Values are unit-length per pixel (spec trap 2). Axis convention:
+NormalCrafter emits in OpenCV camera space (+X right, +Y **down**,
++Z forward-into-scene). Spec §10.3 requires OpenGL/Maya (+X right,
++Y **up**, +Z toward camera). We flip Y and Z after inference — same
+helper DSINE uses, so downstream tooling behaviour is consistent
+whether a shot was run through DSINE or NormalCrafter.
+
+Temporal: VIDEO_CLIP. The pipeline does its own sliding-window inference
+(default `window_size=14`, `time_step_size=10`, i.e. 4-frame overlap per
+14-frame window) with linear-merge blending across overlaps, so there's
+nothing for an external smoother to do. `smoothable_channels = []`.
+
+Implementation notes
+--------------------
+
+- The pipeline wants a list of `PIL.Image` (H, W, 3) in [0, 255], not a
+  numpy array. `utils.read_video_frames` in the upstream repo converts
+  from decord frames to PIL before the call — we mirror that: convert
+  display-transformed float32 [0, 1] plate → uint8 → list of PIL.
+- `max_res` caps the longer edge at inference time (default 1024) to
+  keep VRAM bounded. The pipeline itself pads to multiples of 64
+  internally and returns unpadded frames, so we only need to handle
+  the downscale-back-to-plate step here.
+- Tests bypass the real diffusers pipeline by subclassing and
+  overriding `_infer_clip`, which is the single hook between the
+  I/O boilerplate in `run_shot` and the real SVD denoising loop.
 """
 
 from __future__ import annotations
@@ -41,24 +77,21 @@ from live_action_aov.core.pass_base import (
 )
 from live_action_aov.io.channels import CH_N_X, CH_N_Y, CH_N_Z
 from live_action_aov.passes.normals.dsine import _convert_axes
-from live_action_aov.shared.video_clip import (
-    plan_window_starts,
-    stitch_windowed_predictions,
-)
 
 
 class NormalCrafterPass(UtilityPass):
     name = "normalcrafter"
-    version = "0.1.0"
+    version = "0.2.0"
     license = License(
-        spdx="Apache-2.0+SVD-NC",
+        spdx="MIT+Apache-2.0+SVD-NC",
         commercial_use=False,
         commercial_tool_resale=False,
         notes=(
-            "Weights are Apache-2.0 but NormalCrafter is built on Stable "
-            "Video Diffusion, whose commercial terms are non-permissive. "
-            "Gated behind --allow-noncommercial. Verify with upstream "
-            "authors before any commercial deployment."
+            "NormalCrafter is built on Stable Video Diffusion, whose "
+            "commercial terms are non-permissive. NormalCrafter's own "
+            "code is MIT and the retrained weights are Apache-2.0, but "
+            "the package inherits SVD-NC restrictions. Gated behind "
+            "--allow-noncommercial."
         ),
     )
     pass_type = PassType.GEOMETRIC
@@ -67,23 +100,34 @@ class NormalCrafterPass(UtilityPass):
     input_colorspace = "srgb_display"
 
     produces_channels = [
-        ChannelSpec(name=CH_N_X, description="Camera-space normal x, [-1,1] unit-length"),
-        ChannelSpec(name=CH_N_Y, description="Camera-space normal y"),
-        ChannelSpec(name=CH_N_Z, description="Camera-space normal z"),
+        ChannelSpec(name=CH_N_X, description="Camera-space normal x (OpenGL), [-1, 1] unit-length"),
+        ChannelSpec(name=CH_N_Y, description="Camera-space normal y (OpenGL)"),
+        ChannelSpec(name=CH_N_Z, description="Camera-space normal z (OpenGL)"),
     ]
-    smoothable_channels: list[str] = []   # VIDEO_CLIP: already temporally coherent
+    smoothable_channels: list[str] = []   # VIDEO_CLIP: internally temporally coherent
 
     DEFAULT_PARAMS: dict[str, Any] = {
-        "window": 14,
-        "overlap": 2,
-        "num_inference_steps": 10,
-        "guidance_scale": 1.0,
-        "inference_short_edge": 576,
-        "precision": "fp16",             # SVD-family pipeline: fp16 default
         "model_id": "Yanrui95/NormalCrafter",
-        # Axis convention — NormalCrafter = OpenCV, spec = OpenGL.
-        "input_axes": "opencv",
+        "precision": "fp16",
+        "window_size": 14,            # pipeline's internal sliding window
+        "time_step_size": 10,         # stride between windows (overlap = window - stride)
+        "decode_chunk_size": 7,       # VAE decode chunk size (memory vs speed)
+        "max_res": 1024,              # cap longer edge for VRAM
+        "seed": 42,
+        "cpu_offload": None,          # None | "model" | "sequential"
+        # Axis convention. First run on CAT_070_0030 showed NormalCrafter
+        # emits normals where visible-surface Z is ALREADY positive (i.e.
+        # +Z toward camera — OpenGL convention). Applying an OpenCV→OpenGL
+        # flip on top turned every face yellow-green (nz ∈ [-1, -0.1])
+        # instead of the expected cyan (nz ∈ [+0.1, +1]). So the input is
+        # OpenGL-native and we skip conversion by default.
+        "input_axes": "opengl",
         "output_axes": "opengl",
+        # Legacy knobs kept for parameter-compatibility with old YAMLs and
+        # tests; validated here but not otherwise used (pipeline handles
+        # internal windowing through window_size / time_step_size above).
+        "window": 14,
+        "overlap": 4,
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -101,8 +145,13 @@ class NormalCrafterPass(UtilityPass):
         self._frame_keys: list[int] = []
         self._plate_shape: tuple[int, int] = (0, 0)
 
+    @classmethod
+    def declared_license(cls) -> License:
+        """Shortcut used by tests / audits. Mirrors `cls.license`."""
+        return cls.license
+
     # ------------------------------------------------------------------
-    # Model lifecycle (diffusers — heavy; tests override)
+    # Model lifecycle
     # ------------------------------------------------------------------
 
     def _load_model(self) -> None:
@@ -116,116 +165,77 @@ class NormalCrafterPass(UtilityPass):
                 "Install via: pip install live-action-aov[normalcrafter]"
             ) from e
         import torch
-        from diffusers import DiffusionPipeline
+        from diffusers import AutoencoderKLTemporalDecoder
 
-        pipe = DiffusionPipeline.from_pretrained(
-            str(self.params["model_id"]),
-            custom_pipeline=str(self.params["model_id"]),
-            torch_dtype=torch.float16 if self.params["precision"] == "fp16" else torch.float32,
-            trust_remote_code=True,
+        from live_action_aov.vendored.normalcrafter.normal_crafter_ppl import (
+            NormalCrafterPipeline,
         )
+        from live_action_aov.vendored.normalcrafter.unet import (
+            DiffusersUNetSpatioTemporalConditionModelNormalCrafter,
+        )
+
+        model_id = str(self.params["model_id"])
+        use_fp16 = str(self.params["precision"]).lower() == "fp16"
+        weight_dtype = torch.float16 if use_fp16 else torch.float32
+
+        # The custom UNet subclass adds NormalCrafter-specific overrides;
+        # HF's auto-loader would otherwise instantiate the vanilla
+        # `UNetSpatioTemporalConditionModel` and miss them.
+        unet = DiffusersUNetSpatioTemporalConditionModelNormalCrafter.from_pretrained(
+            model_id, subfolder="unet", low_cpu_mem_usage=True,
+        )
+        vae = AutoencoderKLTemporalDecoder.from_pretrained(
+            model_id, subfolder="vae",
+        )
+        unet.to(dtype=weight_dtype)
+        vae.to(dtype=weight_dtype)
+
+        pipe = NormalCrafterPipeline.from_pretrained(
+            model_id,
+            unet=unet,
+            vae=vae,
+            torch_dtype=weight_dtype,
+            variant="fp16" if use_fp16 else None,
+        )
+
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._dtype = (
-            torch.float16
-            if self.params["precision"] == "fp16" and self._device.type == "cuda"
-            else torch.float32
-        )
-        pipe = pipe.to(self._device)
+        self._dtype = weight_dtype
+
+        offload = self.params.get("cpu_offload")
+        if offload == "sequential":
+            pipe.enable_sequential_cpu_offload()
+        elif offload == "model":
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe.to(self._device)
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+        except Exception:
+            # xFormers is optional — slower without it, otherwise fine.
+            pass
+
         self._pipeline = pipe
 
     # ------------------------------------------------------------------
-    # Per-window lifecycle (one sliding window at a time)
+    # Stubs — the UtilityPass base still expects these; VIDEO_CLIP drives
+    # everything through run_shot.
     # ------------------------------------------------------------------
 
     def preprocess(self, frames: np.ndarray) -> Any:
-        """Input: (W_frames, H, W_px, 3) float32 sRGB-display in [0,1]."""
-        import torch
-
-        if frames.ndim != 4 or frames.shape[-1] != 3:
-            raise ValueError(
-                f"NormalCrafter preprocess expects (W, H, W_px, 3), got {frames.shape}"
-            )
-        self._load_model()
-        n, plate_h, plate_w, _ = frames.shape
-        short = int(self.params["inference_short_edge"])
-        scale = short / max(min(plate_h, plate_w), 1)
-        inf_h = max(64, int(round(plate_h * scale / 8)) * 8)
-        inf_w = max(64, int(round(plate_w * scale / 8)) * 8)
-
-        img = np.clip(frames, 0.0, 1.0).astype(np.float32, copy=False)
-        t = torch.from_numpy(img).permute(0, 3, 1, 2)   # (N, 3, H, W)
-        t = torch.nn.functional.interpolate(
-            t, size=(inf_h, inf_w), mode="bilinear", align_corners=False
-        )
-        return {
-            "video": t.to(self._device, dtype=self._dtype),
-            "plate_shape": (plate_h, plate_w),
-            "inf_shape": (inf_h, inf_w),
-            "n_frames": n,
-        }
+        return frames
 
     def infer(self, tensor: Any) -> Any:
-        """Delegates to `_infer_window` so tests can inject a fake without
-        reimplementing the surrounding plumbing."""
-        pred = self._infer_window(tensor)
-        return {
-            "normals": pred,
-            "plate_shape": tensor["plate_shape"],
-        }
-
-    def _infer_window(self, tensor: Any) -> Any:
-        """Run the diffusers pipeline on a window. Overridden in tests."""
-        import torch
-
-        assert self._pipeline is not None
-        with torch.no_grad():
-            result = self._pipeline(
-                video=tensor["video"],
-                num_inference_steps=int(self.params["num_inference_steps"]),
-                guidance_scale=float(self.params["guidance_scale"]),
-            )
-        # NormalCrafter pipelines typically return `.normals` or `.frames`;
-        # normalize to a torch.Tensor of shape (N, 3, H, W).
-        normals = getattr(result, "normals", None)
-        if normals is None and hasattr(result, "frames"):
-            normals = result.frames
-        if normals is None:
-            raise RuntimeError(
-                "NormalCrafter pipeline returned no `.normals`/`.frames` attribute"
-            )
-        return normals
+        raise NotImplementedError(
+            "NormalCrafterPass is VIDEO_CLIP; drive it via run_shot."
+        )
 
     def postprocess(self, tensor: Any) -> dict[str, np.ndarray]:
-        """Upscale window normals to plate res, renormalize to unit length
-        (trap 2), return the raw axis-convention tensors as an (N, 3, H, W)
-        array keyed by CH_N_{X,Y,Z}.
-
-        Axis conversion is deferred to `run_shot` so it happens once after
-        stitching (the trapezoid blend is done in the native axis space to
-        avoid double-flipping).
-        """
-        import torch
-
-        plate_h, plate_w = tensor["plate_shape"]
-        n = tensor["normals"]
-        if n.ndim != 4 or n.shape[1] != 3:
-            raise ValueError(
-                f"Expected normals (B, 3, h, w), got {tuple(n.shape)}"
-            )
-        n_up = torch.nn.functional.interpolate(
-            n, size=(plate_h, plate_w), mode="bilinear", align_corners=False
+        raise NotImplementedError(
+            "NormalCrafterPass is VIDEO_CLIP; drive it via run_shot."
         )
-        mag = torch.sqrt((n_up ** 2).sum(dim=1, keepdim=True)).clamp_min(1e-6)
-        n_unit = n_up / mag
-        arr = n_unit.cpu().numpy().astype(np.float32)          # (N, 3, H, W)
-        return {
-            CH_N_X: arr[:, 0],
-            CH_N_Y: arr[:, 1],
-            CH_N_Z: arr[:, 2],
-        }
 
     # ------------------------------------------------------------------
-    # Shot-level: window plan → stitch → renormalize → axis convert
+    # Shot-level: one pipeline call across the whole clip.
     # ------------------------------------------------------------------
 
     def run_shot(
@@ -234,61 +244,120 @@ class NormalCrafterPass(UtilityPass):
         frame_range: tuple[int, int],
     ) -> dict[int, dict[str, np.ndarray]]:
         first, last = frame_range
-        n_frames = last - first + 1
-        window = min(int(self.params["window"]), n_frames)
-        overlap = min(int(self.params["overlap"]), max(window - 1, 0))
 
-        frames = np.stack(
-            [reader.read_frame(f)[0] for f in range(first, last + 1)], axis=0
-        )
-        plate_h, plate_w = int(frames.shape[1]), int(frames.shape[2])
+        # 1. Read plate frames into a (N, H, W, 3) float32 [0, 1] stack.
+        frames_float: list[np.ndarray] = []
+        for f in range(first, last + 1):
+            arr, _ = reader.read_frame(f)
+            frames_float.append(np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False))
+        stack_f = np.stack(frames_float, axis=0)
+        plate_h, plate_w = int(stack_f.shape[1]), int(stack_f.shape[2])
 
-        starts = plan_window_starts(n_frames, window, overlap)
-        # Accumulate each channel separately so the stitcher can broadcast
-        # 2-D per-frame predictions.
-        nx_preds: list[np.ndarray] = []
-        ny_preds: list[np.ndarray] = []
-        nz_preds: list[np.ndarray] = []
-        for s in starts:
-            clip = frames[s : s + window]
-            model_in = self.preprocess(clip)
-            model_out = self.infer(model_in)
-            partial = self.postprocess(model_out)
-            nx_preds.append(partial[CH_N_X])
-            ny_preds.append(partial[CH_N_Y])
-            nz_preds.append(partial[CH_N_Z])
+        # 2. Downscale to max_res on the long edge (VRAM guard). Inference
+        #    runs on the downscaled clip; we upsample normals back to plate
+        #    res at the end, renormalising unit length afterwards.
+        max_res = int(self.params["max_res"])
+        long_edge = max(plate_h, plate_w)
+        if long_edge > max_res:
+            scale = max_res / long_edge
+            inf_h = int(plate_h * scale)
+            inf_w = int(plate_w * scale)
+            # Round down to multiples of 8 so the pipeline's internal
+            # pad-to-64 step has minimal work.
+            inf_h = (inf_h // 8) * 8
+            inf_w = (inf_w // 8) * 8
+            import cv2
+            rs = np.empty((stack_f.shape[0], inf_h, inf_w, 3), dtype=np.float32)
+            for i in range(stack_f.shape[0]):
+                rs[i] = cv2.resize(stack_f[i], (inf_w, inf_h), interpolation=cv2.INTER_AREA)
+            stack_f = rs
 
-        nx = stitch_windowed_predictions(nx_preds, starts, n_frames, overlap)
-        ny = stitch_windowed_predictions(ny_preds, starts, n_frames, overlap)
-        nz = stitch_windowed_predictions(nz_preds, starts, n_frames, overlap)
+        # 3. Convert to uint8 + PIL (what the pipeline expects). See
+        #    `read_video_frames` upstream — the pipeline's pad + _encode_image
+        #    paths branch on PIL vs ndarray and the PIL branch is the
+        #    battle-tested one.
+        stack_u8 = (np.clip(stack_f, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+        frames_pil = self._to_pil(stack_u8)
 
-        # Trap 2 again: weighted blend over the overlap broke unit length.
-        stacked = np.stack([nx, ny, nz], axis=1)              # (N, 3, H, W)
-        mag = np.sqrt((stacked ** 2).sum(axis=1, keepdims=True))
+        # 4. Inference (single hook so tests can bypass).
+        normals = self._infer_clip(frames_pil)     # (N, H, W, 3) in [-1, 1]
+
+        # 5. Upscale back to plate res if we downscaled earlier, then
+        #    renormalise unit length (spec trap 2 — bilinear blend breaks
+        #    it even when each pixel was unit before).
+        if normals.shape[1] != plate_h or normals.shape[2] != plate_w:
+            import cv2
+            up = np.empty((normals.shape[0], plate_h, plate_w, 3), dtype=np.float32)
+            for i in range(normals.shape[0]):
+                up[i] = cv2.resize(
+                    normals[i].astype(np.float32, copy=False),
+                    (plate_w, plate_h),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+            normals = up
+        mag = np.sqrt((normals ** 2).sum(axis=-1, keepdims=True))
         mag = np.maximum(mag, 1e-6)
-        stacked = stacked / mag
+        normals = normals / mag
 
-        # Axis convention (opencv → opengl) applied once post-stitch.
+        # 6. Axis convention opencv → opengl (default).
         src = str(self.params.get("input_axes", "opencv"))
         dst = str(self.params.get("output_axes", "opengl"))
         if src.lower() != dst.lower():
-            converted = np.empty_like(stacked)
-            for i in range(stacked.shape[0]):
-                converted[i] = _convert_axes(stacked[i], src=src, dst=dst)
-            stacked = converted
+            converted = np.empty_like(normals)
+            for i in range(normals.shape[0]):
+                n = normals[i].transpose(2, 0, 1)         # (3, H, W)
+                n = _convert_axes(n, src=src, dst=dst)
+                converted[i] = n.transpose(1, 2, 0)
+            normals = converted
 
-        stacked = np.clip(stacked, -1.0, 1.0).astype(np.float32, copy=False)
+        normals = np.clip(normals, -1.0, 1.0).astype(np.float32, copy=False)
 
+        # 7. Per-frame dict keyed by plate frame number.
         self._frame_keys = list(range(first, last + 1))
         self._plate_shape = (plate_h, plate_w)
         out: dict[int, dict[str, np.ndarray]] = {}
         for i, f in enumerate(self._frame_keys):
             out[f] = {
-                CH_N_X: stacked[i, 0],
-                CH_N_Y: stacked[i, 1],
-                CH_N_Z: stacked[i, 2],
+                CH_N_X: normals[i, :, :, 0],
+                CH_N_Y: normals[i, :, :, 1],
+                CH_N_Z: normals[i, :, :, 2],
             }
         return out
+
+    # ------------------------------------------------------------------
+    # Inference hook — overridden in tests.
+    # ------------------------------------------------------------------
+
+    def _to_pil(self, stack_u8: np.ndarray) -> Any:
+        """(N, H, W, 3) uint8 → list of PIL.Image."""
+        from PIL import Image
+
+        return [Image.fromarray(stack_u8[i]) for i in range(stack_u8.shape[0])]
+
+    def _infer_clip(self, frames_pil: Any) -> np.ndarray:
+        """Drive the vendored pipeline on the full clip.
+
+        Returns (N, H, W, 3) float32 normals in [-1, 1], in the pipeline's
+        native OpenCV camera space. Tests override this to skip diffusers.
+        """
+        import torch
+
+        self._load_model()
+        assert self._pipeline is not None
+
+        generator = torch.Generator(device=self._device).manual_seed(
+            int(self.params["seed"])
+        )
+        with torch.inference_mode():
+            result = self._pipeline(
+                frames_pil,
+                decode_chunk_size=int(self.params["decode_chunk_size"]),
+                time_step_size=int(self.params["time_step_size"]),
+                window_size=int(self.params["window_size"]),
+                generator=generator,
+            )
+        frames = result.frames[0]     # (N, H, W, 3), range (-1, 1)
+        return np.asarray(frames, dtype=np.float32)
 
 
 __all__ = ["NormalCrafterPass"]

@@ -1,8 +1,9 @@
 """NormalCrafterPass — VIDEO_CLIP contract tests with a bypassed model.
 
-Verifies the sliding-window + unit-length renormalize + axis-convert path
-without touching diffusers. The fake model returns synthetic camera-space
-normals so we can reason about the output.
+Verifies the unit-length + axis-convert + upscale paths without touching
+diffusers or the vendored NormalCrafter pipeline. The fake model returns
+synthetic camera-space normals of a known shape/direction so we can
+reason about the output.
 """
 
 from __future__ import annotations
@@ -17,25 +18,26 @@ from live_action_aov.passes.normals.normalcrafter import NormalCrafterPass  # no
 
 
 class _FakeNormalCrafter(NormalCrafterPass):
-    """Returns a deterministic (N, 3, h, w) normals tensor.
+    """Returns a deterministic (N, H, W, 3) normals array.
 
-    Every window returns +X unit normals — trivially unit-length and makes
-    the axis-convention test easy (OpenCV +X maps to OpenGL +X, both
-    unchanged; OpenCV +Y/+Z flip).
+    Every frame returns +X unit normals in OpenCV camera space — trivially
+    unit-length, and makes the axis-convention test easy (OpenCV +X maps
+    to OpenGL +X, both unchanged; OpenCV +Y/+Z flip).
     """
 
     def _load_model(self) -> None:  # type: ignore[override]
-        if self._pipeline is not None:
-            return
+        # Skip the real diffusers loader entirely.
         self._pipeline = object()
         self._device = torch.device("cpu")
         self._dtype = torch.float32
 
-    def _infer_window(self, tensor):  # type: ignore[override]
-        video = tensor["video"]
-        n, _, h, w = video.shape
-        normals = torch.zeros((n, 3, h, w), dtype=torch.float32)
-        normals[:, 0] = 1.0          # +X everywhere
+    def _infer_clip(self, frames_pil):  # type: ignore[override]
+        # frames_pil is a list of PIL.Image. Use the first to learn the
+        # inference-time spatial shape, then emit +X everywhere.
+        w, h = frames_pil[0].size
+        n = len(frames_pil)
+        normals = np.zeros((n, h, w, 3), dtype=np.float32)
+        normals[..., 0] = 1.0   # +X everywhere
         return normals
 
 
@@ -65,12 +67,10 @@ def test_overlap_geq_window_rejected() -> None:
 
 
 def test_run_shot_produces_unit_length_normals_per_frame() -> None:
-    """Spec §10.3 + trap 2: every pixel in the stitched clip must have
-    |N| = 1, even after the overlap blend."""
+    """Spec §10.3 + trap 2: every pixel in the returned clip must have
+    |N| = 1, even after axis conversion and upscale."""
     frames = _flat_frames(n=30)
-    pass_ = _FakeNormalCrafter(
-        {"window": 10, "overlap": 3, "inference_short_edge": 16}
-    )
+    pass_ = _FakeNormalCrafter({"max_res": 1024})
     out = pass_.run_shot(_FakeReader(frames), frame_range=(1, 30))
 
     assert sorted(out) == list(range(1, 31))
@@ -84,13 +84,13 @@ def test_run_shot_produces_unit_length_normals_per_frame() -> None:
         assert np.allclose(mag, 1.0, atol=1e-4)
 
 
-def test_axis_conversion_opencv_to_opengl_preserves_x() -> None:
-    """Fake emits +X in OpenCV. OpenCV→OpenGL flips Y and Z but leaves X,
-    so CH_N_X should be ≈ +1 everywhere."""
+def test_default_passthrough_does_not_flip_normals() -> None:
+    """The real NormalCrafter output is already OpenGL-space (first
+    CAT_070_0030 run revealed this), so the pass default is
+    input_axes=output_axes=opengl → identity. A fake emitting +X in that
+    frame should come out as +X unchanged."""
     frames = _flat_frames(n=8)
-    pass_ = _FakeNormalCrafter(
-        {"window": 5, "overlap": 1, "inference_short_edge": 16}
-    )
+    pass_ = _FakeNormalCrafter({"max_res": 1024})
     out = pass_.run_shot(_FakeReader(frames), frame_range=(1, 8))
     for f in out:
         assert np.allclose(out[f][CH_N_X], 1.0, atol=1e-4)
@@ -98,30 +98,31 @@ def test_axis_conversion_opencv_to_opengl_preserves_x() -> None:
         assert np.allclose(out[f][CH_N_Z], 0.0, atol=1e-4)
 
 
-def test_axis_conversion_opencv_pass_through_does_not_flip() -> None:
-    """Override to skip axis conversion — fake +Z normals must stay +Z."""
+def test_axis_conversion_flips_y_and_z_when_explicitly_requested() -> None:
+    """Users who want OpenCV-output normals (legacy DSINE-compatible) can
+    opt in with `output_axes="opencv"`. The conversion helper flips Y and
+    Z; verify by feeding a fake +Z OpenGL normal and asking for OpenCV."""
+
     class _FakeZ(_FakeNormalCrafter):
-        def _infer_window(self, tensor):  # type: ignore[override]
-            video = tensor["video"]
-            n, _, h, w = video.shape
-            normals = torch.zeros((n, 3, h, w), dtype=torch.float32)
-            normals[:, 2] = 1.0   # +Z
+        def _infer_clip(self, frames_pil):  # type: ignore[override]
+            w, h = frames_pil[0].size
+            n = len(frames_pil)
+            normals = np.zeros((n, h, w, 3), dtype=np.float32)
+            normals[..., 2] = 1.0   # +Z
             return normals
 
     frames = _flat_frames(n=5)
-    pass_ = _FakeZ(
-        {"window": 5, "overlap": 0, "output_axes": "opencv",
-         "inference_short_edge": 16}
-    )
+    # Default input_axes=opengl; explicit output=opencv → flip Y and Z.
+    pass_ = _FakeZ({"output_axes": "opencv", "max_res": 1024})
     out = pass_.run_shot(_FakeReader(frames), frame_range=(1, 5))
     for f in out:
-        assert np.allclose(out[f][CH_N_Z], 1.0, atol=1e-4)
+        assert np.allclose(out[f][CH_N_Z], -1.0, atol=1e-4)
 
-    # With default opengl output axes, +Z OpenCV flips to -Z.
-    pass2 = _FakeZ({"window": 5, "overlap": 0, "inference_short_edge": 16})
+    # Default axes → identity → +Z stays +Z.
+    pass2 = _FakeZ({"max_res": 1024})
     out2 = pass2.run_shot(_FakeReader(frames), frame_range=(1, 5))
     for f in out2:
-        assert np.allclose(out2[f][CH_N_Z], -1.0, atol=1e-4)
+        assert np.allclose(out2[f][CH_N_Z], 1.0, atol=1e-4)
 
 
 def test_smoothable_channels_is_empty_for_video_clip() -> None:
