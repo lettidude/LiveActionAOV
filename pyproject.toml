@@ -91,6 +91,23 @@ matanyone2 = []
 # `matte` meta-extra — installs both the detector (sam3) and the default
 # commercial-safe refiner (rvm) in one shot.
 matte = ["live-action-aov[sam3]", "live-action-aov[rvm]"]
+# `all` meta-extra — every optional pass's dependencies. This is what
+# install.bat / install.sh default to; without it, users pick a
+# non-default backend in the GUI's Passes tab and hit "module not
+# found" at submit time. Commercial-safe defaults (DA-V2, DSINE,
+# RAFT, sam3+rvm) actually work without it, but a polished install
+# that never surprises is worth the extra download bandwidth.
+all = [
+    "live-action-aov[depthcrafter]",
+    "live-action-aov[normalcrafter]",
+    "live-action-aov[video_depth_anything]",
+    "live-action-aov[depthpro]",
+    "live-action-aov[matte]",
+    "live-action-aov[matanyone2]",
+    "live-action-aov[dsine]",
+    "live-action-aov[sam3]",
+    "live-action-aov[rvm]",
+]
 
 [project.urls]
 Homepage = "https://github.com/TODO/live-action-aov"

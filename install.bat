@@ -43,7 +43,7 @@ REM    this call pulls the CUDA build deterministically — no separate
 REM    reinstall step needed, no risk of a future `uv sync` silently
 REM    downgrading to the CPU wheel.
 call :log "Installing dependencies (this may take several minutes)..."
-uv sync --extra dev >> %LOG_FILE% 2>&1
+uv sync --extra dev --extra all >> %LOG_FILE% 2>&1
 if errorlevel 1 (
     call :fail "uv sync failed" "See %LOG_FILE% for details. Common causes: network issues, incompatible torch wheel"
     exit /b 1

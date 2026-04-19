@@ -67,7 +67,7 @@ ok "Python 3.11 provisioned"
 #    authoritative — no separate reinstall step, no risk of a future
 #    resync silently downgrading to the CPU wheel.
 log "Installing dependencies (this may take several minutes)..."
-if ! uv sync --extra dev >>"$LOG_FILE" 2>&1; then
+if ! uv sync --extra dev --extra all >>"$LOG_FILE" 2>&1; then
     fail "uv sync failed" "See $LOG_FILE for details. Common causes: network issues, incompatible torch wheel for platform"
 fi
 ok "Dependencies installed"

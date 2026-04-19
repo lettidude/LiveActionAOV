@@ -79,23 +79,32 @@ available — you won't discover the problem 20 minutes into a batch.
 
 ## Optional extras (per-pass)
 
-The core install includes the commercial-safe defaults (RAFT,
-DepthAnythingV2, DSINE, SAM3, RVM). Non-default backends ship as
-optional extras:
+The `install.bat` / `install.sh` scripts default to the `all`
+meta-extra, which pulls every pass's dependencies in one sync. Every
+model in the GUI's Passes tab just works after a clean install —
+you don't hit `ModuleNotFoundError: diffusers` when clicking
+DepthCrafter, etc.
+
+If you want a slim install (saves ~4 GB download + disk for
+`diffusers` + `accelerate`), skip `--extra all` and install only
+the pass families you actually use:
 
 ```bash
+# Slim base — commercial-safe defaults only
+uv sync --extra dev
+uv pip install 'live-action-aov[sam3]' 'live-action-aov[rvm]' 'live-action-aov[dsine]'
+
+# Add backends as needed
 uv pip install 'live-action-aov[depthcrafter]'           # CC-BY-NC-4.0
 uv pip install 'live-action-aov[normalcrafter]'          # CC-BY-NC-4.0
 uv pip install 'live-action-aov[video_depth_anything]'   # Apache-2.0
-uv pip install 'live-action-aov[matte]'                  # default refiners
-uv pip install 'live-action-aov[camera]'                 # pycolmap
+uv pip install 'live-action-aov[depthpro]'               # CC-BY-NC-4.0
+uv pip install 'live-action-aov[matanyone2]'             # CC-BY-NC-4.0
 ```
 
-Kitchen-sink:
-
-```bash
-uv pip install 'live-action-aov[depthcrafter,normalcrafter,video_depth_anything,matte,camera]'
-```
+Each extra is a separate `live-action-aov[<family>]` so you get
+exactly what you need. Combine with the `all` meta if you realise
+later you want everything: `uv sync --extra dev --extra all`.
 
 ## Alternate GPU configurations
 
