@@ -72,14 +72,18 @@ class DepthCrafterPass(UtilityPass):
         "overlap": 25,
         "num_inference_steps": 5,
         "guidance_scale": 1.0,
-        # SVD-xt was trained at 576 × 1024; the UNet's skip connections
-        # assume the short edge matches that training height. Using
-        # anything else (e.g. 640) triggers a tensor-size mismatch at
-        # the first decoder stage:
-        #   "Expected size 72 but got size 80 for tensor number 1"
-        # (72=576/8 vs 80=640/8 in latent space). 576 is the safe
-        # default across every SVD-based pipeline.
-        "inference_short_edge": 576,
+        # DepthCrafter's own preprocessing (see vendored utils.py
+        # `read_video_frames`) scales based on the LONG edge:
+        #   scale = max_res / max(H, W)
+        #   (H, W) = round(H*scale/64)*64, round(W*scale/64)*64
+        # This is NOT the same as short-edge scaling — on wide plates
+        # (2048×1080, 3840×2160, etc.) the two produce very different
+        # inference shapes, only one of which matches the SVD UNet's
+        # trained skip-connection sizes. `max_res=1024` is DepthCrafter's
+        # documented default. Kept the legacy `inference_short_edge`
+        # alias so existing YAML configs keep working.
+        "max_res": 1024,
+        "inference_short_edge": 1024,  # legacy alias, now means max_res
         "precision": "fp16",  # fp16 default — SVD is VRAM-heavy on fp32
         # DepthCrafter is distributed as a UNet *swap* for Stable Video
         # Diffusion. Two HF repos are involved: the UNet weights (at
@@ -195,14 +199,16 @@ class DepthCrafterPass(UtilityPass):
             raise ValueError(f"DepthCrafter preprocess expects (W, H, W_px, 3), got {frames.shape}")
         self._load_model()
         n, plate_h, plate_w, _ = frames.shape
-        short = int(self.params["inference_short_edge"])
-        scale = short / max(min(plate_h, plate_w), 1)
-        # SVD's UNet has 3 spatial downsample stages, so inference H/W
-        # need to be multiples of 64 (2^3 × 8 patch) or skip connections
-        # land on off-by-one latent grids and torch.cat raises
-        # "Expected size X but got size Y". Rounding to /8 was the
-        # old bug. 128 min avoids degenerate latent grids on tiny
-        # plates (fewer than 2 latent rows breaks the temporal attn).
+        # Long-edge scaling, /64 rounding — matches DepthCrafter's
+        # own reference preprocessing exactly. Short-edge scaling
+        # works on 16:9-ish plates but produces UNet-incompatible
+        # shapes on anything wider (2048×1080 → 576×1088 was the
+        # "Expected 128 got 136" crash; long-edge gives 512×1024,
+        # the UNet's happy place). `max_res` is the canonical param;
+        # `inference_short_edge` kept as a legacy alias.
+        max_res = int(self.params.get("max_res") or self.params["inference_short_edge"])
+        long_edge = max(plate_h, plate_w, 1)
+        scale = max_res / long_edge if long_edge > max_res else 1.0
         inf_h = max(128, int(round(plate_h * scale / 64)) * 64)
         inf_w = max(128, int(round(plate_w * scale / 64)) * 64)
 
