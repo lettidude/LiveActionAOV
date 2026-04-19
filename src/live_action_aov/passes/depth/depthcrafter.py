@@ -74,7 +74,17 @@ class DepthCrafterPass(UtilityPass):
         "guidance_scale": 1.0,
         "inference_short_edge": 640,
         "precision": "fp16",  # fp16 default — SVD is VRAM-heavy on fp32
+        # DepthCrafter is distributed as a UNet *swap* for Stable Video
+        # Diffusion. Two HF repos are involved: the UNet weights (at
+        # `tencent/DepthCrafter` — `config.json` + `.safetensors` only)
+        # and the rest of the SVD pipeline (text/image encoders, VAE,
+        # scheduler) from `stabilityai/stable-video-diffusion-img2vid-xt`.
+        "unet_model_id": "tencent/DepthCrafter",
+        "svd_base_model_id": "stabilityai/stable-video-diffusion-img2vid-xt",
+        # Legacy alias preserved so existing YAMLs using `model_id` keep
+        # working — `_load_model` reads `unet_model_id` first.
         "model_id": "tencent/DepthCrafter",
+        "cpu_offload": None,  # None | "model" | "sequential"
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -108,21 +118,58 @@ class DepthCrafterPass(UtilityPass):
                 "Install via: pip install live-action-aov[depthcrafter]"
             ) from e
         import torch
-        from diffusers import DiffusionPipeline
 
-        pipe = DiffusionPipeline.from_pretrained(
-            str(self.params["model_id"]),
-            custom_pipeline=str(self.params["model_id"]),
-            torch_dtype=torch.float16 if self.params["precision"] == "fp16" else torch.float32,
-            trust_remote_code=True,
+        from live_action_aov.vendored.depthcrafter.depth_crafter_ppl import (
+            DepthCrafterPipeline,
         )
+        from live_action_aov.vendored.depthcrafter.unet import (
+            DiffusersUNetSpatioTemporalConditionModelDepthCrafter,
+        )
+
+        unet_id = str(self.params.get("unet_model_id") or self.params["model_id"])
+        svd_base = str(self.params["svd_base_model_id"])
+        use_fp16 = str(self.params["precision"]).lower() == "fp16"
+        weight_dtype = torch.float16 if use_fp16 else torch.float32
+
+        # Step 1: DepthCrafter's custom UNet swaps into an SVD base. The
+        # repo at `tencent/DepthCrafter` holds ONLY the UNet weights
+        # (config.json + .safetensors at root), not a full diffusers
+        # pipeline — that's why DiffusionPipeline.from_pretrained was
+        # hitting a 404 looking for model_index.json. Load the UNet
+        # directly with no subfolder.
+        unet = DiffusersUNetSpatioTemporalConditionModelDepthCrafter.from_pretrained(
+            unet_id,
+            low_cpu_mem_usage=True,
+            torch_dtype=weight_dtype,
+        )
+
+        # Step 2: the rest of the pipeline (VAE, scheduler, image encoder)
+        # comes from the SVD-xt base, with DepthCrafter's UNet plugged in.
+        pipe = DepthCrafterPipeline.from_pretrained(
+            svd_base,
+            unet=unet,
+            torch_dtype=weight_dtype,
+            variant="fp16" if use_fp16 else None,
+        )
+
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._dtype = (
-            torch.float16
-            if self.params["precision"] == "fp16" and self._device.type == "cuda"
-            else torch.float32
-        )
-        pipe = pipe.to(self._device)
+        self._dtype = weight_dtype
+
+        # SVD pipelines eat VRAM; expose the standard offload hooks so a
+        # 5090/4090 user can run fp16 inline but a smaller GPU can still
+        # drive the pass via sequential offload.
+        offload = self.params.get("cpu_offload")
+        if offload == "sequential":
+            pipe.enable_sequential_cpu_offload()
+        elif offload == "model":
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe.to(self._device)
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+        except Exception:
+            # xFormers optional — attention runs in PyTorch native if absent.
+            pass
         self._pipeline = pipe
 
     # ------------------------------------------------------------------
