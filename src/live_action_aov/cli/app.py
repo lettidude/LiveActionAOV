@@ -166,6 +166,18 @@ def run_shot(
             "is no temporal flicker.",
         ),
     ] = False,
+    colorspace: Annotated[
+        str | None,
+        typer.Option(
+            "--colorspace",
+            help="Override the plate colourspace. Accepts `lin_rec709`, "
+            "`acescg`, `srgb_display`, `rec709_display`, etc. Use this "
+            "when the EXR's `oiio:ColorSpace` tag is wrong — e.g. MOV→EXR "
+            "conversions that preserve display-referred values but tag "
+            "them as linear. When unset the display transform reader "
+            "trusts whatever the plate's metadata says.",
+        ),
+    ] = None,
 ) -> None:
     """Run passes on the EXR sequence in `folder` and write sidecar EXRs."""
     raw_names = [p.strip() for p in passes.split(",") if p.strip()]
@@ -199,6 +211,7 @@ def run_shot(
         name=folder.name,
         folder=folder,
         apply_display_transform=display_transform,
+        colorspace=colorspace or "auto",
         sequence_pattern=pattern,
         frame_range=frame_range,
         resolution=resolution,
