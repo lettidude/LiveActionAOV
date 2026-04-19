@@ -111,6 +111,9 @@ class DepthAnythingV2Pass(UtilityPass):
         # Raw per-frame depth maps captured during run_shot; normalized in-place
         # once the whole clip is inferred.
         self._raw: dict[int, np.ndarray] = {}
+        # Diagnostic dump state — gated by env var LAAOV_DEBUG_DA_V2=<dir>;
+        # only dumps on the first frame so repeated inference stays quiet.
+        self._debug_dumped = False
 
     # ------------------------------------------------------------------
     # Model lifecycle
@@ -157,17 +160,101 @@ class DepthAnythingV2Pass(UtilityPass):
         # as float32 and let the processor handle the resize + normalization.
         # DA V2's processor respects `size` at inference; we pass the target
         # short edge so it picks the matching 14-multiple interior size.
+        # DPT's processor in transformers >=5 rejects `shortest_edge` and only
+        # accepts `{"height": ..., "width": ...}`; with its default
+        # `keep_aspect_ratio=True` + `ensure_multiple_of=14`, setting both to
+        # the target short edge yields "short edge == edge, long edge scaled
+        # and rounded to a 14-multiple" — which is what we want. Passing
+        # `shortest_edge` triggers an AttributeError masking this contract.
+        edge = int(self.params["inference_short_edge"])
+        # do_rescale=False is critical: HF `AutoImageProcessor` defaults to
+        # `rescale_factor = 1/255` because it assumes uint8 [0, 255]. We
+        # feed float32 in [0, 1] post display transform — without this flag
+        # the processor divides by 255 again, so sRGB 0.5 becomes 0.002,
+        # then ImageNet-normalised to ~-2.1, and the model sees pure noise
+        # and falls back to a radial depth prior (the diagnostic PNG dump
+        # showed this exactly — "02_processor_output.png" was solid black
+        # despite a healthy 0.30–0.58 input range).
         proc = self._processor(
             images=img,
             return_tensors="pt",
             do_resize=True,
-            size={"shortest_edge": int(self.params["inference_short_edge"])},
+            size={"height": edge, "width": edge},
+            do_rescale=False,
         )
         pixel_values = proc["pixel_values"].to(self._device, dtype=self._dtype)
+        self._debug_dump_preprocess(img, proc, pixel_values)
         return {
             "pixel_values": pixel_values,
             "plate_shape": (plate_h, plate_w),
         }
+
+    def _debug_dump_preprocess(
+        self, img: np.ndarray, proc: Any, pixel_values: Any
+    ) -> None:
+        """Dump the display-transformed input and the processor's normalized
+        tensor (de-normalized back to image) to the directory in
+        LAAOV_DEBUG_DA_V2 on the first frame only. No-op otherwise.
+        """
+        import os
+
+        dump_dir = os.environ.get("LAAOV_DEBUG_DA_V2", "")
+        if not dump_dir or self._debug_dumped:
+            return
+        self._debug_dumped = True
+        try:
+            from PIL import Image
+        except Exception:
+            return
+        os.makedirs(dump_dir, exist_ok=True)
+        Image.fromarray((np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)).save(
+            os.path.join(dump_dir, "01_input_to_processor.png")
+        )
+        pv_np = pixel_values[0].detach().float().cpu().numpy()
+        mean = np.asarray(
+            getattr(self._processor, "image_mean", [0.5, 0.5, 0.5]), dtype=np.float32
+        )[:, None, None]
+        std = np.asarray(
+            getattr(self._processor, "image_std", [0.5, 0.5, 0.5]), dtype=np.float32
+        )[:, None, None]
+        pv_img = np.clip(pv_np * std + mean, 0.0, 1.0)
+        pv_img = np.transpose(pv_img, (1, 2, 0))
+        Image.fromarray((pv_img * 255).astype(np.uint8)).save(
+            os.path.join(dump_dir, "02_processor_output.png")
+        )
+        with open(os.path.join(dump_dir, "shapes.txt"), "w", encoding="utf-8") as f:
+            f.write(f"input HxW (post display transform): {img.shape[0]}x{img.shape[1]}\n")
+            f.write(f"pixel_values shape: {tuple(pixel_values.shape)}\n")
+            f.write(f"pixel_values dtype: {pixel_values.dtype}\n")
+            f.write(f"input_min/max: {float(img.min()):.4f} / {float(img.max()):.4f}\n")
+            f.write(f"processor image_mean: {list(mean.flatten())}\n")
+            f.write(f"processor image_std:  {list(std.flatten())}\n")
+            f.write(f"size param: {{'height': {self.params['inference_short_edge']}, 'width': {self.params['inference_short_edge']}}}\n")
+
+    def _debug_dump_depth(self, raw: np.ndarray) -> None:
+        """Dump the normalized raw depth on the first frame as a PNG for
+        quick eyeballing. Called from run_shot on frame 0 only.
+        """
+        import os
+
+        dump_dir = os.environ.get("LAAOV_DEBUG_DA_V2", "")
+        if not dump_dir:
+            return
+        try:
+            from PIL import Image
+        except Exception:
+            return
+        os.makedirs(dump_dir, exist_ok=True)
+        d = raw.astype(np.float32)
+        d_min, d_max = float(d.min()), float(d.max())
+        span = max(d_max - d_min, 1e-6)
+        norm = (d - d_min) / span
+        Image.fromarray((norm * 255).astype(np.uint8), mode="L").save(
+            os.path.join(dump_dir, "03_raw_depth_frame0.png")
+        )
+        with open(os.path.join(dump_dir, "shapes.txt"), "a", encoding="utf-8") as f:
+            f.write(f"frame0 raw depth HxW: {raw.shape[0]}x{raw.shape[1]}\n")
+            f.write(f"frame0 raw depth min/max: {d_min:.4f} / {d_max:.4f}\n")
 
     def infer(self, tensor: Any) -> Any:
         import torch
@@ -216,6 +303,8 @@ class DepthAnythingV2Pass(UtilityPass):
             model_out = self.infer(model_in)
             partial = self.postprocess(model_out)
             per_frame_raw[f] = partial[CH_Z_RAW]
+            if f == first:
+                self._debug_dump_depth(partial[CH_Z_RAW])
 
         # Per-clip normalization (trap 5). Single min/max across all frames;
         # flip so larger Z == nearer (Nuke PositionFromDepth convention).

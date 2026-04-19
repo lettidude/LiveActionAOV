@@ -154,6 +154,18 @@ def run_shot(
             help="Permit passes whose license disallows commercial use.",
         ),
     ] = False,
+    display_transform: Annotated[
+        bool,
+        typer.Option(
+            "--display-transform/--no-display-transform",
+            help="Apply a clip-uniform display transform (auto-exposure + "
+                 "AgX + sRGB EOTF) to every frame before passes see it. "
+                 "Required for scene-referred plates (lin_rec709, ACEScg, "
+                 "ACES); off by default so sRGB plates pass through "
+                 "unchanged. Exposure is analysed once per clip so there "
+                 "is no temporal flicker.",
+        ),
+    ] = False,
 ) -> None:
     """Run passes on the EXR sequence in `folder` and write sidecar EXRs."""
     raw_names = [p.strip() for p in passes.split(",") if p.strip()]
@@ -186,6 +198,7 @@ def run_shot(
     shot = Shot(
         name=folder.name,
         folder=folder,
+        apply_display_transform=display_transform,
         sequence_pattern=pattern,
         frame_range=frame_range,
         resolution=resolution,
@@ -317,7 +330,19 @@ def _resolve_semantic_passes(
 
 def _sniff_sequence(folder: Path) -> tuple[str, tuple[int, int], tuple[int, int], float]:
     """Find an EXR sequence in `folder` and derive its pattern + metadata."""
-    exrs = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".exr")
+    # Skip sidecar EXRs from previous runs — the sidecar writer injects
+    # `.utility.`, `.hero.`, or `.mask.` before the frame token (see
+    # `executors.local._sidecar_pattern`). sorted() puts them before the
+    # plate alphabetically, which would otherwise make the sniffer pick
+    # up e.g. 2-channel utility files and feed them into the display-
+    # transform luma dot-product as a (H,W,2)@(3,) matmul crash.
+    _SIDECAR_TOKENS = (".utility.", ".hero.", ".mask.")
+    exrs = sorted(
+        p for p in folder.iterdir()
+        if p.is_file()
+        and p.suffix.lower() == ".exr"
+        and not any(tok in p.name for tok in _SIDECAR_TOKENS)
+    )
     if not exrs:
         raise FileNotFoundError(f"No .exr files found in {folder}")
     # Pick the first one, extract its frame-number component.

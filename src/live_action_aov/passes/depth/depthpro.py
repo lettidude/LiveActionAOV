@@ -130,11 +130,21 @@ class DepthProPass(UtilityPass):
         self._load_model()
         plate_h, plate_w = int(frames.shape[1]), int(frames.shape[2])
         img = np.clip(frames[0], 0.0, 1.0)
+        # transformers >=5 processors expect `{"height": ..., "width": ...}`
+        # and reject `shortest_edge` with a misleading SizeDict.keys() crash.
+        # DepthPro defaults to a square 1536x1536; we mirror that shape while
+        # letting the user override the edge size.
+        edge = int(self.params["inference_short_edge"])
+        # do_rescale=False: our input is float32 [0, 1] after the display
+        # transform; the HF processor's default rescale_factor=1/255 would
+        # otherwise divide it by 255 again (same bug fixed in
+        # DepthAnythingV2Pass — see that file's comment for the full trace).
         proc = self._processor(
             images=img,
             return_tensors="pt",
             do_resize=True,
-            size={"shortest_edge": int(self.params["inference_short_edge"])},
+            size={"height": edge, "width": edge},
+            do_rescale=False,
         )
         pixel_values = proc["pixel_values"].to(self._device, dtype=self._dtype)
         return {

@@ -46,3 +46,4 @@ sessions/
 *.safetensors
 checkpoints/
 models/*.bin
+.tmp_debug/

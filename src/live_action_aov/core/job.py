@@ -71,6 +71,10 @@ class Shot(BaseModel):
     colorspace: str = "auto"
 
     transform: DisplayTransformParams = Field(default_factory=DisplayTransformParams)
+    # Toggle the executor-side display transform wire-up. Off by default
+    # so synthetic-array unit tests keep their pass-through behaviour; the
+    # CLI flips it on (--display-transform) for real scene-referred plates.
+    apply_display_transform: bool = False
     passes_enabled: list[str] = Field(default_factory=list)
     pass_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
 

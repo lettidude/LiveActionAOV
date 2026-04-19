@@ -94,11 +94,69 @@ class DSINEPass(UtilityPass):
     def _load_model(self) -> None:
         if self._model is not None:
             return
+        import os
+        import sys
+        import types
+
         import torch
 
-        model = torch.hub.load(
-            "baegwangbin/DSINE", "DSINE", trust_repo=True, pretrained=True
+        # Upstream DSINE's `hubconf.py` does `from models import dsine;
+        # dsine.DSINE()` — but the repo currently ships `models/dsine/` as a
+        # package WITHOUT an `__init__.py` and the class is named
+        # `DSINE_v02` in `models/dsine/v02.py`. `torch.hub.load(..., "DSINE")`
+        # therefore raises `module 'models.dsine' has no attribute 'DSINE'`.
+        # We sidestep the broken entry-point by (a) letting torch.hub fetch
+        # and cache the repo, (b) adding its path to `sys.path`, and (c)
+        # instantiating `DSINE_v02` directly with a minimal args namespace
+        # (values mirror `projects/dsine/config.py` defaults).
+        repo_dir = torch.hub._get_cache_or_reload(
+            "baegwangbin/DSINE",
+            force_reload=False,
+            trust_repo=True,
+            verbose=False,
+            skip_validation=True,
         )
+        if repo_dir not in sys.path:
+            sys.path.insert(0, repo_dir)
+        # The DSINE repo uses a bare `from models import dsine` import path,
+        # which means it shadows anything else named `models` already in
+        # `sys.modules` (e.g. from diffusers). Clear the stale entry first.
+        for stale in [m for m in list(sys.modules) if m == "models" or m.startswith("models.")]:
+            del sys.modules[stale]
+        from models.dsine.v02 import DSINE_v02  # type: ignore
+
+        args = types.SimpleNamespace(
+            NNET_architecture="v02",
+            NNET_output_dim=3,
+            NNET_output_type="R",
+            NNET_feature_dim=64,
+            NNET_hidden_dim=64,
+            NNET_encoder_B=5,
+            NNET_decoder_NF=2048,
+            NNET_decoder_BN=False,
+            NNET_decoder_down=8,
+            NNET_learned_upsampling=False,
+            NRN_prop_ps=5,
+            NRN_num_iter_train=5,
+            NRN_num_iter_test=5,
+            NRN_ray_relu=False,
+        )
+        model = DSINE_v02(args)
+
+        # Load the pretrained checkpoint. torch.hub caches it under
+        # `{hub_dir}/checkpoints/dsine.pt` — download if absent.
+        ckpt_dir = os.path.join(torch.hub.get_dir(), "checkpoints")
+        os.makedirs(ckpt_dir, exist_ok=True)
+        ckpt_path = os.path.join(ckpt_dir, "dsine.pt")
+        if not os.path.exists(ckpt_path):
+            torch.hub.download_url_to_file(
+                "https://huggingface.co/camenduru/DSINE/resolve/main/dsine.pt",
+                ckpt_path,
+                progress=True,
+            )
+        state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(state["model"], strict=True)
+
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._dtype = (
             torch.float16
@@ -106,6 +164,9 @@ class DSINEPass(UtilityPass):
             else torch.float32
         )
         model.to(self._device).eval()
+        # `pixel_coords` is a non-parameter buffer created on cuda:0 in __init__;
+        # make sure it follows the model's actual device choice.
+        model.pixel_coords = model.pixel_coords.to(self._device)
         if self._dtype == torch.float16:
             model.half()
         self._model = model
@@ -206,12 +267,16 @@ class DSINEPass(UtilityPass):
 
 def _inference_size(plate_h: int, plate_w: int, short_edge: int) -> tuple[int, int]:
     """Resize `plate_h x plate_w` so the shorter edge is `short_edge`, keeping
-    aspect ratio. Rounds to multiples of 8 for safety with downsampling layers.
+    aspect ratio. DSINE requires both dims to be multiples of 32 (see
+    `utils.utils.get_pad` in the upstream repo — the encoder-decoder skip
+    connections raise a `Sizes of tensors must match` error if either dim
+    isn't a 32-multiple), so we round to 32 here rather than padding at
+    forward time.
     """
     short = min(plate_h, plate_w)
     scale = short_edge / max(short, 1)
-    inf_h = max(64, int(round(plate_h * scale / 8)) * 8)
-    inf_w = max(64, int(round(plate_w * scale / 8)) * 8)
+    inf_h = max(64, int(round(plate_h * scale / 32)) * 32)
+    inf_w = max(64, int(round(plate_w * scale / 32)) * 32)
     return inf_h, inf_w
 
 
