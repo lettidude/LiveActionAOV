@@ -72,7 +72,14 @@ class DepthCrafterPass(UtilityPass):
         "overlap": 25,
         "num_inference_steps": 5,
         "guidance_scale": 1.0,
-        "inference_short_edge": 640,
+        # SVD-xt was trained at 576 × 1024; the UNet's skip connections
+        # assume the short edge matches that training height. Using
+        # anything else (e.g. 640) triggers a tensor-size mismatch at
+        # the first decoder stage:
+        #   "Expected size 72 but got size 80 for tensor number 1"
+        # (72=576/8 vs 80=640/8 in latent space). 576 is the safe
+        # default across every SVD-based pipeline.
+        "inference_short_edge": 576,
         "precision": "fp16",  # fp16 default — SVD is VRAM-heavy on fp32
         # DepthCrafter is distributed as a UNet *swap* for Stable Video
         # Diffusion. Two HF repos are involved: the UNet weights (at
@@ -190,8 +197,14 @@ class DepthCrafterPass(UtilityPass):
         n, plate_h, plate_w, _ = frames.shape
         short = int(self.params["inference_short_edge"])
         scale = short / max(min(plate_h, plate_w), 1)
-        inf_h = max(64, int(round(plate_h * scale / 8)) * 8)
-        inf_w = max(64, int(round(plate_w * scale / 8)) * 8)
+        # SVD's UNet has 3 spatial downsample stages, so inference H/W
+        # need to be multiples of 64 (2^3 × 8 patch) or skip connections
+        # land on off-by-one latent grids and torch.cat raises
+        # "Expected size X but got size Y". Rounding to /8 was the
+        # old bug. 128 min avoids degenerate latent grids on tiny
+        # plates (fewer than 2 latent rows breaks the temporal attn).
+        inf_h = max(128, int(round(plate_h * scale / 64)) * 64)
+        inf_w = max(128, int(round(plate_w * scale / 64)) * 64)
 
         img = np.clip(frames, 0.0, 1.0).astype(np.float32, copy=False)
         t = torch.from_numpy(img).permute(0, 3, 1, 2)  # (N, 3, H, W)
