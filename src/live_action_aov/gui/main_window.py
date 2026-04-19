@@ -20,17 +20,21 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
     QWidget,
 )
 
+from live_action_aov.gui.cuda_check import CudaState, cuda_state
 from live_action_aov.gui.inspector import InspectorPanel
 from live_action_aov.gui.pass_catalog import has_noncommercial
 from live_action_aov.gui.shot_list import ShotListPanel
@@ -53,6 +57,11 @@ class MainWindow(QMainWindow):
         # inspector in half — users can still resize below this but we
         # won't let Qt auto-size into an unusable layout.
         self.setMinimumSize(900, 560)
+
+        # Probe CUDA once at startup. The result drives both the
+        # header banner (shown only when CUDA is missing) and the
+        # submit-time gate that refuses to run neural passes on CPU.
+        self._cuda = cuda_state()
 
         self._registry = ShotRegistry()
 
@@ -103,6 +112,12 @@ class MainWindow(QMainWindow):
         central = QWidget()
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(0, 0, 0, 0)
+        # Environment banner — only visible when the CUDA preflight
+        # failed. Sits at the very top so it's impossible to miss.
+        # "Details" opens a dialog with the exact reinstall command.
+        banner = _build_cuda_banner(self._cuda, self)
+        if banner is not None:
+            central_layout.addWidget(banner)
         central_layout.addWidget(splitter, stretch=1)
         central_layout.addLayout(bottom_row)
         self.setCentralWidget(central)
@@ -176,6 +191,16 @@ class MainWindow(QMainWindow):
     def _on_submit_clicked(self) -> None:
         queue = [s for s in self._registry.shots() if s.queued and s.enabled_passes]
         if not queue:
+            return
+        # Environment precheck — every pass in the catalog is a neural
+        # model that needs CUDA. Don't let the user wait 20 minutes for
+        # a CPU-fp16 failure they could have been warned about in 2s.
+        if not self._cuda.available:
+            QMessageBox.critical(
+                self,
+                "CUDA GPU not available",
+                self._cuda.advisory,
+            )
             return
         # Validate every shot up-front so we fail loud before any
         # expensive work starts.
@@ -280,6 +305,44 @@ class MainWindow(QMainWindow):
         from PySide6.QtGui import QDesktopServices
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(cur.last_sidecar_dir)))
+
+
+def _build_cuda_banner(state: CudaState, parent: QMainWindow) -> QWidget | None:
+    """Return an amber warning strip when CUDA isn't available, or
+    None when everything's OK (banner becomes invisible by not being
+    added to the layout at all)."""
+    if state.available:
+        return None
+    banner = QFrame(parent)
+    banner.setFrameShape(QFrame.Shape.NoFrame)
+    banner.setStyleSheet(
+        "background: #3a2a15; border-bottom: 1px solid #6a4820;"
+    )
+    banner.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    layout = QHBoxLayout(banner)
+    layout.setContentsMargins(12, 6, 12, 6)
+
+    icon = QLabel("⚠")
+    icon.setStyleSheet("color: #ffb94a; font-size: 14pt;")
+    layout.addWidget(icon)
+
+    msg = QLabel(
+        f"<b>No CUDA GPU detected</b> &nbsp;—&nbsp; neural passes will fail. "
+        f"<i>{state.torch_version}</i>"
+    )
+    msg.setStyleSheet("color: #ffdca0;")
+    msg.setTextFormat(Qt.TextFormat.RichText)
+    layout.addWidget(msg)
+    layout.addStretch()
+
+    details_btn = QPushButton("Details / How to fix")
+    details_btn.clicked.connect(
+        lambda: QMessageBox.information(
+            parent, "CUDA preflight", state.advisory
+        )
+    )
+    layout.addWidget(details_btn)
+    return banner
 
 
 def _collect_nc_entries(shots: list[ShotState]) -> list[tuple[str, str, str]]:

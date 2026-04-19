@@ -37,7 +37,9 @@ if errorlevel 1 (
 )
 call :log "[OK] Python 3.11 provisioned"
 
-REM 4. Sync dependencies
+REM 4. Sync dependencies — installs torch from PyPI, which is the
+REM    CPU-only wheel on Windows. Step 5 swaps it for the CUDA build
+REM    when a GPU is present.
 call :log "Installing dependencies (this may take several minutes)..."
 uv sync --extra dev >> %LOG_FILE% 2>&1
 if errorlevel 1 (
@@ -46,7 +48,35 @@ if errorlevel 1 (
 )
 call :log "[OK] Dependencies installed"
 
-REM 5. Smoke test
+REM 5. Replace CPU torch with the CUDA build when an NVIDIA GPU was
+REM    detected at step 2. The default PyPI wheel is CPU-only on
+REM    Windows; every neural pass (flow / depth / normals / matte)
+REM    fails on CPU because PyTorch doesn't implement fp16 kernels
+REM    there. cu124 wheels cover RTX 30 / 40 / 50-series generations.
+if defined DRIVER_VER (
+    call :log "Replacing torch with CUDA 12.4 build for NVIDIA GPU..."
+    uv pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu124 >> %LOG_FILE% 2>&1
+    if errorlevel 1 (
+        call :log "[WARN] CUDA torch install failed. Re-run manually:"
+        call :log "       uv pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu124"
+    ) else (
+        call :log "[OK] CUDA torch installed"
+        REM Verify the swap actually took effect. CPU-only torch still
+        REM here means every neural pass refuses on first run.
+        uv run python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" >> %LOG_FILE% 2>&1
+        if errorlevel 1 (
+            call :log "[WARN] torch.cuda.is_available() is still False."
+            call :log "       Check driver version (nvidia-smi) and that the GPU isn't claimed by another process."
+        ) else (
+            call :log "[OK] torch.cuda.is_available() confirmed"
+        )
+    )
+) else (
+    call :log "[SKIP] No NVIDIA driver detected — leaving CPU torch in place."
+    call :log "       Neural passes will refuse to run; install drivers first then re-run this script."
+)
+
+REM 6. Smoke test
 uv run liveaov --version >> %LOG_FILE% 2>&1
 if errorlevel 1 (
     call :fail "Smoke test failed" "See %LOG_FILE%"
