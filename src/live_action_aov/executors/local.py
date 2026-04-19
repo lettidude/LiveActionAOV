@@ -105,6 +105,14 @@ class LocalExecutor(Executor):
                     for f, arr in emitted["backward_flow"].items():
                         flow_cache.put(shot.name, f, "backward", arr)
 
+                # Non-EXR sidecars (JSON / .nk / .abc / .fbx / .ply).
+                # Passes with `produces_sidecars` write their artifacts
+                # inside `emit_sidecars` and return `{tag: path}`; default
+                # implementation is a no-op, so EXR-only passes pay nothing.
+                sidecar_paths = instance.emit_sidecars(shot)
+                for tag, path in sidecar_paths.items():
+                    shot.sidecars[tag] = Path(path)
+
             # --- Auto-wire TemporalSmoother for PER_FRAME passes with
             # `smooth: auto` (spec §13.1 Phase 2). Only runs when a flow pass
             # actually emitted forward_flow — otherwise the smoother would

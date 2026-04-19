@@ -217,6 +217,21 @@ class UtilityPass(ABC):
         The dict is shared, not copied — do not mutate it.
         """
 
+    # --- Non-EXR sidecar emission ---
+    def emit_sidecars(self, shot: Any) -> dict[str, Any]:
+        """Write any non-EXR sidecars this pass produces and return
+        `{tag: path}` for the executor to merge into `shot.sidecars`.
+
+        Called by the executor *once per shot*, after `run_shot`. Default
+        is a no-op — passes that emit JSON / `.nk` / `.abc` / `.fbx` /
+        `.ply` override this, do the actual file I/O, and return the
+        written paths keyed by the tag declared in `produces_sidecars`.
+        The type is ``Any`` to keep `core.pass_base` free of a circular
+        import on `Shot`; implementations should annotate locally.
+        """
+        del shot
+        return {}
+
     # --- Convenience ---
     @classmethod
     def declared_license(cls) -> License:
