@@ -80,7 +80,7 @@ class NormalCrafterPass(UtilityPass):
         "guidance_scale": 1.0,
         "inference_short_edge": 576,
         "precision": "fp16",             # SVD-family pipeline: fp16 default
-        "model_id": "Stable-X/NormalCrafter",
+        "model_id": "Yanrui95/NormalCrafter",
         # Axis convention — NormalCrafter = OpenCV, spec = OpenGL.
         "input_axes": "opencv",
         "output_axes": "opengl",

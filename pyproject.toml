@@ -58,8 +58,8 @@ dev = [
 ]
 
 # Model-specific extras (user installs what they need)
-depthcrafter = ["diffusers>=0.30"]
-normalcrafter = ["diffusers>=0.30"]
+depthcrafter = ["diffusers>=0.30", "accelerate>=0.30"]
+normalcrafter = ["diffusers>=0.30", "accelerate>=0.30"]
 # DepthPro ships through transformers (already a core dep), but we leave the
 # extra defined so users have a discoverable `pip install live-action-aov[depthpro]`
 # entry and future revisions can swap in apple-ml-depth-pro if needed.
@@ -71,6 +71,10 @@ sam3 = []
 # RVM loads via `torch.hub.load('PeterL1n/RobustVideoMatting', ...)` — torch
 # is already core. Extra kept for discoverability.
 rvm = []
+# DSINE loads via `torch.hub.load('baegwangbin/DSINE', ...)`. Its hubconf
+# imports `geffnet` (EfficientNet backbone) — without the extra installed,
+# torch.hub raises `Missing dependencies: geffnet` at first load.
+dsine = ["geffnet>=1.0"]
 matanyone2 = []
 # `matte` meta-extra — installs both the detector (sam3) and the default
 # commercial-safe refiner (rvm) in one shot.
