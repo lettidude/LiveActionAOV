@@ -87,7 +87,9 @@ class MainWindow(QMainWindow):
         self._submit_btn.clicked.connect(self._on_submit_clicked)
 
         self._progress = QProgressBar()
-        self._progress.setRange(0, 0)  # indeterminate
+        self._progress.setRange(0, 1000)
+        self._progress.setFormat("%p% — %v")  # replaced with label text at run time
+        self._progress.setTextVisible(True)
         self._progress.setVisible(False)
 
         self._reveal_btn = QPushButton("Reveal output")
@@ -118,6 +120,7 @@ class MainWindow(QMainWindow):
         # per job; owns a QRunnable submitted to the global thread pool).
         self._submit_worker = SubmitWorker()
         self._submit_worker.finished.connect(self._on_submit_finished)
+        self._submit_worker.progress.connect(self._on_submit_progress)
 
         # Submit gate: button enables when any shot with at least one
         # enabled pass is selected.
@@ -167,6 +170,14 @@ class MainWindow(QMainWindow):
         shot = self._registry.current()
         if shot is None:
             return
+        if shot.output_mode == "external" and shot.output_external_root is None:
+            QMessageBox.warning(
+                self,
+                "External output root missing",
+                "Pick an external output root (Inspector → Output → Choose root…) "
+                "before submitting, or switch back to 'Next to plate'.",
+            )
+            return
         gate = _check_license_gate(shot)
         if gate is not None:
             QMessageBox.warning(self, "Non-commercial backend selected", gate)
@@ -175,9 +186,17 @@ class MainWindow(QMainWindow):
         shot.last_error = ""
         self._registry.notify_updated(shot)
         self._submit_btn.setEnabled(False)
+        self._progress.setValue(0)
+        self._progress.setFormat("Starting…")
         self._progress.setVisible(True)
         self.statusBar().showMessage(f"Running {shot.name} …")
         self._submit_worker.submit(shot)
+
+    def _on_submit_progress(self, fraction: float, label: str) -> None:
+        self._progress.setValue(int(fraction * 1000))
+        # Keep the percentage visible AND the stage label — compositors
+        # want to see "Pass 2/3: depth_anything_v2" not just 67%.
+        self._progress.setFormat(f"{int(fraction * 100)}%  —  {label}")
 
     def _on_submit_finished(self, result: SubmitResult) -> None:
         self._progress.setVisible(False)

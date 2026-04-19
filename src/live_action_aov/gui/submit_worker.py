@@ -43,6 +43,7 @@ class SubmitWorker(QObject):
     """
 
     finished = Signal(object)  # SubmitResult
+    progress = Signal(float, str)  # fraction 0..1, label
 
     def __init__(self) -> None:
         super().__init__()
@@ -58,11 +59,16 @@ class SubmitWorker(QObject):
             job=job,
             shot_state_id=id(shot_state),
             emit_result=self._emit_result,
+            emit_progress=self._emit_progress,
         )
         self._pool.start(task)
 
     def _emit_result(self, result: SubmitResult) -> None:
         self.finished.emit(result)
+
+    def _emit_progress(self, fraction: float, label: str) -> None:
+        # Signal emit is thread-safe; Qt auto-queues across threads.
+        self.progress.emit(float(fraction), str(label))
 
 
 class _SubmitTask(QRunnable):
@@ -72,16 +78,18 @@ class _SubmitTask(QRunnable):
         job: Job,
         shot_state_id: int,
         emit_result: Any,
+        emit_progress: Any,
     ) -> None:
         super().__init__()
         self.job = job
         self.shot_state_id = shot_state_id
         self._emit = emit_result
+        self._emit_progress = emit_progress
 
     def run(self) -> None:
         try:
             executor = LocalExecutor()
-            executor.submit(self.job)
+            executor.submit(self.job, progress_callback=self._emit_progress)
             # After submit, the shot's sidecar path is populated. Surface
             # the containing folder so the UI can offer "Reveal in
             # Explorer" without inspecting Shot internals.
@@ -121,6 +129,11 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
         output_eotf="srgb",
         clamp=True,
     )
+    # Only pin `output_dir` when the user picked something other than
+    # inplace. Passing the plate folder explicitly would lose the "None
+    # means default" semantic the executor already honours.
+    resolved_out = state.resolve_output_dir()
+    output_dir = resolved_out if resolved_out != state.folder else None
     return Shot(
         name=state.name,
         folder=state.folder,
@@ -132,6 +145,7 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
         transform=transform,
         apply_display_transform=True,
         passes_enabled=list(state.enabled_passes),
+        output_dir=output_dir,
     )
 
 

@@ -80,12 +80,30 @@ class ShotState:
     )
     allow_noncommercial: bool = False
 
+    # Where the executor writes the sidecar EXRs.
+    #   "inplace"   → <plate_folder>/<shot>.utility.####.exr  (default)
+    #   "subfolder" → <plate_folder>/utility/<shot>.utility.####.exr
+    #   "external"  → <output_root>/<shot>/<shot>.utility.####.exr
+    # The Inspector renders the three as a radio group with a path
+    # picker enabled only in "external" mode.
+    output_mode: str = "inplace"
+    output_external_root: Path | None = None
+
     # Submit status lifecycle: "new" → "queued" → "running" → "done" /
     # "failed". The shot list renders this as an icon + colour; the
     # Submit button disables while running.
     status: str = "new"
     last_error: str = ""
     last_sidecar_dir: Path | None = None
+
+    def resolve_output_dir(self) -> Path:
+        """Return the concrete directory the executor should write to,
+        given the current mode + external root."""
+        if self.output_mode == "subfolder":
+            return self.folder / "utility"
+        if self.output_mode == "external" and self.output_external_root is not None:
+            return self.output_external_root / self.name
+        return self.folder
 
     def effective_colorspace(self) -> str:
         """Return the colorspace the preview should use."""

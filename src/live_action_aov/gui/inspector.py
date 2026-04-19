@@ -32,16 +32,21 @@ emit `shot_updated` so the viewport re-renders with the new settings.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QRadioButton,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -129,6 +134,36 @@ class InspectorPanel(QWidget):
         self._auto_ev_label.setStyleSheet("color: #888; font-size: 10pt;")
         self._auto_ev_label.setWordWrap(True)
 
+        # --- Output location ---
+        # Three-way radio: write next to the plate (default), drop into
+        # a `utility/` subfolder, or route to an external render root
+        # where each shot gets its own named subfolder. Last is what
+        # most studios will want on shared drives.
+        self._out_inplace = QRadioButton("Next to plate (default)")
+        self._out_subfolder = QRadioButton("Subfolder of plate  (plate/utility/)")
+        self._out_external = QRadioButton("External root  (<root>/<shot>/)")
+        self._out_group = QButtonGroup(self)
+        self._out_group.addButton(self._out_inplace, 0)
+        self._out_group.addButton(self._out_subfolder, 1)
+        self._out_group.addButton(self._out_external, 2)
+        self._out_inplace.setChecked(True)
+        self._out_group.idToggled.connect(self._on_output_mode_toggled)
+
+        self._out_root_label = QLabel("<no root chosen>")
+        self._out_root_label.setStyleSheet("color: #888; font-size: 10pt;")
+        self._out_root_label.setWordWrap(True)
+        self._out_root_btn = QPushButton("Choose root…")
+        self._out_root_btn.setEnabled(False)
+        self._out_root_btn.clicked.connect(self._on_pick_external_root)
+
+        out_root_row = QHBoxLayout()
+        out_root_row.addWidget(self._out_root_btn)
+        out_root_row.addWidget(self._out_root_label, stretch=1)
+
+        self._resolved_out_label = QLabel("")
+        self._resolved_out_label.setStyleSheet("color: #aaa; font-size: 10pt;")
+        self._resolved_out_label.setWordWrap(True)
+
         # --- Reset button ---
         # One-click rollback to the auto-detected colorspace + auto-
         # seeded exposure. Users experimenting with overrides want a
@@ -201,6 +236,13 @@ class InspectorPanel(QWidget):
         root.addSpacing(12)
         root.addWidget(self._reset_btn)
         root.addSpacing(12)
+        root.addWidget(_section_label("Output"))
+        root.addWidget(self._out_inplace)
+        root.addWidget(self._out_subfolder)
+        root.addWidget(self._out_external)
+        root.addLayout(out_root_row)
+        root.addWidget(self._resolved_out_label)
+        root.addSpacing(12)
         root.addWidget(_section_label("Passes"))
         root.addLayout(passes_block)
         root.addStretch()
@@ -259,6 +301,18 @@ class InspectorPanel(QWidget):
             ev = float(shot.exposure_ev)
             self._exposure_slider.setValue(int(round(ev * 10)))
             self._exposure_spin.setValue(ev)
+
+            # Output location radios.
+            mode_to_button = {
+                "inplace": self._out_inplace,
+                "subfolder": self._out_subfolder,
+                "external": self._out_external,
+            }
+            self._out_group.blockSignals(True)
+            mode_to_button.get(shot.output_mode, self._out_inplace).setChecked(True)
+            self._out_group.blockSignals(False)
+            self._out_root_btn.setEnabled(shot.output_mode == "external")
+            self._rebuild_resolved_out_label()
 
             # Pass toggles + backend dropdowns reflect the stored state.
             enabled = set(shot.enabled_passes)
@@ -339,6 +393,41 @@ class InspectorPanel(QWidget):
         self._exposure_slider.setValue(int(round(ev * 10)))
         self._exposure_slider.blockSignals(False)
         self._registry.notify_updated(self._current)
+
+    def _on_output_mode_toggled(self, button_id: int, checked: bool) -> None:
+        if not checked or self._building or self._current is None:
+            return
+        mode = {0: "inplace", 1: "subfolder", 2: "external"}[button_id]
+        self._current.output_mode = mode
+        self._out_root_btn.setEnabled(mode == "external")
+        self._rebuild_resolved_out_label()
+        self._registry.notify_updated(self._current)
+
+    def _on_pick_external_root(self) -> None:
+        if self._current is None:
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Choose output root")
+        if not folder:
+            return
+        self._current.output_external_root = Path(folder)
+        self._rebuild_resolved_out_label()
+        self._registry.notify_updated(self._current)
+
+    def _rebuild_resolved_out_label(self) -> None:
+        if self._current is None:
+            self._resolved_out_label.setText("")
+            return
+        root = self._current.output_external_root
+        if self._current.output_mode == "external" and root is None:
+            self._out_root_label.setText("<no root chosen>")
+            self._resolved_out_label.setText(
+                "⚠ Pick an external root before submitting."
+            )
+            return
+        if root is not None:
+            self._out_root_label.setText(str(root))
+        resolved = self._current.resolve_output_dir()
+        self._resolved_out_label.setText(f"→ {resolved}")
 
     def _on_pass_toggled(self, name: str, checked: bool) -> None:
         if self._building or self._current is None:

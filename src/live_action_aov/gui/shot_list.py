@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -58,9 +58,23 @@ class ShotListPanel(QWidget):
         add_btn = QPushButton("Add shot…")
         add_btn.clicked.connect(self._on_add_clicked)
 
+        remove_btn = QPushButton("Remove")
+        remove_btn.setToolTip("Remove the selected shot (Delete / Backspace).")
+        remove_btn.clicked.connect(self._on_remove_clicked)
+
         top = QHBoxLayout()
         top.addWidget(add_btn)
+        top.addWidget(remove_btn)
         top.addStretch()
+
+        # Keyboard shortcut: Delete / Backspace on a focused list row.
+        # Scope to the list widget so global typing elsewhere isn't
+        # swallowed — Qt treats "WidgetShortcut" as "only when this
+        # widget has focus".
+        for key in (QKeySequence.StandardKey.Delete, QKeySequence("Backspace")):
+            sc = QShortcut(key, self._list)
+            sc.setContext(Qt.ShortcutContext.WidgetShortcut)
+            sc.activated.connect(self._on_remove_clicked)
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
@@ -97,6 +111,14 @@ class ShotListPanel(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Select plate folder")
         if folder:
             self._add_shot_from_folder(Path(folder))
+
+    def _on_remove_clicked(self) -> None:
+        item = self._list.currentItem()
+        if item is None:
+            return
+        shot = item.data(Qt.ItemDataRole.UserRole)
+        if shot is not None:
+            self._registry.remove(shot)
 
     def _add_shot_from_folder(self, folder: Path) -> None:
         try:

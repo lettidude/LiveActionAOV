@@ -14,6 +14,7 @@ Responsibilities:
 from __future__ import annotations
 
 import datetime as _dt
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -29,13 +30,29 @@ from live_action_aov.shared.optical_flow.cache import FlowCache
 
 METADATA_NAMESPACE = "liveActionAOV"
 
+# Callers pass a function that receives `(fraction_done, label)` per
+# milestone; the GUI routes these to its progress bar + status bar,
+# the CLI routes them to a `rich` progress display. `None` = silent.
+ProgressCallback = Callable[[float, str], None]
+
 
 class LocalExecutor(Executor):
     name = "local"
 
-    def submit(self, job: Job) -> Job:
+    def submit(
+        self,
+        job: Job,
+        progress_callback: ProgressCallback | None = None,
+    ) -> Job:
+        """Run the job synchronously. Optional `progress_callback(fraction,
+        label)` is called at each milestone: reader analysis, each pass
+        start, post-processor apply, sidecar write batch, done. Default
+        `None` keeps the pre-M2.5 behaviour untouched (CLI + tests stay
+        working without edits)."""
+        report = progress_callback or (lambda _f, _l: None)
         registry = get_registry()
         shot = job.shot
+        report(0.0, "Resolving passes…")
 
         # Resolve pass classes up-front; fail loud on unknown names before
         # we read a single frame.
@@ -62,6 +79,7 @@ class LocalExecutor(Executor):
                     shot.colorspace if shot.colorspace and shot.colorspace != "auto" else None
                 ),
             )
+            report(0.05, "Analysing plate exposure…")
             wrapped.analyze(shot.frame_range)
             reader = wrapped
         else:
@@ -76,7 +94,16 @@ class LocalExecutor(Executor):
             shot.status = "running"
             per_frame_channels: dict[int, dict[str, Any]] = {}
 
-            for node in ordered:
+            total_passes = max(1, len(ordered))
+            for pass_idx, node in enumerate(ordered):
+                # Passes dominate runtime — split the 0.1 → 0.9 band
+                # evenly across them so the bar moves predictably even
+                # though we can't see inside each pass.
+                pass_fraction_start = 0.1 + 0.8 * (pass_idx / total_passes)
+                report(
+                    pass_fraction_start,
+                    f"Pass {pass_idx + 1}/{total_passes}: {node.name}",
+                )
                 pc, cls = resolved_by_name[node.name]
                 pass_params = dict(pc.params)
                 pass_params.update(shot.pass_overrides.get(node.name, {}))
@@ -156,9 +183,13 @@ class LocalExecutor(Executor):
                 )
 
             # --- Write sidecars ---
-            sidecar_dir = shot.folder
+            # Output dir defaults to the plate folder; Phase 5 GUI can
+            # route elsewhere (subfolder, external render root, etc.).
+            sidecar_dir = shot.output_dir or shot.folder
+            sidecar_dir.mkdir(parents=True, exist_ok=True)
             sidecar_template = _sidecar_pattern(shot.sequence_pattern)
             attrs_base = _base_attrs(shot, job, artifacts, applied_post)
+            report(0.9, "Writing sidecars…")
 
             # Identify the matte refiner (if any) for the `matte/commercial`
             # shortcut attr. The refiner is whichever pass declared
@@ -175,7 +206,14 @@ class LocalExecutor(Executor):
                     matte_detector_cls = cls
 
             first_written: Path | None = None
-            for frame_idx, channels in per_frame_channels.items():
+            total_frames = max(1, len(per_frame_channels))
+            for frame_write_idx, (frame_idx, channels) in enumerate(per_frame_channels.items()):
+                if frame_write_idx % max(1, total_frames // 20) == 0:
+                    frac = 0.9 + 0.1 * (frame_write_idx / total_frames)
+                    report(
+                        min(frac, 0.99),
+                        f"Writing sidecars ({frame_write_idx}/{total_frames})",
+                    )
                 out_path = sidecar_dir / sidecar_template.format(frame=frame_idx)
                 attrs = dict(attrs_base)
                 attrs[f"{METADATA_NAMESPACE}/frame"] = frame_idx
@@ -210,6 +248,7 @@ class LocalExecutor(Executor):
 
             shot.sidecars["utility"] = first_written or sidecar_dir
             shot.status = "done"
+            report(1.0, "Done.")
         except Exception:
             shot.status = "failed"
             raise

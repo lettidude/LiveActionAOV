@@ -82,6 +82,12 @@ class Shot(BaseModel):
     # v2a onward (utility/camera/scene) (design §14, decision 9).
     sidecars: dict[str, Path] = Field(default_factory=dict)
 
+    # Optional override for where sidecar EXRs are written. `None` =
+    # next to the plate (the historic default). GUI Phase 5 surfaces
+    # this so users can route outputs to a subfolder, a reviews drive,
+    # or a shot-named folder under a shared render root.
+    output_dir: Path | None = None
+
     status: ShotStatus = "new"
     notes: str = ""
 
@@ -94,6 +100,13 @@ class Shot(BaseModel):
     @field_validator("folder", mode="before")
     @classmethod
     def _coerce_folder(cls, v: Any) -> Path:
+        return Path(v) if not isinstance(v, Path) else v
+
+    @field_validator("output_dir", mode="before")
+    @classmethod
+    def _coerce_output_dir(cls, v: Any) -> Path | None:
+        if v is None or v == "":
+            return None
         return Path(v) if not isinstance(v, Path) else v
 
     @field_validator("frame_range", "resolution", mode="before")
