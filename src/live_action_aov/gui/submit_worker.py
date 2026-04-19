@@ -22,6 +22,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from live_action_aov.core.job import Job, PassConfig, Shot
 from live_action_aov.core.pass_base import DisplayTransformParams
 from live_action_aov.executors.local import LocalExecutor
+from live_action_aov.gui.pass_catalog import expand_models
 from live_action_aov.gui.shot_state import ShotState
 
 
@@ -144,42 +145,22 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
         colorspace=state.effective_colorspace(),
         transform=transform,
         apply_display_transform=True,
-        passes_enabled=list(state.enabled_passes),
+        passes_enabled=list(state.enabled_models),
         output_dir=output_dir,
     )
 
 
 def _build_pass_configs(state: ShotState) -> list[PassConfig]:
-    """Resolve the ShotState's enabled semantic names into concrete
+    """Resolve the ShotState's enabled model keys into concrete
     PassConfig list for the Job.
 
-    Mirrors CLI's `_resolve_semantic_passes` — keep the two logics in
-    sync when new pass families land. The matte family expands to two
-    configs: detector + refiner.
+    The GUI speaks in catalog keys (one key per user-visible
+    checkbox); the executor speaks in plugin names. `expand_models`
+    bridges the two — trivially for single-plugin models, via a
+    preset pair for matte combos (sam3 + refiner).
     """
-    resolved: list[str] = []
-    seen: set[str] = set()
-    backends = state.pass_backends
-    for name in state.enabled_passes:
-        if name == "flow":
-            targets = ["flow"]
-        elif name == "depth":
-            targets = [backends.get("depth", "depth_anything_v2")]
-        elif name == "normals":
-            targets = [backends.get("normals", "dsine")]
-        elif name == "matte":
-            targets = [
-                backends.get("matte_detector", "sam3_matte"),
-                backends.get("matte_refiner", "rvm_refiner"),
-            ]
-        else:
-            # Already a concrete backend name — flow through.
-            targets = [name]
-        for t in targets:
-            if t not in seen:
-                resolved.append(t)
-                seen.add(t)
-    return [PassConfig(name=n) for n in resolved]
+    plugin_names = expand_models(state.enabled_models)
+    return [PassConfig(name=n) for n in plugin_names]
 
 
 __all__ = ["SubmitResult", "SubmitWorker"]

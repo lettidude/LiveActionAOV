@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QRadioButton,
     QSlider,
@@ -52,37 +53,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from live_action_aov.gui.pass_catalog import PASS_CATALOG
 from live_action_aov.gui.shot_state import ShotRegistry, ShotState
 from live_action_aov.io.colorspace_detect import SUPPORTED_COLORSPACES
-
-# Semantic pass families the user enables. Concrete plugin backends
-# are chosen per-family via the dropdowns below.
-_PASS_NAMES = ("flow", "depth", "normals", "matte")
-
-# Which backends to offer per family. Matches pyproject entry points.
-# Keep in sync with the CLI's `_resolve_semantic_passes` defaults —
-# users expect the GUI and CLI to produce the same sidecar for the
-# same ShotState.
-_BACKEND_CHOICES: dict[str, list[str]] = {
-    "depth": [
-        "depth_anything_v2",       # Apache-2.0, commercial-safe default
-        "video_depth_anything",    # Apache-2.0, temporal-aware
-        "depthcrafter",            # CC-BY-NC
-        "depthpro",                # CC-BY-NC
-    ],
-    "normals": [
-        "dsine",                   # MIT
-        "normalcrafter",           # CC-BY-NC
-    ],
-}
-# Backends that need `--allow-noncommercial`. Gated with a toast in
-# the UI when the user picks one.
-_NONCOMMERCIAL_BACKENDS: set[str] = {
-    "depthcrafter",
-    "depthpro",
-    "normalcrafter",
-    "matanyone2",
-}
 
 
 class InspectorPanel(QWidget):
@@ -140,15 +113,44 @@ class InspectorPanel(QWidget):
         # where each shot gets its own named subfolder. Last is what
         # most studios will want on shared drives.
         self._out_inplace = QRadioButton("Next to plate (default)")
-        self._out_subfolder = QRadioButton("Subfolder of plate  (plate/utility/)")
-        self._out_external = QRadioButton("External root  (<root>/<shot>/)")
+        self._out_subfolder = QRadioButton("Subfolder of plate")
+        self._out_external = QRadioButton("External root  (<root>/<name>/)")
         self._out_group = QButtonGroup(self)
+        self._out_group.setExclusive(True)
         self._out_group.addButton(self._out_inplace, 0)
         self._out_group.addButton(self._out_subfolder, 1)
         self._out_group.addButton(self._out_external, 2)
         self._out_inplace.setChecked(True)
-        self._out_group.idToggled.connect(self._on_output_mode_toggled)
+        # Per-radio `toggled` instead of QButtonGroup.idToggled — avoids
+        # the double-fire (deselect + select) pattern that was causing
+        # the Choose-root button to sometimes miss its enable event.
+        self._out_inplace.toggled.connect(
+            lambda c: c and self._set_output_mode("inplace")
+        )
+        self._out_subfolder.toggled.connect(
+            lambda c: c and self._set_output_mode("subfolder")
+        )
+        self._out_external.toggled.connect(
+            lambda c: c and self._set_output_mode("external")
+        )
 
+        # Subfolder name field — lets the user pick a name other than
+        # "utility". Only enabled in subfolder mode.
+        self._subfolder_name_edit = QLineEdit()
+        self._subfolder_name_edit.setPlaceholderText("utility")
+        self._subfolder_name_edit.setToolTip(
+            "Folder name created inside the plate folder. Default: utility."
+        )
+        self._subfolder_name_edit.setEnabled(False)
+        self._subfolder_name_edit.textEdited.connect(self._on_subfolder_name_edited)
+
+        subfolder_row = QHBoxLayout()
+        subfolder_row.addSpacing(24)
+        subfolder_row.addWidget(QLabel("Name:"))
+        subfolder_row.addWidget(self._subfolder_name_edit, stretch=1)
+
+        # External-root controls — picker for the root, name field for
+        # the per-shot subfolder within it.
         self._out_root_label = QLabel("<no root chosen>")
         self._out_root_label.setStyleSheet("color: #888; font-size: 10pt;")
         self._out_root_label.setWordWrap(True)
@@ -157,8 +159,23 @@ class InspectorPanel(QWidget):
         self._out_root_btn.clicked.connect(self._on_pick_external_root)
 
         out_root_row = QHBoxLayout()
+        out_root_row.addSpacing(24)
         out_root_row.addWidget(self._out_root_btn)
         out_root_row.addWidget(self._out_root_label, stretch=1)
+
+        self._external_name_edit = QLineEdit()
+        self._external_name_edit.setPlaceholderText("<shot name>")
+        self._external_name_edit.setToolTip(
+            "Subfolder name created inside the external root. "
+            "Default: the shot's name."
+        )
+        self._external_name_edit.setEnabled(False)
+        self._external_name_edit.textEdited.connect(self._on_external_name_edited)
+
+        external_name_row = QHBoxLayout()
+        external_name_row.addSpacing(24)
+        external_name_row.addWidget(QLabel("Name:"))
+        external_name_row.addWidget(self._external_name_edit, stretch=1)
 
         self._resolved_out_label = QLabel("")
         self._resolved_out_label.setStyleSheet("color: #aaa; font-size: 10pt;")
@@ -175,44 +192,40 @@ class InspectorPanel(QWidget):
         )
         self._reset_btn.clicked.connect(self._on_reset_clicked)
 
-        # --- Pass toggles + per-family backend pickers ---
-        # Each enabled family contributes one (or two) PassConfigs at
-        # submit time, resolved via ShotState.pass_backends.
-        self._pass_checks: dict[str, QCheckBox] = {}
-        self._backend_combos: dict[str, QComboBox] = {}
+        # --- Passes — THE main feature ---
+        # One checkbox per model in the catalog, grouped by category.
+        # Multiple models per category OK (run both DA-V2 and DepthPro
+        # if you want); the executor just processes them in order.
+        # License marker next to each label so users see NC status
+        # without hunting through tooltips.
+        self._model_checks: dict[str, QCheckBox] = {}
         passes_block = QVBoxLayout()
-        for name in _PASS_NAMES:
-            row = QHBoxLayout()
-            cb = QCheckBox(name)
-            cb.toggled.connect(lambda checked, n=name: self._on_pass_toggled(n, checked))
-            self._pass_checks[name] = cb
-            row.addWidget(cb)
-
-            if name in _BACKEND_CHOICES:
-                combo = QComboBox()
-                combo.addItems(_BACKEND_CHOICES[name])
-                combo.setToolTip(
-                    f"Backend for the `{name}` pass. Non-commercial options "
-                    "require toggling 'Allow non-commercial' below."
+        passes_block.setSpacing(2)
+        for category, entries in PASS_CATALOG.items():
+            header = QLabel(category)
+            header.setStyleSheet(
+                "font-weight: 600; color: #dcdcdc; padding-top: 6px;"
+            )
+            passes_block.addWidget(header)
+            for entry in entries:
+                row = QHBoxLayout()
+                row.setContentsMargins(12, 0, 0, 0)
+                cb = QCheckBox(entry.label)
+                cb.toggled.connect(
+                    lambda checked, key=entry.key: self._on_model_toggled(key, checked)
                 )
-                combo.currentTextChanged.connect(
-                    lambda txt, n=name: self._on_backend_changed(n, txt)
+                self._model_checks[entry.key] = cb
+                row.addWidget(cb)
+                row.addStretch()
+                license_marker = QLabel(entry.license_tag)
+                colour = "#5ec864" if entry.commercial else "#e0a040"
+                prefix = "" if entry.commercial else "⚠ "
+                license_marker.setText(f"{prefix}{entry.license_tag}")
+                license_marker.setStyleSheet(
+                    f"color: {colour}; font-size: 10pt; padding-right: 2px;"
                 )
-                self._backend_combos[name] = combo
-                row.addWidget(combo, stretch=1)
-            row.addStretch()
-            passes_block.addLayout(row)
-
-        # Non-commercial license gate. Users without this flag are
-        # prevented from submitting a job that uses an NC backend —
-        # same policy as the CLI's `--allow-noncommercial`.
-        self._allow_nc_check = QCheckBox("Allow non-commercial backends")
-        self._allow_nc_check.setToolTip(
-            "Required before Submit will accept a non-commercial pass backend "
-            "(DepthCrafter, DepthPro, NormalCrafter, MatAnyone2)."
-        )
-        self._allow_nc_check.toggled.connect(self._on_allow_nc_toggled)
-        passes_block.addWidget(self._allow_nc_check)
+                row.addWidget(license_marker)
+                passes_block.addLayout(row)
 
         # --- Assemble ---
         form = QFormLayout()
@@ -224,9 +237,30 @@ class InspectorPanel(QWidget):
         cs_block.addWidget(self._provenance_label)
         cs_block.addWidget(self._low_conf_warning)
 
+        # Passes section is the tool's main feature — we put it right
+        # after the identity labels, above colourspace / exposure /
+        # output so it reads as the primary control. Wrap in a scroll
+        # area because the catalog can grow and we don't want to push
+        # the rest of the inspector off-screen.
+        passes_header = QLabel("PASSES")
+        passes_header.setStyleSheet(
+            "font-weight: 700; color: #fff; font-size: 11pt; "
+            "padding: 4px 0; letter-spacing: 0.5px;"
+        )
+        passes_hint = QLabel(
+            "Pick one or more models per category. New models "
+            "appear here as we add them."
+        )
+        passes_hint.setStyleSheet("color: #999; font-size: 9pt;")
+        passes_hint.setWordWrap(True)
+
         root = QVBoxLayout(self)
         root.addLayout(form)
         root.addSpacing(8)
+        root.addWidget(passes_header)
+        root.addWidget(passes_hint)
+        root.addLayout(passes_block)
+        root.addSpacing(16)
         root.addWidget(_section_label("Colorspace"))
         root.addLayout(cs_block)
         root.addSpacing(12)
@@ -239,12 +273,11 @@ class InspectorPanel(QWidget):
         root.addWidget(_section_label("Output"))
         root.addWidget(self._out_inplace)
         root.addWidget(self._out_subfolder)
+        root.addLayout(subfolder_row)
         root.addWidget(self._out_external)
         root.addLayout(out_root_row)
+        root.addLayout(external_name_row)
         root.addWidget(self._resolved_out_label)
-        root.addSpacing(12)
-        root.addWidget(_section_label("Passes"))
-        root.addLayout(passes_block)
         root.addStretch()
 
         # Wire registry signals last (after all widgets exist so the
@@ -308,21 +341,24 @@ class InspectorPanel(QWidget):
                 "subfolder": self._out_subfolder,
                 "external": self._out_external,
             }
-            self._out_group.blockSignals(True)
+            # Per-radio blockSignals — QButtonGroup's blockSignals is
+            # unreliable in exclusive mode.
+            for rb in (self._out_inplace, self._out_subfolder, self._out_external):
+                rb.blockSignals(True)
             mode_to_button.get(shot.output_mode, self._out_inplace).setChecked(True)
-            self._out_group.blockSignals(False)
+            for rb in (self._out_inplace, self._out_subfolder, self._out_external):
+                rb.blockSignals(False)
+            self._subfolder_name_edit.setEnabled(shot.output_mode == "subfolder")
             self._out_root_btn.setEnabled(shot.output_mode == "external")
+            self._external_name_edit.setEnabled(shot.output_mode == "external")
+            self._subfolder_name_edit.setText(shot.output_subfolder_name)
+            self._external_name_edit.setText(shot.output_external_name)
             self._rebuild_resolved_out_label()
 
-            # Pass toggles + backend dropdowns reflect the stored state.
-            enabled = set(shot.enabled_passes)
-            for name, cb in self._pass_checks.items():
-                cb.setChecked(name in enabled)
-            for name, combo in self._backend_combos.items():
-                current = shot.pass_backends.get(name, combo.currentText())
-                if combo.findText(current) >= 0:
-                    combo.setCurrentText(current)
-            self._allow_nc_check.setChecked(bool(shot.allow_noncommercial))
+            # Pass model checkboxes reflect the stored enabled_models.
+            enabled = set(shot.enabled_models)
+            for key, cb in self._model_checks.items():
+                cb.setChecked(key in enabled)
 
             # Render the auto-EV provenance line. Matches the format
             # of the colorspace line: value + source + a small evidence
@@ -394,12 +430,29 @@ class InspectorPanel(QWidget):
         self._exposure_slider.blockSignals(False)
         self._registry.notify_updated(self._current)
 
-    def _on_output_mode_toggled(self, button_id: int, checked: bool) -> None:
-        if not checked or self._building or self._current is None:
+    def _set_output_mode(self, mode: str) -> None:
+        """Radio handler — runs once per new selection (not for the
+        deselected button), so it's safe to trust `mode` directly."""
+        if self._building or self._current is None:
             return
-        mode = {0: "inplace", 1: "subfolder", 2: "external"}[button_id]
         self._current.output_mode = mode
+        self._subfolder_name_edit.setEnabled(mode == "subfolder")
         self._out_root_btn.setEnabled(mode == "external")
+        self._external_name_edit.setEnabled(mode == "external")
+        self._rebuild_resolved_out_label()
+        self._registry.notify_updated(self._current)
+
+    def _on_subfolder_name_edited(self, text: str) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.output_subfolder_name = text.strip() or "utility"
+        self._rebuild_resolved_out_label()
+        self._registry.notify_updated(self._current)
+
+    def _on_external_name_edited(self, text: str) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.output_external_name = text.strip()  # empty → default to shot.name
         self._rebuild_resolved_out_label()
         self._registry.notify_updated(self._current)
 
@@ -429,27 +482,15 @@ class InspectorPanel(QWidget):
         resolved = self._current.resolve_output_dir()
         self._resolved_out_label.setText(f"→ {resolved}")
 
-    def _on_pass_toggled(self, name: str, checked: bool) -> None:
+    def _on_model_toggled(self, key: str, checked: bool) -> None:
         if self._building or self._current is None:
             return
-        enabled = list(self._current.enabled_passes)
-        if checked and name not in enabled:
-            enabled.append(name)
-        elif not checked and name in enabled:
-            enabled.remove(name)
-        self._current.enabled_passes = enabled
-        self._registry.notify_updated(self._current)
-
-    def _on_backend_changed(self, family: str, choice: str) -> None:
-        if self._building or self._current is None:
-            return
-        self._current.pass_backends[family] = choice
-        self._registry.notify_updated(self._current)
-
-    def _on_allow_nc_toggled(self, checked: bool) -> None:
-        if self._building or self._current is None:
-            return
-        self._current.allow_noncommercial = bool(checked)
+        enabled = list(self._current.enabled_models)
+        if checked and key not in enabled:
+            enabled.append(key)
+        elif not checked and key in enabled:
+            enabled.remove(key)
+        self._current.enabled_models = enabled
         self._registry.notify_updated(self._current)
 
     def _on_reset_clicked(self) -> None:

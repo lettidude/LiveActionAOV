@@ -62,32 +62,59 @@ class ShotState:
     auto_ev_source: str = ""
     sampled_luma: float | None = None
 
-    # Passes the user has toggled on. Semantic names: "flow", "depth",
-    # "normals", "matte". Resolved to concrete plugin names at submit
-    # time via `pass_backends`.
-    enabled_passes: list[str] = field(default_factory=list)
+    # Models the user has enabled — keys from
+    # `gui.pass_catalog.PASS_CATALOG`. A single ShotState can have
+    # multiple models per category (e.g. both `depth_anything_v2` and
+    # `depthpro`); the submit worker expands virtual entries (matte
+    # combos) into concrete plugin names for the executor.
+    enabled_models: list[str] = field(default_factory=list)
 
-    # Per-family backend choice. Keys: "depth", "normals",
-    # "matte_detector", "matte_refiner". Defaults match the CLI's
-    # commercial-safe defaults.
-    pass_backends: dict[str, str] = field(
-        default_factory=lambda: {
-            "depth": "depth_anything_v2",
-            "normals": "dsine",
-            "matte_detector": "sam3_matte",
-            "matte_refiner": "rvm_refiner",
+    # --- Legacy M2 surface kept as properties below ---
+    # Other code that still references `enabled_passes` / `pass_backends`
+    # will need to migrate to `enabled_models` over time. The Inspector
+    # and SubmitWorker already use the new field.
+
+    @property
+    def enabled_passes(self) -> list[str]:
+        """Backwards-compat shim. Returns the unique category names
+        derived from `enabled_models` so existing refresh-gate logic
+        (e.g. "at least one pass enabled?") keeps working without
+        being rewritten."""
+        from live_action_aov.gui.pass_catalog import PASS_CATALOG
+
+        key_to_category: dict[str, str] = {
+            e.key: cat.lower()
+            for cat, entries in PASS_CATALOG.items()
+            for e in entries
         }
-    )
-    allow_noncommercial: bool = False
+        seen: set[str] = set()
+        out: list[str] = []
+        for k in self.enabled_models:
+            cat = key_to_category.get(k)
+            if cat and cat not in seen:
+                out.append(cat)
+                seen.add(cat)
+        return out
 
     # Where the executor writes the sidecar EXRs.
     #   "inplace"   → <plate_folder>/<shot>.utility.####.exr  (default)
-    #   "subfolder" → <plate_folder>/utility/<shot>.utility.####.exr
-    #   "external"  → <output_root>/<shot>/<shot>.utility.####.exr
-    # The Inspector renders the three as a radio group with a path
-    # picker enabled only in "external" mode.
+    #   "subfolder" → <plate_folder>/<subfolder_name>/…
+    #   "external"  → <output_root>/<external_name>/…
+    # The Inspector renders the three as a radio group; both the
+    # subfolder name and the per-shot external folder name are
+    # editable text fields defaulting to sensible values.
     output_mode: str = "inplace"
     output_external_root: Path | None = None
+    output_subfolder_name: str = "utility"
+    # Empty string → falls back to the shot's name. Lets the user
+    # type custom names like `v001` or `linear_plates` without
+    # touching the name field having to mean "whatever the shot is
+    # called this session".
+    output_external_name: str = ""
+
+    # Per-shot queue flag. The list panel renders a checkbox beside
+    # each shot; Submit local iterates every queued shot in order.
+    queued: bool = True
 
     # Submit status lifecycle: "new" → "queued" → "running" → "done" /
     # "failed". The shot list renders this as an icon + colour; the
@@ -98,11 +125,13 @@ class ShotState:
 
     def resolve_output_dir(self) -> Path:
         """Return the concrete directory the executor should write to,
-        given the current mode + external root."""
+        given the current mode + external root + subfolder names."""
         if self.output_mode == "subfolder":
-            return self.folder / "utility"
+            name = self.output_subfolder_name.strip() or "utility"
+            return self.folder / name
         if self.output_mode == "external" and self.output_external_root is not None:
-            return self.output_external_root / self.name
+            name = self.output_external_name.strip() or self.name
+            return self.output_external_root / name
         return self.folder
 
     def effective_colorspace(self) -> str:

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
+from PySide6.QtGui import QBrush, QColor, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -50,7 +50,13 @@ class ShotListPanel(QWidget):
         self._list = QListWidget()
         self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self._list.currentItemChanged.connect(self._on_selection_changed)
+        # When the user toggles the per-shot checkbox we need to mirror
+        # it onto ShotState.queued. `itemChanged` fires for any item
+        # data change (including colour updates from rebuild), so we
+        # guard reentrancy with a flag.
+        self._list.itemChanged.connect(self._on_item_changed)
         self._list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self._suppress_item_change = False
         # Pin a minimum width so the "Add shot…" button + shortest shot
         # name don't clip when the splitter is squashed.
         self.setMinimumWidth(180)
@@ -171,10 +177,17 @@ class ShotListPanel(QWidget):
     def _on_shot_added(self, shot: ShotState) -> None:
         item = QListWidgetItem(_format_item_label(shot))
         item.setData(Qt.ItemDataRole.UserRole, shot)
+        # Per-row checkbox drives ShotState.queued — determines which
+        # shots Submit local will iterate.
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(
+            Qt.CheckState.Checked if shot.queued else Qt.CheckState.Unchecked
+        )
         # Full info in a tooltip so the label can truncate without losing
         # data — compers hover to confirm frame range + resolution when
         # the panel is sized narrow.
         item.setToolTip(_format_item_tooltip(shot))
+        _apply_status_colour(item, shot)
         self._list.addItem(item)
         self._list.setCurrentItem(item)
 
@@ -189,9 +202,33 @@ class ShotListPanel(QWidget):
         for i in range(self._list.count()):
             item = self._list.item(i)
             if item.data(Qt.ItemDataRole.UserRole) is shot:
-                item.setText(_format_item_label(shot))
-                item.setToolTip(_format_item_tooltip(shot))
+                self._suppress_item_change = True
+                try:
+                    item.setText(_format_item_label(shot))
+                    item.setToolTip(_format_item_tooltip(shot))
+                    # Keep the checkbox state in sync when another
+                    # surface (e.g. a "queue all" button) toggles it.
+                    desired = Qt.CheckState.Checked if shot.queued else Qt.CheckState.Unchecked
+                    if item.checkState() != desired:
+                        item.setCheckState(desired)
+                    _apply_status_colour(item, shot)
+                finally:
+                    self._suppress_item_change = False
                 return
+
+    def _on_item_changed(self, item: QListWidgetItem) -> None:
+        """Sync the per-row checkbox → ShotState.queued. Called by the
+        list whenever item data changes; guarded against reentrant
+        refreshes from `_on_shot_updated`."""
+        if self._suppress_item_change:
+            return
+        shot = item.data(Qt.ItemDataRole.UserRole)
+        if shot is None:
+            return
+        new_queued = item.checkState() == Qt.CheckState.Checked
+        if shot.queued != new_queued:
+            shot.queued = new_queued
+            self._registry.notify_updated(shot)
 
     def _on_selection_changed(
         self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
@@ -234,6 +271,21 @@ _STATUS_MARKER = {
     "done": "✓ done",
     "failed": "✗ failed",
 }
+
+# Foreground colours per status — keeps the default row background so
+# selection highlight still reads. "done" lifts to a saturated green,
+# "failed" drops to red, "running" glows cyan.
+_STATUS_COLOURS: dict[str, QColor] = {
+    "running": QColor("#4aa8ff"),
+    "done": QColor("#5ec864"),
+    "failed": QColor("#e65c5c"),
+}
+
+
+def _apply_status_colour(item: QListWidgetItem, shot: ShotState) -> None:
+    colour = _STATUS_COLOURS.get(shot.status)
+    brush = QBrush(colour) if colour is not None else QBrush()
+    item.setForeground(brush)
 
 
 def _format_item_label(shot: ShotState) -> str:
