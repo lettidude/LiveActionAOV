@@ -91,6 +91,10 @@ matanyone2 = []
 # `matte` meta-extra — installs both the detector (sam3) and the default
 # commercial-safe refiner (rvm) in one shot.
 matte = ["live-action-aov[sam3]", "live-action-aov[rvm]"]
+# Camera track — classical SfM via pycolmap. Windows/Linux/macOS PyPI
+# wheels, no C++ build, no CUDA toolkit. Pillow is a transitive dep but
+# spelled out so pip can plan without relying on indirect pulls.
+camera = ["pycolmap>=4.0", "Pillow>=10.0"]
 
 [project.urls]
 Homepage = "https://github.com/TODO/live-action-aov"
@@ -119,6 +123,7 @@ normalcrafter      = "live_action_aov.passes.normals.normalcrafter:NormalCrafter
 sam3_matte         = "live_action_aov.passes.matte.sam3:SAM3MattePass"
 rvm_refiner        = "live_action_aov.passes.matte.rvm:RVMRefinerPass"
 matanyone2         = "live_action_aov.passes.matte.matanyone2:MatAnyone2RefinerPass"
+camera_pycolmap    = "live_action_aov.passes.camera.pycolmap_track:PyColmapCameraPass"
 
 [project.entry-points."live_action_aov.post"]
 temporal_smooth = "live_action_aov.post.temporal_smooth:TemporalSmoother"
@@ -172,9 +177,10 @@ select = [
 ignore = [
     "E501",
     "B008",
-    # Capital-letter tensor-dim locals (B, H, W, T, N, C…) are the
-    # universal naming convention in our ML / VFX code.
-    "N806",
+    # Capital-letter tensor-dim locals and function args (B, H, W, T,
+    # N, C, R, R_cw, …) are the universal naming convention in our ML /
+    # VFX / geometry code.
+    "N806", "N803",
     # Class-level `DEFAULT_PARAMS = {...}` gets shallow-copied into each
     # instance; wrapping in ClassVar would mislead readers into thinking
     # it's a shared singleton.
