@@ -62,8 +62,30 @@ class ShotState:
     auto_ev_source: str = ""
     sampled_luma: float | None = None
 
-    # Passes the user has toggled on (read-only surface in M1).
+    # Passes the user has toggled on. Semantic names: "flow", "depth",
+    # "normals", "matte". Resolved to concrete plugin names at submit
+    # time via `pass_backends`.
     enabled_passes: list[str] = field(default_factory=list)
+
+    # Per-family backend choice. Keys: "depth", "normals",
+    # "matte_detector", "matte_refiner". Defaults match the CLI's
+    # commercial-safe defaults.
+    pass_backends: dict[str, str] = field(
+        default_factory=lambda: {
+            "depth": "depth_anything_v2",
+            "normals": "dsine",
+            "matte_detector": "sam3_matte",
+            "matte_refiner": "rvm_refiner",
+        }
+    )
+    allow_noncommercial: bool = False
+
+    # Submit status lifecycle: "new" → "queued" → "running" → "done" /
+    # "failed". The shot list renders this as an icon + colour; the
+    # Submit button disables while running.
+    status: str = "new"
+    last_error: str = ""
+    last_sidecar_dir: Path | None = None
 
     def effective_colorspace(self) -> str:
         """Return the colorspace the preview should use."""

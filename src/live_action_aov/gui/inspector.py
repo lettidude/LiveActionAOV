@@ -50,7 +50,34 @@ from PySide6.QtWidgets import (
 from live_action_aov.gui.shot_state import ShotRegistry, ShotState
 from live_action_aov.io.colorspace_detect import SUPPORTED_COLORSPACES
 
+# Semantic pass families the user enables. Concrete plugin backends
+# are chosen per-family via the dropdowns below.
 _PASS_NAMES = ("flow", "depth", "normals", "matte")
+
+# Which backends to offer per family. Matches pyproject entry points.
+# Keep in sync with the CLI's `_resolve_semantic_passes` defaults —
+# users expect the GUI and CLI to produce the same sidecar for the
+# same ShotState.
+_BACKEND_CHOICES: dict[str, list[str]] = {
+    "depth": [
+        "depth_anything_v2",       # Apache-2.0, commercial-safe default
+        "video_depth_anything",    # Apache-2.0, temporal-aware
+        "depthcrafter",            # CC-BY-NC
+        "depthpro",                # CC-BY-NC
+    ],
+    "normals": [
+        "dsine",                   # MIT
+        "normalcrafter",           # CC-BY-NC
+    ],
+}
+# Backends that need `--allow-noncommercial`. Gated with a toast in
+# the UI when the user picks one.
+_NONCOMMERCIAL_BACKENDS: set[str] = {
+    "depthcrafter",
+    "depthpro",
+    "normalcrafter",
+    "matanyone2",
+}
 
 
 class InspectorPanel(QWidget):
@@ -113,16 +140,44 @@ class InspectorPanel(QWidget):
         )
         self._reset_btn.clicked.connect(self._on_reset_clicked)
 
-        # --- Pass toggles (read-only in M1) ---
+        # --- Pass toggles + per-family backend pickers ---
+        # Each enabled family contributes one (or two) PassConfigs at
+        # submit time, resolved via ShotState.pass_backends.
         self._pass_checks: dict[str, QCheckBox] = {}
-        passes_row = QHBoxLayout()
+        self._backend_combos: dict[str, QComboBox] = {}
+        passes_block = QVBoxLayout()
         for name in _PASS_NAMES:
+            row = QHBoxLayout()
             cb = QCheckBox(name)
-            cb.setEnabled(False)  # read-only in M1 until the executor is wired in M2
-            cb.setToolTip("Pass toggles wire to the executor in the M2 PR.")
+            cb.toggled.connect(lambda checked, n=name: self._on_pass_toggled(n, checked))
             self._pass_checks[name] = cb
-            passes_row.addWidget(cb)
-        passes_row.addStretch()
+            row.addWidget(cb)
+
+            if name in _BACKEND_CHOICES:
+                combo = QComboBox()
+                combo.addItems(_BACKEND_CHOICES[name])
+                combo.setToolTip(
+                    f"Backend for the `{name}` pass. Non-commercial options "
+                    "require toggling 'Allow non-commercial' below."
+                )
+                combo.currentTextChanged.connect(
+                    lambda txt, n=name: self._on_backend_changed(n, txt)
+                )
+                self._backend_combos[name] = combo
+                row.addWidget(combo, stretch=1)
+            row.addStretch()
+            passes_block.addLayout(row)
+
+        # Non-commercial license gate. Users without this flag are
+        # prevented from submitting a job that uses an NC backend —
+        # same policy as the CLI's `--allow-noncommercial`.
+        self._allow_nc_check = QCheckBox("Allow non-commercial backends")
+        self._allow_nc_check.setToolTip(
+            "Required before Submit will accept a non-commercial pass backend "
+            "(DepthCrafter, DepthPro, NormalCrafter, MatAnyone2)."
+        )
+        self._allow_nc_check.toggled.connect(self._on_allow_nc_toggled)
+        passes_block.addWidget(self._allow_nc_check)
 
         # --- Assemble ---
         form = QFormLayout()
@@ -133,9 +188,6 @@ class InspectorPanel(QWidget):
         cs_block.addWidget(self._colorspace_box)
         cs_block.addWidget(self._provenance_label)
         cs_block.addWidget(self._low_conf_warning)
-
-        passes_block = QVBoxLayout()
-        passes_block.addLayout(passes_row)
 
         root = QVBoxLayout(self)
         root.addLayout(form)
@@ -208,6 +260,16 @@ class InspectorPanel(QWidget):
             self._exposure_slider.setValue(int(round(ev * 10)))
             self._exposure_spin.setValue(ev)
 
+            # Pass toggles + backend dropdowns reflect the stored state.
+            enabled = set(shot.enabled_passes)
+            for name, cb in self._pass_checks.items():
+                cb.setChecked(name in enabled)
+            for name, combo in self._backend_combos.items():
+                current = shot.pass_backends.get(name, combo.currentText())
+                if combo.findText(current) >= 0:
+                    combo.setCurrentText(current)
+            self._allow_nc_check.setChecked(bool(shot.allow_noncommercial))
+
             # Render the auto-EV provenance line. Matches the format
             # of the colorspace line: value + source + a small evidence
             # number so the user can sanity-check the pipeline's guess.
@@ -276,6 +338,29 @@ class InspectorPanel(QWidget):
         self._exposure_slider.blockSignals(True)
         self._exposure_slider.setValue(int(round(ev * 10)))
         self._exposure_slider.blockSignals(False)
+        self._registry.notify_updated(self._current)
+
+    def _on_pass_toggled(self, name: str, checked: bool) -> None:
+        if self._building or self._current is None:
+            return
+        enabled = list(self._current.enabled_passes)
+        if checked and name not in enabled:
+            enabled.append(name)
+        elif not checked and name in enabled:
+            enabled.remove(name)
+        self._current.enabled_passes = enabled
+        self._registry.notify_updated(self._current)
+
+    def _on_backend_changed(self, family: str, choice: str) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.pass_backends[family] = choice
+        self._registry.notify_updated(self._current)
+
+    def _on_allow_nc_toggled(self, checked: bool) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.allow_noncommercial = bool(checked)
         self._registry.notify_updated(self._current)
 
     def _on_reset_clicked(self) -> None:

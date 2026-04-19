@@ -72,6 +72,9 @@ class ShotListPanel(QWidget):
         # Stay in sync when shots are added/removed elsewhere.
         self._registry.shot_added.connect(self._on_shot_added)
         self._registry.shot_removed.connect(self._on_shot_removed)
+        # Status changes (running / done / failed) need to refresh the
+        # row label so the list is the at-a-glance submit dashboard.
+        self._registry.shot_updated.connect(self._on_shot_updated)
 
     # --- DnD ---
 
@@ -160,6 +163,14 @@ class ShotListPanel(QWidget):
                 self._list.takeItem(i)
                 return
 
+    def _on_shot_updated(self, shot: ShotState) -> None:
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) is shot:
+                item.setText(_format_item_label(shot))
+                item.setToolTip(_format_item_tooltip(shot))
+                return
+
     def _on_selection_changed(
         self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
     ) -> None:
@@ -194,15 +205,27 @@ def _seed_auto_exposure(pixels: np.ndarray, colorspace: str) -> dict:
     )
 
 
+_STATUS_MARKER = {
+    "new": "",
+    "queued": "• queued",
+    "running": "⟳ running",
+    "done": "✓ done",
+    "failed": "✗ failed",
+}
+
+
 def _format_item_label(shot: ShotState) -> str:
     """One-line label for the shot list row.
 
     Kept short so a narrow panel doesn't truncate the shot name itself.
-    Full info lives in the tooltip (`_format_item_tooltip`).
+    Status marker appended when the shot has been submitted so the list
+    doubles as a submit dashboard. Full info lives in the tooltip.
     """
     start, end = shot.frame_range
     n = end - start + 1
-    return f"{shot.name}   ({n} fr)"
+    marker = _STATUS_MARKER.get(shot.status, "")
+    suffix = f"   {marker}" if marker else ""
+    return f"{shot.name}   ({n} fr){suffix}"
 
 
 def _format_item_tooltip(shot: ShotState) -> str:
