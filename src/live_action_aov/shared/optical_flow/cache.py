@@ -46,14 +46,10 @@ class FlowCache:
 
     def put(self, shot_id: str, frame: int, direction: Direction, flow: np.ndarray) -> None:
         if flow.ndim != 3 or flow.shape[0] != 2:
-            raise ValueError(
-                f"FlowCache expects (2, H, W), got shape {flow.shape}"
-            )
+            raise ValueError(f"FlowCache expects (2, H, W), got shape {flow.shape}")
         self._store[FlowKey(shot_id, frame, direction)] = flow.astype(np.float32, copy=False)
 
-    def get(
-        self, shot_id: str, frame: int, direction: Direction
-    ) -> np.ndarray | None:
+    def get(self, shot_id: str, frame: int, direction: Direction) -> np.ndarray | None:
         """Return the cached flow, or None if missing (e.g. clip endpoint)."""
         return self._store.get(FlowKey(shot_id, frame, direction))
 

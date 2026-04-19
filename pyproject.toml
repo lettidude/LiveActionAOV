@@ -55,6 +55,7 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
     "pre-commit>=3.7",
+    "types-PyYAML>=6.0",
 ]
 
 # Model-specific extras (user installs what they need)
@@ -150,6 +151,12 @@ packages = ["src/live_action_aov"]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
+# Vendored third-party sources (Bytedance's Video-Depth-Anything, Tencent's
+# DepthCrafter, Binyr's NormalCrafter) are fetched verbatim from their
+# upstream repos — keeping them clean against our style rules would mean a
+# never-ending diff-burn every time we resync. Lint and typecheck our own
+# code only.
+extend-exclude = ["src/live_action_aov/vendored"]
 
 [tool.ruff.lint]
 select = [
@@ -165,6 +172,37 @@ select = [
 ignore = [
     "E501",
     "B008",
+    # Capital-letter tensor-dim locals (B, H, W, T, N, C…) are the
+    # universal naming convention in our ML / VFX code.
+    "N806",
+    # Class-level `DEFAULT_PARAMS = {...}` gets shallow-copied into each
+    # instance; wrapping in ClassVar would mislead readers into thinking
+    # it's a shared singleton.
+    "RUF012",
+    # Bare `except Exception` is deliberate in optional-dep import guards
+    # and plugin-loading fall-backs — we want to survive any failure and
+    # continue with the rest of the plugin graph.
+    "BLE001",
+    # Import aliases for ML/VFX libs are universally `np`, `F`, `ocio`,
+    # `oiio`; flagging them as style violations is noise.
+    "N812", "N813", "N814", "N802",
+    # Ambiguous-unicode warnings on em-dashes and multiplication signs
+    # in our own prose/comments — deliberate typography.
+    "RUF001", "RUF002", "RUF003",
+    # Refactor-suggestion categories are personal preference, not bugs.
+    "SIM105", "SIM108", "SIM102", "SIM101", "SIM118",
+    # Defensive `int(self.params["x"])` casts stay even when the YAML
+    # loader already gives int — the cast documents the type contract.
+    "RUF046",
+    # `_, H, W = shape` is a common ML pattern.
+    "RUF059",
+    # `dict(a=1)` vs `{"a": 1}` is personal preference.
+    "C408",
+    # `class Foo(str, Enum)` is valid on Python 3.11; `StrEnum` is also
+    # 3.11+ but both are equivalent — keeping existing style.
+    "UP042",
+    # Optional hook methods on ABCs are intentionally non-abstract.
+    "B027",
 ]
 
 [tool.ruff.format]
@@ -189,6 +227,20 @@ python_version = "3.11"
 strict = true
 warn_unreachable = true
 ignore_missing_imports = true
+# Same rationale as ruff's extend-exclude — vendored sources aren't ours.
+exclude = ['^src/live_action_aov/vendored/']
+disable_error_code = [
+    # Parameterising every `np.ndarray` with dtype/shape generics is a
+    # numpy-typing treadmill we don't want to opt into — it changes by
+    # numpy release and pollutes signatures. `np.ndarray` alone is
+    # semantically clear in this codebase.
+    "type-arg",
+    # Third-party ML/diffusers libs don't ship type stubs; calls through
+    # them inevitably return / accept Any. Silencing those propagations
+    # keeps genuine type errors visible.
+    "no-untyped-call",
+    "no-any-return",
+]
 
 [dependency-groups]
 dev = [
@@ -197,4 +249,5 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
     "pre-commit>=3.7",
+    "types-PyYAML>=6.0",
 ]

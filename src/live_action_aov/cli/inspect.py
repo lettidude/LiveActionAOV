@@ -42,7 +42,6 @@ from live_action_aov.io.channels import (
 )
 from live_action_aov.io.oiio_io import read_exr
 
-
 # Tolerance for [0, 1] envelope check on matte/mask channels. Matches the
 # ±1e-6 slop used in the real-weights integration test.
 _VALUE_TOLERANCE = 1e-6
@@ -56,16 +55,16 @@ _VALUE_TOLERANCE = 1e-6
 @dataclass
 class ChannelStat:
     name: str
-    bucket: str                        # canonical | matte | mask | other
+    bucket: str  # canonical | matte | mask | other
     min: float
     max: float
     mean: float
-    out_of_range: bool = False         # True when matte/mask strays from [0,1]
+    out_of_range: bool = False  # True when matte/mask strays from [0,1]
 
 
 @dataclass
 class HeroSlot:
-    slot: str                          # r | g | b | a
+    slot: str  # r | g | b | a
     label: str | None
     track_id: int | None
     score: float | None
@@ -81,9 +80,9 @@ class SidecarReport:
     width: int
     height: int
     channels: list[ChannelStat]
-    metadata: dict[str, Any]            # flat `liveActionAOV/*` subset
+    metadata: dict[str, Any]  # flat `liveActionAOV/*` subset
     heroes: list[HeroSlot] = field(default_factory=list)
-    has_matte_metadata: bool = False   # True iff any liveActionAOV/matte/*
+    has_matte_metadata: bool = False  # True iff any liveActionAOV/matte/*
 
 
 # ---------------------------------------------------------------------------
@@ -264,9 +263,7 @@ def format_text(report: SidecarReport) -> str:
             else:
                 score_str = f"{h.score:.2f}" if h.score is not None else "?"
                 tid_str = str(h.track_id) if h.track_id is not None else "?"
-                lines.append(
-                    f"  matte.{h.slot} = {h.label} (track {tid_str}, score {score_str})"
-                )
+                lines.append(f"  matte.{h.slot} = {h.label} (track {tid_str}, score {score_str})")
     elif report.has_matte_metadata:
         # Matte pipeline ran but produced no heroes — worth flagging,
         # it means the detector found nothing or the refiner dropped them.

@@ -105,6 +105,7 @@ def test_inspect_text_output_contains_expected_lines(tmp_path: Path) -> None:
     # shown quoted, ints/floats are not. We regex past the column-alignment
     # whitespace so formatting tweaks don't break this assertion.
     import re
+
     assert re.search(r'matte/commercial\s+= "true"', stdout), (
         f"commercial flag not rendered correctly:\n{stdout}"
     )
@@ -176,8 +177,7 @@ def test_inspect_non_exr_input_exits_one_no_traceback(tmp_path: Path) -> None:
 
     result = runner.invoke(app, ["inspect", str(bogus)])
     assert result.exit_code == 1, (
-        f"expected exit 1 for non-EXR input, got {result.exit_code}\n"
-        f"stdout: {result.stdout!r}"
+        f"expected exit 1 for non-EXR input, got {result.exit_code}\nstdout: {result.stdout!r}"
     )
 
     # Message should mention the file and be a single-ish line, not a

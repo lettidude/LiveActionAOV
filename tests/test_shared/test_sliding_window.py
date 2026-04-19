@@ -15,7 +15,6 @@ from live_action_aov.shared.video_clip import (
     trapezoid_weight,
 )
 
-
 # --- plan_window_starts ---
 
 
@@ -120,8 +119,8 @@ def test_stitch_endpoint_unramped_pins_clip_edges_to_source() -> None:
     window, overlap = 8, 3
     a = _fake_window(1.0, window)
     b = _fake_window(7.0, window)
-    starts = [0, 8 - overlap]             # [0, 5]
-    n_frames = 8 + (window - overlap)     # 13
+    starts = [0, 8 - overlap]  # [0, 5]
+    n_frames = 8 + (window - overlap)  # 13
 
     out = stitch_windowed_predictions([a, b], starts, n_frames, overlap)
     assert np.allclose(out[0], 1.0)
@@ -130,7 +129,7 @@ def test_stitch_endpoint_unramped_pins_clip_edges_to_source() -> None:
 
 def test_stitch_rejects_mismatched_trailing_shape() -> None:
     a = _fake_window(0.0, 5, shape=(4, 4))
-    b = _fake_window(0.0, 5, shape=(4, 3))   # different W
+    b = _fake_window(0.0, 5, shape=(4, 3))  # different W
     with pytest.raises(ValueError, match="trailing shape"):
         stitch_windowed_predictions([a, b], starts=[0, 3], n_frames=8, overlap=2)
 

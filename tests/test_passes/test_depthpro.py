@@ -49,7 +49,9 @@ class _FakeDepthPro(DepthProPass):
                 if img.ndim == 3:
                     img = img[None]
                 t = torch.from_numpy(img).permute(0, 3, 1, 2)
-                t = torch.nn.functional.interpolate(t, size=(inf, inf), mode="bilinear", align_corners=False)
+                t = torch.nn.functional.interpolate(
+                    t, size=(inf, inf), mode="bilinear", align_corners=False
+                )
                 return {"pixel_values": t}
 
         self._processor = _P()

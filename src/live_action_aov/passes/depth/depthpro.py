@@ -68,8 +68,8 @@ class DepthProPass(UtilityPass):
     input_colorspace = "srgb_display"
 
     produces_channels = [
-        ChannelSpec(name=CH_Z,                description="Metric depth in meters"),
-        ChannelSpec(name=CH_Z_RAW,            description="Metric depth in meters (raw; identical to Z)"),
+        ChannelSpec(name=CH_Z, description="Metric depth in meters"),
+        ChannelSpec(name=CH_Z_RAW, description="Metric depth in meters (raw; identical to Z)"),
         ChannelSpec(name=CH_DEPTH_CONFIDENCE, description="Per-pixel confidence, [0,1]"),
     ]
     # Smooth metric Z; keep Z_raw and confidence untouched so analysis tools
@@ -78,8 +78,8 @@ class DepthProPass(UtilityPass):
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "model_id": "apple/DepthPro",
-        "inference_short_edge": 1536,    # DepthPro's stock inference size
-        "precision": "fp16",             # fp16 on CUDA; fp32 on CPU
+        "inference_short_edge": 1536,  # DepthPro's stock inference size
+        "precision": "fp16",  # fp16 on CUDA; fp32 on CPU
         "smooth": "auto",
     }
 
@@ -124,9 +124,7 @@ class DepthProPass(UtilityPass):
     def preprocess(self, frames: np.ndarray) -> Any:
         """Input: (1, H, W, 3) float32 sRGB-display in [0,1]."""
         if frames.ndim != 4 or frames.shape[0] != 1 or frames.shape[-1] != 3:
-            raise ValueError(
-                f"DepthProPass preprocess expects (1, H, W, 3), got {frames.shape}"
-            )
+            raise ValueError(f"DepthProPass preprocess expects (1, H, W, 3), got {frames.shape}")
         self._load_model()
         plate_h, plate_w = int(frames.shape[1]), int(frames.shape[2])
         img = np.clip(frames[0], 0.0, 1.0)
@@ -187,7 +185,7 @@ class DepthProPass(UtilityPass):
         plate_h, plate_w = tensor["plate_shape"]
         d = tensor["depth"]
         if d.ndim == 3:
-            d = d.unsqueeze(1)                    # (B, 1, h, w)
+            d = d.unsqueeze(1)  # (B, 1, h, w)
         d_up = torch.nn.functional.interpolate(
             d, size=(plate_h, plate_w), mode="bilinear", align_corners=False
         )

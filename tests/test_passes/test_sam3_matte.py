@@ -113,6 +113,7 @@ def test_area_floor_drops_tiny_instances() -> None:
 
 def test_union_by_concept_combines_multiple_instances() -> None:
     """Two person instances → mask.person is the OR of both."""
+
     class _TwoPerson(_FakeSAM3):
         def _detect_seed(self, seed_frame, concepts):  # type: ignore[override]
             h, w, _ = seed_frame.shape
@@ -146,7 +147,7 @@ def test_emit_artifacts_shape_for_downstream_refiner() -> None:
     # sam3_hard_masks: dict[track_id, {"label", "frames", "stack"}]
     hard = next(iter(artifacts["sam3_hard_masks"].values()))
     assert set(hard) == {1, 2}
-    for tid, data in hard.items():
+    for _tid, data in hard.items():
         assert isinstance(data["label"], str)
         assert isinstance(data["frames"], list)
         assert data["stack"].ndim == 3
@@ -156,7 +157,7 @@ def test_emit_artifacts_shape_for_downstream_refiner() -> None:
     heroes = next(iter(artifacts["sam3_instances"].values()))
     assert len(heroes) == 2
     slots = [h["slot"] for h in heroes]
-    assert slots == ["r", "g"]          # canonical RGBA order
+    assert slots == ["r", "g"]  # canonical RGBA order
     # Big rectangle (person) outranks small (vehicle).
     assert heroes[0]["label"] == "person"
     assert heroes[1]["label"] == "vehicle"
@@ -188,9 +189,7 @@ def test_ingest_artifacts_accepts_flow_as_soft_dep() -> None:
 def test_heroes_override_routes_to_specific_slot() -> None:
     """User override: vehicle (smaller) pinned to r, person falls to g."""
     frames = _plate_frames(5)
-    pass_ = _FakeSAM3(
-        _small_params(heroes=[{"track_id": 2, "slot": "r"}])
-    )
+    pass_ = _FakeSAM3(_small_params(heroes=[{"track_id": 2, "slot": "r"}]))
     pass_.run_shot(_FakeReader(frames), frame_range=(1, 5))
     artifacts = pass_.emit_artifacts()
     heroes = next(iter(artifacts["sam3_instances"].values()))

@@ -17,11 +17,11 @@ from typing import Any
 import numpy as np
 
 try:
-    import PyOpenColorIO as ocio  # type: ignore[import-not-found]
+    import PyOpenColorIO as ocio
 
     HAS_OCIO = True
 except ImportError:  # pragma: no cover
-    ocio = None  # type: ignore[assignment]
+    ocio = None
     HAS_OCIO = False
 
 
@@ -38,9 +38,7 @@ def get_config() -> Any:
         return ocio.Config.CreateFromFile(ocio.GetDefaultConfig().getName())
 
 
-def to_linear(
-    frames: np.ndarray, from_space: str, config: Any | None = None
-) -> np.ndarray:
+def to_linear(frames: np.ndarray, from_space: str, config: Any | None = None) -> np.ndarray:
     """Convert `frames` (HxWxC or NxHxWxC) from `from_space` to a linear
     working space.
 
@@ -52,9 +50,10 @@ def to_linear(
         cfg = config or get_config()
         # Known scene-linear reference space name varies per config; use the
         # config's declared working space.
-        dst = cfg.getCanonicalName("scene_linear") or cfg.getRoleColorSpace(
-            ocio.ROLE_SCENE_LINEAR
-        ).getName()
+        dst = (
+            cfg.getCanonicalName("scene_linear")
+            or cfg.getRoleColorSpace(ocio.ROLE_SCENE_LINEAR).getName()
+        )
         proc = cfg.getProcessor(from_space, dst).getDefaultCPUProcessor()
         arr = np.ascontiguousarray(frames.astype(np.float32, copy=False))
         flat = arr.reshape(-1, arr.shape[-1])
@@ -63,15 +62,14 @@ def to_linear(
     return _fallback_to_linear(frames, from_space)
 
 
-def from_linear(
-    frames: np.ndarray, to_space: str, config: Any | None = None
-) -> np.ndarray:
+def from_linear(frames: np.ndarray, to_space: str, config: Any | None = None) -> np.ndarray:
     """Convert `frames` from scene-linear to `to_space`."""
     if HAS_OCIO:
         cfg = config or get_config()
-        src = cfg.getCanonicalName("scene_linear") or cfg.getRoleColorSpace(
-            ocio.ROLE_SCENE_LINEAR
-        ).getName()
+        src = (
+            cfg.getCanonicalName("scene_linear")
+            or cfg.getRoleColorSpace(ocio.ROLE_SCENE_LINEAR).getName()
+        )
         proc = cfg.getProcessor(src, to_space).getDefaultCPUProcessor()
         arr = np.ascontiguousarray(frames.astype(np.float32, copy=False))
         flat = arr.reshape(-1, arr.shape[-1])

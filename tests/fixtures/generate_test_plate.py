@@ -82,7 +82,7 @@ def generate(
             attrs={
                 "colorspace": "acescg",
                 "compression": "zip",
-                f"liveActionAOV/fixture/index": frame_idx,
+                "liveActionAOV/fixture/index": frame_idx,
             },
             pixel_aspect=1.0,
             compression="zip",

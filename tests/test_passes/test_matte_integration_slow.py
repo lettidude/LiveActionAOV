@@ -39,7 +39,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import numpy as np
 import pytest
 from typer.testing import CliRunner
 
@@ -54,7 +53,6 @@ from live_action_aov.io.channels import (  # noqa: E402
     MASK_PREFIX,
 )
 from live_action_aov.io.oiio_io import HAS_OIIO  # noqa: E402
-
 
 pytestmark = [
     pytest.mark.slow,
@@ -95,8 +93,10 @@ def test_real_sam3_plus_rvm_end_to_end(_integration_plate: Path) -> None:
     result = runner.invoke(
         app,
         [
-            "run-shot", str(_integration_plate),
-            "--passes", "flow,matte",
+            "run-shot",
+            str(_integration_plate),
+            "--passes",
+            "flow,matte",
         ],
     )
     # Any non-zero exit is a plumbing failure we want to catch at release cut.

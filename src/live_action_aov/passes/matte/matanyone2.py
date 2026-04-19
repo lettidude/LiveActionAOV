@@ -100,12 +100,12 @@ class MatAnyone2RefinerPass(UtilityPass):
         # we can swap to a HF-hosted mirror if one lands.
         "model_id": "pq-yang/MatAnyone",
         "variant": "matanyone2",
-        "inference_short_edge": 720,     # higher than RVM — MatAnyone likes more pixels
+        "inference_short_edge": 720,  # higher than RVM — MatAnyone likes more pixels
         "precision": "fp16",
         "hard_mask_erode": 0,
         # MatAnyone-specific knobs (no-op in the fake backend):
-        "warmup_frames": 5,              # recurrent state needs a run-in
-        "memory_every": 5,               # memory-bank refresh cadence
+        "warmup_frames": 5,  # recurrent state needs a run-in
+        "memory_every": 5,  # memory-bank refresh cadence
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -123,7 +123,7 @@ class MatAnyone2RefinerPass(UtilityPass):
     # Artifact ingestion — same shape as RVM, same unwrap pattern.
     # ------------------------------------------------------------------
 
-    def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:  # type: ignore[override]
+    def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:
         hard = artifacts.get("sam3_hard_masks") or {}
         if hard:
             self._hard_masks = next(iter(hard.values())) or {}
@@ -204,9 +204,9 @@ class MatAnyone2RefinerPass(UtilityPass):
     ) -> dict[int, dict[str, np.ndarray]]:
         first, last = frame_range
         n_frames = last - first + 1
-        frames = np.stack(
-            [reader.read_frame(f)[0] for f in range(first, last + 1)], axis=0
-        ).astype(np.float32, copy=False)
+        frames = np.stack([reader.read_frame(f)[0] for f in range(first, last + 1)], axis=0).astype(
+            np.float32, copy=False
+        )
         plate_h, plate_w = int(frames.shape[1]), int(frames.shape[2])
 
         channel_stacks: dict[str, np.ndarray] = {
@@ -225,9 +225,7 @@ class MatAnyone2RefinerPass(UtilityPass):
             track_id = int(hero["track_id"])
             track = self._hard_masks.get(track_id)
             if track is None:
-                self._refined.append(
-                    {**hero, "refined_frames": [], "missing_hard_mask": True}
-                )
+                self._refined.append({**hero, "refined_frames": [], "missing_hard_mask": True})
                 continue
 
             track_frames: list[int] = list(track.get("frames") or [])

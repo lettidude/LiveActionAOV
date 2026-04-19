@@ -106,8 +106,8 @@ def test_run_shot_per_clip_normalization_spans_zero_to_one() -> None:
     # Hack: swap pass's seed between frames by reading frames with different
     # shades. We can drive this via the shade field instead — deeper shade
     # means larger mean and larger depth output.
-    frames[0][...] = 0.2   # darker → lower offset
-    frames[2][...] = 0.9   # brighter → higher offset
+    frames[0][...] = 0.2  # darker → lower offset
+    frames[2][...] = 0.9  # brighter → higher offset
     out = pass_.run_shot(reader, frame_range=(1, 3))
 
     assert sorted(out) == [1, 2, 3]

@@ -7,8 +7,6 @@ end-to-end without any AI inference. Lives under `tests/` rather than
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 
 from live_action_aov.core.pass_base import (

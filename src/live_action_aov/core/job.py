@@ -100,7 +100,7 @@ class Shot(BaseModel):
     @classmethod
     def _coerce_tuple(cls, v: Any) -> tuple[int, int]:
         if isinstance(v, list):
-            return tuple(v)  # type: ignore[return-value]
+            return tuple(v)
         return v
 
     @field_serializer("folder")
@@ -128,7 +128,7 @@ class Task(BaseModel):
     @classmethod
     def _coerce_frame_range(cls, v: Any) -> tuple[int, int]:
         if isinstance(v, list):
-            return tuple(v)  # type: ignore[return-value]
+            return tuple(v)
         return v
 
 
@@ -151,7 +151,7 @@ class Job(BaseModel):
     priority: int = 50
     pool: str = "gpu"
     chunk_size: int = 10
-    dependencies: list["Job"] = Field(default_factory=list)
+    dependencies: list[Job] = Field(default_factory=list)
     gpu_affinity: str | None = None
     max_retries: int = 2
     timeout_minutes: int = 120
@@ -186,7 +186,7 @@ class Job(BaseModel):
         return yaml.safe_dump(data, sort_keys=False)
 
     @classmethod
-    def from_yaml(cls, src: str | Path) -> "Job":
+    def from_yaml(cls, src: str | Path) -> Job:
         """Load a Job from a YAML file or string."""
         if isinstance(src, Path):
             text = src.read_text(encoding="utf-8")

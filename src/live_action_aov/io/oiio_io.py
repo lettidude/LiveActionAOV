@@ -18,11 +18,11 @@ from typing import Any
 import numpy as np
 
 try:
-    import OpenImageIO as oiio  # type: ignore[import-not-found]
+    import OpenImageIO as oiio
 
     HAS_OIIO = True
 except ImportError:  # pragma: no cover — environment-dependent
-    oiio = None  # type: ignore[assignment]
+    oiio = None
     HAS_OIIO = False
 
 
@@ -160,9 +160,7 @@ def write_exr(
 
 def _set_attr(spec: Any, name: str, value: Any) -> None:
     """Best-effort typed attribute write."""
-    if isinstance(value, bool):
-        spec.attribute(name, int(value))
-    elif isinstance(value, int):
+    if isinstance(value, bool) or isinstance(value, int):
         spec.attribute(name, int(value))
     elif isinstance(value, float):
         spec.attribute(name, float(value))

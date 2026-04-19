@@ -63,7 +63,6 @@ from live_action_aov.core.pass_base import (
 )
 from live_action_aov.io.channels import CH_Z, CH_Z_RAW
 
-
 # HF repo ids for the three variants.
 _VARIANT_REPOS: dict[str, str] = {
     "vits": "depth-anything/Video-Depth-Anything-Small",
@@ -80,7 +79,7 @@ _VARIANT_WEIGHTS: dict[str, str] = {
 
 # Arch configs mirroring the upstream `run.py`.
 _VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
-    "vits": {"encoder": "vits", "features": 64,  "out_channels": [48, 96, 192, 384]},
+    "vits": {"encoder": "vits", "features": 64, "out_channels": [48, 96, 192, 384]},
     "vitb": {"encoder": "vitb", "features": 128, "out_channels": [96, 192, 384, 768]},
     "vitl": {"encoder": "vitl", "features": 256, "out_channels": [256, 512, 1024, 1024]},
 }
@@ -107,7 +106,7 @@ class VideoDepthAnythingPass(UtilityPass):
     input_colorspace = "srgb_display"
 
     produces_channels = [
-        ChannelSpec(name=CH_Z,     description="Relative depth, per-clip normalised [0, 1] (1=near)"),
+        ChannelSpec(name=CH_Z, description="Relative depth, per-clip normalised [0, 1] (1=near)"),
         ChannelSpec(name=CH_Z_RAW, description="Raw model output (un-normalised)"),
     ]
     # VIDEO_CLIP passes are already temporally coherent — nothing for the
@@ -115,11 +114,11 @@ class VideoDepthAnythingPass(UtilityPass):
     smoothable_channels: list[str] = []
 
     DEFAULT_PARAMS: dict[str, Any] = {
-        "variant": "vits",        # "vits" | "vitb" | "vitl"
-        "input_size": 518,        # ViT-14 training size
-        "precision": "fp16",      # "fp16" | "fp32" — fp16 only if CUDA
+        "variant": "vits",  # "vits" | "vitb" | "vitl"
+        "input_size": 518,  # ViT-14 training size
+        "precision": "fp16",  # "fp16" | "fp32" — fp16 only if CUDA
         "depth_space": "relative",
-        "metric": False,          # True uses the separate metric weights
+        "metric": False,  # True uses the separate metric weights
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -133,7 +132,7 @@ class VideoDepthAnythingPass(UtilityPass):
             )
         self._model: Any = None
         self._device: Any = None
-        self._fp32: bool = (str(self.params["precision"]).lower() != "fp16")
+        self._fp32: bool = str(self.params["precision"]).lower() != "fp16"
         # Per-clip normalisation constants recorded by run_shot.
         self._norm_min: float = 0.0
         self._norm_max: float = 1.0
@@ -224,9 +223,9 @@ class VideoDepthAnythingPass(UtilityPass):
             arr8 = np.clip(arr, 0.0, 1.0)
             arr8 = (arr8 * 255.0 + 0.5).astype(np.uint8)
             frames_list.append(arr8)
-        frames = np.stack(frames_list, axis=0)   # (N, H, W, 3) uint8
+        frames = np.stack(frames_list, axis=0)  # (N, H, W, 3) uint8
 
-        raw = self._infer_clip(frames)           # (N, H, W) float32
+        raw = self._infer_clip(frames)  # (N, H, W) float32
 
         # Per-clip normalisation (trap 5). Unlike DA-V2 — which outputs
         # a depth-like scalar (larger == farther) and needs a `1 - x`

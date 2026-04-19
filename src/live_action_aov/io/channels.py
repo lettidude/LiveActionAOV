@@ -83,10 +83,10 @@ CANONICAL_CHANNEL_ORDER: tuple[str, ...] = (
 
 __all__ = [
     "CANONICAL_CHANNEL_ORDER",
-    "CH_BACK_X",
-    "CH_BACK_Y",
     "CH_BACKWARD_U",
     "CH_BACKWARD_V",
+    "CH_BACK_X",
+    "CH_BACK_Y",
     "CH_DEPTH_CONFIDENCE",
     "CH_FLOW_CONFIDENCE",
     "CH_FORWARD_U",

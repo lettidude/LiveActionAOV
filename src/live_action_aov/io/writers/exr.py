@@ -44,9 +44,7 @@ class ExrSidecarWriter(SidecarWriter):
         for i, name in enumerate(ordered_names):
             arr = np.asarray(channels[name], dtype=np.float32)
             if arr.shape[:2] != (h, w):
-                raise ValueError(
-                    f"Channel '{name}' has shape {arr.shape} but expected {(h, w)}"
-                )
+                raise ValueError(f"Channel '{name}' has shape {arr.shape} but expected {(h, w)}")
             if arr.ndim == 3 and arr.shape[-1] == 1:
                 arr = arr[..., 0]
             stack[..., i] = arr

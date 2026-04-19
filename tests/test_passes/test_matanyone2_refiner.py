@@ -75,10 +75,20 @@ def _artifacts_two_heroes(n_frames: int, h: int, w: int):
         2: {"label": "vehicle", "frames": list(range(1, n_frames + 1)), "stack": vehicle_stack},
     }
     heroes = [
-        {"track_id": 1, "slot": "r", "label": "person", "score": 0.9,
-         "frames": list(range(1, n_frames + 1))},
-        {"track_id": 2, "slot": "g", "label": "vehicle", "score": 0.6,
-         "frames": list(range(1, n_frames + 1))},
+        {
+            "track_id": 1,
+            "slot": "r",
+            "label": "person",
+            "score": 0.9,
+            "frames": list(range(1, n_frames + 1)),
+        },
+        {
+            "track_id": 2,
+            "slot": "g",
+            "label": "vehicle",
+            "score": 0.6,
+            "frames": list(range(1, n_frames + 1)),
+        },
     ]
     return {
         "sam3_hard_masks": {0: hard},
@@ -167,13 +177,16 @@ def test_instance_absent_frames_zeroed() -> None:
     n, h, w = 5, 16, 24
     hard_stack = _rect_stack(2, h, w, 0, h // 2, 0, w // 2)
     artifacts = {
-        "sam3_hard_masks": {0: {
-            1: {"label": "person", "frames": [1, 2], "stack": hard_stack},
-        }},
-        "sam3_instances": {0: [
-            {"track_id": 1, "slot": "r", "label": "person", "score": 0.9,
-             "frames": [1, 2]},
-        ]},
+        "sam3_hard_masks": {
+            0: {
+                1: {"label": "person", "frames": [1, 2], "stack": hard_stack},
+            }
+        },
+        "sam3_instances": {
+            0: [
+                {"track_id": 1, "slot": "r", "label": "person", "score": 0.9, "frames": [1, 2]},
+            ]
+        },
     }
 
     class _Hallucinator(_FakeMatAnyone):
@@ -208,10 +221,11 @@ def test_missing_hard_mask_recorded_not_crashed() -> None:
     n, h, w = 3, 16, 24
     artifacts = {
         "sam3_hard_masks": {0: {}},
-        "sam3_instances": {0: [
-            {"track_id": 42, "slot": "r", "label": "ghost", "score": 0.5,
-             "frames": [1, 2, 3]},
-        ]},
+        "sam3_instances": {
+            0: [
+                {"track_id": 42, "slot": "r", "label": "ghost", "score": 0.5, "frames": [1, 2, 3]},
+            ]
+        },
     }
     pass_ = _FakeMatAnyone()
     pass_.ingest_artifacts(artifacts)

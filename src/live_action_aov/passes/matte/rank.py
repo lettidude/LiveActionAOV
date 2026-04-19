@@ -20,10 +20,11 @@ Design decisions (from Phase 3 brainstorm):
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Literal, Sequence
+from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 # Canonical RGBA channel order. Enumerated here so tests and callers both
 # reference a single source of truth.
@@ -144,12 +145,12 @@ def rank_and_assign(
     # Deterministic sort: descending score, then descending area, then
     # ascending track_id. Python's sort is stable, so compose in reverse
     # order of precedence.
-    scored.sort(key=lambda p: p[1].track_id)              # tertiary
+    scored.sort(key=lambda p: p[1].track_id)  # tertiary
     scored.sort(key=lambda p: p[1].area_fraction, reverse=True)  # secondary
-    scored.sort(key=lambda p: p[0], reverse=True)                # primary
+    scored.sort(key=lambda p: p[0], reverse=True)  # primary
 
     assigned: dict[SlotName, HeroSlot] = {}
-    slot_list: list[SlotName] = list(slots[:max_heroes])   # type: ignore[assignment]
+    slot_list: list[SlotName] = [cast("SlotName", s) for s in slots[:max_heroes]]
 
     # 1) Apply overrides.
     for ov in overrides:
@@ -191,11 +192,11 @@ def rank_and_assign(
 
 
 __all__ = [
+    "SLOT_ORDER",
     "HeroOverride",
     "HeroSlot",
     "Instance",
     "RankWeights",
-    "SLOT_ORDER",
     "SlotName",
     "rank_and_assign",
     "score_instance",

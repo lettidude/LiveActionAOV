@@ -34,7 +34,7 @@ class TemporalSmoother:
     algorithm = "flow_guided_ema_v1"
 
     DEFAULT_PARAMS: dict[str, Any] = {
-        "applied_to": [],            # list of channel names to smooth
+        "applied_to": [],  # list of channel names to smooth
         "alpha": 0.4,
         "fb_threshold_px": 1.0,
     }
@@ -69,8 +69,8 @@ class TemporalSmoother:
             if i == 0:
                 continue  # first frame — nothing to warp from
             prev = frames_sorted[i - 1]
-            bwd = flow_cache.get(shot_id, f, "backward")          # f → f-1
-            fwd_prev = flow_cache.get(shot_id, prev, "forward")   # f-1 → f
+            bwd = flow_cache.get(shot_id, f, "backward")  # f → f-1
+            fwd_prev = flow_cache.get(shot_id, prev, "forward")  # f-1 → f
             if bwd is None or fwd_prev is None:
                 continue
             occlusion = _fb_occlusion(fwd_prev, bwd, threshold_px=threshold)
@@ -118,9 +118,7 @@ def _warp_backward(frame_prev: np.ndarray, bwd_at_cur: np.ndarray) -> np.ndarray
     yy, xx = torch.meshgrid(y_coords, x_coords, indexing="ij")
     src_x = xx + b[0]
     src_y = yy + b[1]
-    grid = torch.stack(
-        [src_x / max(w - 1, 1) * 2 - 1, src_y / max(h - 1, 1) * 2 - 1], dim=-1
-    )[None]
+    grid = torch.stack([src_x / max(w - 1, 1) * 2 - 1, src_y / max(h - 1, 1) * 2 - 1], dim=-1)[None]
     warped = torch.nn.functional.grid_sample(
         fp, grid, mode="bilinear", padding_mode="border", align_corners=True
     )
@@ -147,9 +145,7 @@ def _fb_occlusion(fwd_prev: np.ndarray, bwd_cur: np.ndarray, threshold_px: float
     # Sample fwd_prev at the predicted source location (p + bwd_cur[p]).
     src_x = xx + bc[0, 0]
     src_y = yy + bc[0, 1]
-    grid = torch.stack(
-        [src_x / max(w - 1, 1) * 2 - 1, src_y / max(h - 1, 1) * 2 - 1], dim=-1
-    )[None]
+    grid = torch.stack([src_x / max(w - 1, 1) * 2 - 1, src_y / max(h - 1, 1) * 2 - 1], dim=-1)[None]
     fwd_at_src = torch.nn.functional.grid_sample(
         fp, grid, mode="bilinear", padding_mode="border", align_corners=True
     )

@@ -7,8 +7,8 @@ import pytest
 
 pytest.importorskip("torch")
 
-from live_action_aov.post.temporal_smooth import TemporalSmoother  # noqa: E402
-from live_action_aov.shared.optical_flow.cache import FlowCache  # noqa: E402
+from live_action_aov.post.temporal_smooth import TemporalSmoother
+from live_action_aov.shared.optical_flow.cache import FlowCache
 
 
 def test_zero_flow_blends_identity_with_configured_alpha() -> None:
@@ -51,9 +51,7 @@ def test_occluded_pixels_keep_raw_value() -> None:
     cache.put("shotA", 1, "forward", large_fwd)
     cache.put("shotA", 2, "backward", large_bwd)
 
-    smoother = TemporalSmoother(
-        {"applied_to": ["Z"], "alpha": 0.9, "fb_threshold_px": 1.0}
-    )
+    smoother = TemporalSmoother({"applied_to": ["Z"], "alpha": 0.9, "fb_threshold_px": 1.0})
     out = smoother.apply(per_frame, cache, "shotA")
 
     # With err ≈ 10 px and threshold 1 px, occlusion saturates to 1 → raw.
@@ -97,7 +95,7 @@ def test_normals_triplet_stays_unit_length_after_blend() -> None:
 
     per_frame = {
         1: {"N.x": prev_nx, "N.y": prev_ny, "N.z": prev_nz},
-        2: {"N.x": cur_nx,  "N.y": cur_ny,  "N.z": cur_nz},
+        2: {"N.x": cur_nx, "N.y": cur_ny, "N.z": cur_nz},
     }
     cache = FlowCache()
     zero = np.zeros((2, h, w), dtype=np.float32)
@@ -109,7 +107,7 @@ def test_normals_triplet_stays_unit_length_after_blend() -> None:
     )
     out = smoother.apply(per_frame, cache, "s")
     nx, ny, nz = out[2]["N.x"], out[2]["N.y"], out[2]["N.z"]
-    mag = np.sqrt(nx ** 2 + ny ** 2 + nz ** 2)
+    mag = np.sqrt(nx**2 + ny**2 + nz**2)
     # Without renormalization, blending (1,0,0) and (0,1,0) with alpha=0.5
     # gives (0.5, 0.5, 0) → |N| = √0.5 ≈ 0.707. Renormalization must restore 1.
     assert np.allclose(mag, 1.0, atol=1e-5)

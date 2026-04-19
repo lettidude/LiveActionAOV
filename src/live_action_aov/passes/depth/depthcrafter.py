@@ -62,10 +62,10 @@ class DepthCrafterPass(UtilityPass):
     input_colorspace = "srgb_display"
 
     produces_channels = [
-        ChannelSpec(name=CH_Z,     description="Relative depth, per-clip normalized [0,1] (1=near)"),
+        ChannelSpec(name=CH_Z, description="Relative depth, per-clip normalized [0,1] (1=near)"),
         ChannelSpec(name=CH_Z_RAW, description="Raw stitched model output (un-normalized)"),
     ]
-    smoothable_channels: list[str] = []   # VIDEO_CLIP: already temporally coherent
+    smoothable_channels: list[str] = []  # VIDEO_CLIP: already temporally coherent
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "window": 110,
@@ -73,7 +73,7 @@ class DepthCrafterPass(UtilityPass):
         "num_inference_steps": 5,
         "guidance_scale": 1.0,
         "inference_short_edge": 640,
-        "precision": "fp16",            # fp16 default — SVD is VRAM-heavy on fp32
+        "precision": "fp16",  # fp16 default — SVD is VRAM-heavy on fp32
         "model_id": "tencent/DepthCrafter",
     }
 
@@ -83,8 +83,7 @@ class DepthCrafterPass(UtilityPass):
             self.params.setdefault(k, v)
         if int(self.params["overlap"]) >= int(self.params["window"]):
             raise ValueError(
-                f"overlap ({self.params['overlap']}) must be < window "
-                f"({self.params['window']})"
+                f"overlap ({self.params['overlap']}) must be < window ({self.params['window']})"
             )
         self._pipeline: Any = None
         self._device: Any = None
@@ -139,9 +138,7 @@ class DepthCrafterPass(UtilityPass):
         import torch
 
         if frames.ndim != 4 or frames.shape[-1] != 3:
-            raise ValueError(
-                f"DepthCrafter preprocess expects (W, H, W_px, 3), got {frames.shape}"
-            )
+            raise ValueError(f"DepthCrafter preprocess expects (W, H, W_px, 3), got {frames.shape}")
         self._load_model()
         n, plate_h, plate_w, _ = frames.shape
         short = int(self.params["inference_short_edge"])
@@ -150,7 +147,7 @@ class DepthCrafterPass(UtilityPass):
         inf_w = max(64, int(round(plate_w * scale / 8)) * 8)
 
         img = np.clip(frames, 0.0, 1.0).astype(np.float32, copy=False)
-        t = torch.from_numpy(img).permute(0, 3, 1, 2)   # (N, 3, H, W)
+        t = torch.from_numpy(img).permute(0, 3, 1, 2)  # (N, 3, H, W)
         t = torch.nn.functional.interpolate(
             t, size=(inf_h, inf_w), mode="bilinear", align_corners=False
         )
@@ -187,9 +184,7 @@ class DepthCrafterPass(UtilityPass):
         if depth is None and hasattr(result, "frames"):
             depth = result.frames
         if depth is None:
-            raise RuntimeError(
-                "DepthCrafter pipeline returned no `.depth`/`.frames` attribute"
-            )
+            raise RuntimeError("DepthCrafter pipeline returned no `.depth`/`.frames` attribute")
         return depth
 
     def postprocess(self, tensor: Any) -> dict[str, np.ndarray]:
@@ -201,13 +196,13 @@ class DepthCrafterPass(UtilityPass):
         plate_h, plate_w = tensor["plate_shape"]
         d = tensor["depth"]
         if d.ndim == 3:
-            d = d.unsqueeze(1)            # (N, 1, h, w)
+            d = d.unsqueeze(1)  # (N, 1, h, w)
         elif d.ndim == 4 and d.shape[1] != 1:
             d = d.mean(dim=1, keepdim=True)
         d_up = torch.nn.functional.interpolate(
             d, size=(plate_h, plate_w), mode="bilinear", align_corners=False
         )
-        raw = d_up.squeeze(1).cpu().numpy().astype(np.float32)   # (N, H, W)
+        raw = d_up.squeeze(1).cpu().numpy().astype(np.float32)  # (N, H, W)
         # Emit a per-frame dict keyed by local window index (caller reassembles).
         return {CH_Z_RAW: raw, CH_Z: raw}
 
@@ -225,9 +220,7 @@ class DepthCrafterPass(UtilityPass):
         window = min(int(self.params["window"]), n_frames)
         overlap = min(int(self.params["overlap"]), max(window - 1, 0))
 
-        frames = np.stack(
-            [reader.read_frame(f)[0] for f in range(first, last + 1)], axis=0
-        )
+        frames = np.stack([reader.read_frame(f)[0] for f in range(first, last + 1)], axis=0)
         plate_h, plate_w = int(frames.shape[1]), int(frames.shape[2])
 
         starts = plan_window_starts(n_frames, window, overlap)
@@ -237,11 +230,9 @@ class DepthCrafterPass(UtilityPass):
             model_in = self.preprocess(clip)
             model_out = self.infer(model_in)
             partial = self.postprocess(model_out)
-            predictions.append(partial[CH_Z_RAW])    # (window, H, W)
+            predictions.append(partial[CH_Z_RAW])  # (window, H, W)
 
-        raw_clip = stitch_windowed_predictions(
-            predictions, starts, n_frames, overlap
-        )                                            # (N, H, W)
+        raw_clip = stitch_windowed_predictions(predictions, starts, n_frames, overlap)  # (N, H, W)
 
         # Per-clip normalization (trap 5); flip so larger Z == nearer.
         d_min = float(raw_clip.min())

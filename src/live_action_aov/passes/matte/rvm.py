@@ -97,14 +97,14 @@ class RVMRefinerPass(UtilityPass):
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "model_id": "PeterL1n/RobustVideoMatting",
-        "variant": "mobilenetv3",          # "mobilenetv3" | "resnet50"
-        "inference_short_edge": 512,       # RVM is tolerant; keep it light
+        "variant": "mobilenetv3",  # "mobilenetv3" | "resnet50"
+        "inference_short_edge": 512,  # RVM is tolerant; keep it light
         "precision": "fp16",
-        "downsample_ratio": 0.25,          # RVM README default for <=2K input
-        "hard_mask_dilate": 3,             # grow the seed mask by N pixels
-                                           # before multiplying the plate —
-                                           # gives RVM a little context around
-                                           # the hard boundary to refine.
+        "downsample_ratio": 0.25,  # RVM README default for <=2K input
+        "hard_mask_dilate": 3,  # grow the seed mask by N pixels
+        # before multiplying the plate —
+        # gives RVM a little context around
+        # the hard boundary to refine.
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -125,7 +125,7 @@ class RVMRefinerPass(UtilityPass):
     # Artifact ingestion — pull SAM 3's outputs before run_shot.
     # ------------------------------------------------------------------
 
-    def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:  # type: ignore[override]
+    def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:
         hard = artifacts.get("sam3_hard_masks") or {}
         # `sam3_hard_masks` is shot-level, stored under a single frame key.
         # Unwrap to `dict[track_id, {"label", "frames", "stack"}]`.
@@ -212,16 +212,10 @@ class RVMRefinerPass(UtilityPass):
         # (T, 1, H, W) on-device copy of the hard mask, dilated via a
         # max-pool. Dilation on GPU avoids pulling scipy/cv2 into the
         # hot path. Kernel size 2k+1 keeps the mask centred.
-        hard_t = (
-            torch.from_numpy(hard_stack)
-            .to(device=device, dtype=dtype)
-            .unsqueeze(1)
-        )
+        hard_t = torch.from_numpy(hard_stack).to(device=device, dtype=dtype).unsqueeze(1)
         if dilate_px > 0:
             k = 2 * dilate_px + 1
-            dilated_t = F.max_pool2d(
-                hard_t, kernel_size=k, stride=1, padding=dilate_px
-            )
+            dilated_t = F.max_pool2d(hard_t, kernel_size=k, stride=1, padding=dilate_px)
         else:
             dilated_t = hard_t
 
@@ -292,9 +286,9 @@ class RVMRefinerPass(UtilityPass):
     ) -> dict[int, dict[str, np.ndarray]]:
         first, last = frame_range
         n_frames = last - first + 1
-        frames = np.stack(
-            [reader.read_frame(f)[0] for f in range(first, last + 1)], axis=0
-        ).astype(np.float32, copy=False)
+        frames = np.stack([reader.read_frame(f)[0] for f in range(first, last + 1)], axis=0).astype(
+            np.float32, copy=False
+        )
         plate_h, plate_w = int(frames.shape[1]), int(frames.shape[2])
 
         # Initialize all four matte channels with zeros — any slot that
@@ -319,9 +313,7 @@ class RVMRefinerPass(UtilityPass):
                 # Ranker saw the track but the hard-mask artifact is
                 # missing. Leave zeros; record for metadata so QC can
                 # spot it.
-                self._refined.append(
-                    {**hero, "refined_frames": [], "missing_hard_mask": True}
-                )
+                self._refined.append({**hero, "refined_frames": [], "missing_hard_mask": True})
                 continue
 
             # Build the dense (n_frames, H, W) hard-mask stack for this track.

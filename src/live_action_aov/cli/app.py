@@ -90,11 +90,11 @@ def plugins_list(
             lic: License = cls.declared_license()
             lic_str = lic.spdx
             commercial = "yes" if lic.commercial_use else "no"
-        except Exception:  # noqa: BLE001
+        except Exception:
             lic_str = "?"
             commercial = "?"
         pt = getattr(cls, "pass_type", None)
-        pt_str = pt.value if hasattr(pt, "value") else str(pt or "?")
+        pt_str = str(pt.value) if pt is not None and hasattr(pt, "value") else str(pt or "?")
         table.add_row(name, pt_str, lic_str, commercial)
     console.print(table)
 
@@ -113,7 +113,7 @@ def run_shot(
             "--passes",
             "-p",
             help="Comma-separated pass list. Semantic names `depth` and `normals` "
-                 "are rewritten to the --depth-backend / --normals-backend choice.",
+            "are rewritten to the --depth-backend / --normals-backend choice.",
         ),
     ],
     depth_backend: Annotated[
@@ -121,7 +121,7 @@ def run_shot(
         typer.Option(
             "--depth-backend",
             help="Backend for the semantic `depth` pass. "
-                 "Default: depth_anything_v2 (Apache-2.0, commercial OK).",
+            "Default: depth_anything_v2 (Apache-2.0, commercial OK).",
         ),
     ] = "depth_anything_v2",
     normals_backend: Annotated[
@@ -136,7 +136,7 @@ def run_shot(
         typer.Option(
             "--matte-detector",
             help="Detector for the semantic `matte` pass. Default: sam3_matte "
-                 "(SAM-License-1.0, commercial OK with military carve-out).",
+            "(SAM-License-1.0, commercial OK with military carve-out).",
         ),
     ] = "sam3_matte",
     refiner: Annotated[
@@ -144,7 +144,7 @@ def run_shot(
         typer.Option(
             "--refiner",
             help="Refiner for the semantic `matte` pass. `rvm_refiner` (MIT, "
-                 "commercial-safe default) or `matanyone2` (NTU-S-Lab-1.0, NC).",
+            "commercial-safe default) or `matanyone2` (NTU-S-Lab-1.0, NC).",
         ),
     ] = "rvm_refiner",
     allow_noncommercial: Annotated[
@@ -159,11 +159,11 @@ def run_shot(
         typer.Option(
             "--display-transform/--no-display-transform",
             help="Apply a clip-uniform display transform (auto-exposure + "
-                 "AgX + sRGB EOTF) to every frame before passes see it. "
-                 "Required for scene-referred plates (lin_rec709, ACEScg, "
-                 "ACES); off by default so sRGB plates pass through "
-                 "unchanged. Exposure is analysed once per clip so there "
-                 "is no temporal flicker.",
+            "AgX + sRGB EOTF) to every frame before passes see it. "
+            "Required for scene-referred plates (lin_rec709, ACEScg, "
+            "ACES); off by default so sRGB plates pass through "
+            "unchanged. Exposure is analysed once per clip so there "
+            "is no temporal flicker.",
         ),
     ] = False,
 ) -> None:
@@ -216,7 +216,7 @@ def run_shot(
     )
     try:
         live_action_aov.run(job)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         console.print(f"[red]FAILED:[/red] {e}")
         raise typer.Exit(code=1) from e
 
@@ -245,7 +245,7 @@ def inspect_cmd(
         typer.Option(
             "--json",
             help="Emit a machine-parseable JSON document instead of the "
-                 "human-readable text report.",
+            "human-readable text report.",
         ),
     ] = False,
 ) -> None:
@@ -261,7 +261,7 @@ def inspect_cmd(
 
     try:
         report = _inspect.build_report(sidecar)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         # Bubble a clean one-liner rather than a traceback — `inspect` is
         # user-facing tooling, not a dev command.
         typer.echo(f"inspect: failed to read {sidecar}: {e}", err=True)
@@ -338,7 +338,8 @@ def _sniff_sequence(folder: Path) -> tuple[str, tuple[int, int], tuple[int, int]
     # transform luma dot-product as a (H,W,2)@(3,) matmul crash.
     _SIDECAR_TOKENS = (".utility.", ".hero.", ".mask.")
     exrs = sorted(
-        p for p in folder.iterdir()
+        p
+        for p in folder.iterdir()
         if p.is_file()
         and p.suffix.lower() == ".exr"
         and not any(tok in p.name for tok in _SIDECAR_TOKENS)

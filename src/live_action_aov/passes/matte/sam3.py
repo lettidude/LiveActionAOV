@@ -69,7 +69,7 @@ class _DetectedInstance:
 
     track_id: int
     label: str
-    masks: dict[int, np.ndarray]   # frame_idx -> (H, W) float32 in [0, 1]
+    masks: dict[int, np.ndarray]  # frame_idx -> (H, W) float32 in [0, 1]
 
 
 class SAM3MattePass(UtilityPass):
@@ -99,9 +99,9 @@ class SAM3MattePass(UtilityPass):
         "model_id": "facebook/sam3",
         "concepts": ["person", "vehicle", "tree", "building", "sky", "water", "animal"],
         "confidence_threshold": 0.4,
-        "min_area_fraction": 0.005,    # drop instances smaller than 0.5% of plate
-        "sample_frame": "middle",      # "first" | "middle" | "last" | int
-        "redetect_stride": None,       # None = seed-and-track only (v1 default)
+        "min_area_fraction": 0.005,  # drop instances smaller than 0.5% of plate
+        "sample_frame": "middle",  # "first" | "middle" | "last" | int
+        "redetect_stride": None,  # None = seed-and-track only (v1 default)
         # Ranking weights (RankWeights schema).
         "ranking": {
             "area": 0.4,
@@ -111,7 +111,7 @@ class SAM3MattePass(UtilityPass):
             "user_priority": 0.0,
         },
         "max_heroes": 4,
-        "heroes": [],                  # user overrides: [{"track_id": 17, "slot": "r"}]
+        "heroes": [],  # user overrides: [{"track_id": 17, "slot": "r"}]
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -123,7 +123,7 @@ class SAM3MattePass(UtilityPass):
         self._dtype: Any = None
         # Populated by `run_shot`; consumed by `emit_artifacts`.
         self._instances: list[_DetectedInstance] = []
-        self._heroes: list[Any] = []   # list[rank.HeroSlot]
+        self._heroes: list[Any] = []  # list[rank.HeroSlot]
         self._concepts_found: list[str] = []
         self._plate_shape: tuple[int, int] = (0, 0)
         # Flow snapshot (optional) — used for motion-energy feature when
@@ -137,9 +137,9 @@ class SAM3MattePass(UtilityPass):
     # SAM 3 doesn't *require* flow, but if the user put `flow` in their job
     # the ranker can use it. We declare the soft dep by reading it in
     # `ingest_artifacts` and tolerating absence.
-    requires_artifacts: list[str] = []   # soft dep; no DAG enforcement
+    requires_artifacts: list[str] = []  # soft dep; no DAG enforcement
 
-    def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:  # type: ignore[override]
+    def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:
         self._forward_flow = dict(artifacts.get("forward_flow") or {})
 
     # ------------------------------------------------------------------
@@ -184,9 +184,7 @@ class SAM3MattePass(UtilityPass):
         self._det_model = det_model
 
         self._trk_processor = Sam3TrackerVideoProcessor.from_pretrained(repo)
-        trk_dtype = (
-            torch.bfloat16 if self._device.type == "cuda" else torch.float32
-        )
+        trk_dtype = torch.bfloat16 if self._device.type == "cuda" else torch.float32
         trk_model = Sam3TrackerVideoModel.from_pretrained(repo, dtype=trk_dtype)
         trk_model.to(self._device).eval()
         self._trk_model = trk_model
@@ -239,9 +237,7 @@ class SAM3MattePass(UtilityPass):
         seeds: list[tuple[int, str, np.ndarray]] = []
         next_track_id = 1
         for concept in concepts:
-            inputs = processor(
-                images=pil, text=concept, return_tensors="pt"
-            ).to(device)
+            inputs = processor(images=pil, text=concept, return_tensors="pt").to(device)
             with torch.no_grad():
                 outputs = model(**inputs)
             # target_sizes is (H, W) not (W, H) — the post-processor
@@ -294,7 +290,6 @@ class SAM3MattePass(UtilityPass):
         in [0, 1] at plate resolution. Output: (N, H, W) float32 stack of
         hard-ish masks.
         """
-        import torch
         from PIL import Image
 
         self._load_model()
@@ -328,7 +323,7 @@ class SAM3MattePass(UtilityPass):
         processor.add_inputs_to_inference_session(
             session,
             frame_idx=int(seed_frame_idx),
-            obj_ids=1,               # single-object track; we repeat per instance
+            obj_ids=1,  # single-object track; we repeat per instance
             input_masks=seed_bool,
             original_size=(H, W),
         )
@@ -382,11 +377,7 @@ class SAM3MattePass(UtilityPass):
 
         # Forward from seed to end; then backward from seed to start. The
         # seed frame itself is emitted by forward propagation.
-        _consume(
-            model.propagate_in_video_iterator(
-                session, start_frame_idx=int(seed_frame_idx)
-            )
-        )
+        _consume(model.propagate_in_video_iterator(session, start_frame_idx=int(seed_frame_idx)))
         _consume(
             model.propagate_in_video_iterator(
                 session,
@@ -405,9 +396,7 @@ class SAM3MattePass(UtilityPass):
 
     def preprocess(self, frames: np.ndarray) -> Any:
         if frames.ndim != 4 or frames.shape[-1] != 3:
-            raise ValueError(
-                f"SAM3MattePass preprocess expects (N, H, W, 3), got {frames.shape}"
-            )
+            raise ValueError(f"SAM3MattePass preprocess expects (N, H, W, 3), got {frames.shape}")
         self._load_model()
         return {"video": frames.astype(np.float32, copy=False)}
 
@@ -431,9 +420,7 @@ class SAM3MattePass(UtilityPass):
     ) -> dict[int, dict[str, np.ndarray]]:
         first, last = frame_range
         n_frames = last - first + 1
-        frames = np.stack(
-            [reader.read_frame(f)[0] for f in range(first, last + 1)], axis=0
-        )
+        frames = np.stack([reader.read_frame(f)[0] for f in range(first, last + 1)], axis=0)
         plate_h, plate_w = int(frames.shape[1]), int(frames.shape[2])
         self._plate_shape = (plate_h, plate_w)
 
@@ -457,8 +444,9 @@ class SAM3MattePass(UtilityPass):
                     f"Track stack for {track_id} has shape {stack.shape}, "
                     f"expected ({n_frames}, {plate_h}, {plate_w})"
                 )
-            masks = {first + k: stack[k].astype(np.float32, copy=False)
-                     for k in range(stack.shape[0])}
+            masks = {
+                first + k: stack[k].astype(np.float32, copy=False) for k in range(stack.shape[0])
+            }
             # Drop instances that fall below the area floor everywhere.
             area_floor = float(self.params["min_area_fraction"]) * plate_h * plate_w
             if all(m.sum() < area_floor for m in masks.values()):
@@ -466,9 +454,7 @@ class SAM3MattePass(UtilityPass):
             self._instances.append(_DetectedInstance(track_id, label, masks))
 
         # Union by concept into per-frame channels.
-        per_frame: dict[int, dict[str, np.ndarray]] = {
-            first + i: {} for i in range(n_frames)
-        }
+        per_frame: dict[int, dict[str, np.ndarray]] = {first + i: {} for i in range(n_frames)}
         concepts_found: set[str] = set()
         for concept in concepts:
             # OR across all instances of this concept, per frame.
@@ -497,8 +483,10 @@ class SAM3MattePass(UtilityPass):
             for h in (self.params.get("heroes") or [])
             if "track_id" in h and "slot" in h
         ]
-        ranked_input = [self._to_rank_instance(inst, n_frames, plate_h, plate_w, first)
-                        for inst in self._instances]
+        ranked_input = [
+            self._to_rank_instance(inst, n_frames, plate_h, plate_w, first)
+            for inst in self._instances
+        ]
         self._heroes = rank_and_assign(
             ranked_input,
             rank_weights,
@@ -569,12 +557,7 @@ class SAM3MattePass(UtilityPass):
         # (the artifact is shot-level, not per-frame). Value is
         # {track_id: {"label": str, "stack": (T, H, W)}} — the shape
         # CorridorKey will consume (design §21.8).
-        n_frames = 0
         plate_h, plate_w = self._plate_shape
-        if self._instances:
-            any_inst = self._instances[0]
-            if any_inst.masks:
-                n_frames = len(any_inst.masks)
         hard_masks: dict[int, dict[str, Any]] = {}
         for inst in self._instances:
             frames_sorted = sorted(inst.masks)
