@@ -42,15 +42,14 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QRadioButton,
-    QScrollArea,
     QSizePolicy,
     QSlider,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -259,50 +258,63 @@ class InspectorPanel(QWidget):
         passes_hint.setStyleSheet("color: #999; font-size: 9pt;")
         passes_hint.setWordWrap(True)
 
-        # The inspector can't fit every control on a short window
-        # height (especially once the pass catalog grows). Wrap the
-        # content in a scroll area so Passes gets natural row heights
-        # instead of Qt squishing them into overlap. The outer widget
-        # (self) holds the scroll area; the scroll area holds the
-        # actual content widget with the vertical layout.
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(8, 8, 8, 8)
-        content_layout.addLayout(form)
-        content_layout.addSpacing(8)
-        content_layout.addWidget(passes_header)
-        content_layout.addWidget(passes_hint)
-        content_layout.addLayout(passes_block)
-        content_layout.addSpacing(16)
-        content_layout.addWidget(_section_label("Colorspace"))
-        content_layout.addLayout(cs_block)
-        content_layout.addSpacing(12)
-        content_layout.addWidget(_section_label("Exposure (EV)"))
-        content_layout.addLayout(exposure_row)
-        content_layout.addWidget(self._auto_ev_label)
-        content_layout.addSpacing(12)
-        content_layout.addWidget(self._reset_btn)
-        content_layout.addSpacing(12)
-        content_layout.addWidget(_section_label("Output"))
-        content_layout.addWidget(self._out_inplace)
-        content_layout.addWidget(self._out_subfolder)
-        content_layout.addLayout(subfolder_row)
-        content_layout.addWidget(self._out_external)
-        content_layout.addLayout(out_root_row)
-        content_layout.addLayout(external_name_row)
-        content_layout.addWidget(self._resolved_out_label)
-        content_layout.addStretch()
+        # --- Tabbed layout ---
+        # Shot identity stays above the tabs so the user always knows
+        # which shot they're editing regardless of which tab they're
+        # on. Passes is the first/leftmost tab because it's the main
+        # feature; Preview groups the viewport-relevant knobs
+        # (colourspace, exposure, reset); Output isolates the
+        # write-destination controls which are only touched once per
+        # batch.
 
-        scroll = QScrollArea()
-        scroll.setWidget(content)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Passes tab.
+        passes_tab = QWidget()
+        passes_layout = QVBoxLayout(passes_tab)
+        passes_layout.setContentsMargins(8, 8, 8, 8)
+        passes_layout.addWidget(passes_header)
+        passes_layout.addWidget(passes_hint)
+        passes_layout.addLayout(passes_block)
+        passes_layout.addStretch()
+
+        # Preview tab — colourspace + exposure controls live together
+        # because they both affect the viewport render.
+        preview_tab = QWidget()
+        preview_layout = QVBoxLayout(preview_tab)
+        preview_layout.setContentsMargins(8, 8, 8, 8)
+        preview_layout.addWidget(_section_label("Colorspace"))
+        preview_layout.addLayout(cs_block)
+        preview_layout.addSpacing(12)
+        preview_layout.addWidget(_section_label("Exposure (EV)"))
+        preview_layout.addLayout(exposure_row)
+        preview_layout.addWidget(self._auto_ev_label)
+        preview_layout.addSpacing(12)
+        preview_layout.addWidget(self._reset_btn)
+        preview_layout.addStretch()
+
+        # Output tab.
+        output_tab = QWidget()
+        output_layout = QVBoxLayout(output_tab)
+        output_layout.setContentsMargins(8, 8, 8, 8)
+        output_layout.addWidget(_section_label("Output"))
+        output_layout.addWidget(self._out_inplace)
+        output_layout.addWidget(self._out_subfolder)
+        output_layout.addLayout(subfolder_row)
+        output_layout.addWidget(self._out_external)
+        output_layout.addLayout(out_root_row)
+        output_layout.addLayout(external_name_row)
+        output_layout.addWidget(self._resolved_out_label)
+        output_layout.addStretch()
+
+        tabs = QTabWidget()
+        tabs.addTab(passes_tab, "Passes")
+        tabs.addTab(preview_tab, "Preview")
+        tabs.addTab(output_tab, "Output")
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.addLayout(form)  # Shot / Frames, always visible
+        outer.addSpacing(4)
+        outer.addWidget(tabs, stretch=1)
 
         # Wire registry signals last (after all widgets exist so the
         # refresh never lands against a half-built layout).
@@ -535,8 +547,5 @@ def _section_label(text: str) -> QLabel:
     lbl.setStyleSheet("font-weight: bold; color: #ccc;")
     return lbl
 
-
-# Quiet ruff about unused import when we rearrange the layout.
-_ = QFrame
 
 __all__ = ["InspectorPanel"]
