@@ -141,6 +141,29 @@ shotgrid   = "live_action_aov.integrations.shotgrid:ShotGridAdapterStub"
 openpype   = "live_action_aov.integrations.openpype:OpenPypeAdapterStub"
 
 # -----------------------------------------------------------------------------
+# UV — FORCE CUDA TORCH ON LINUX / WINDOWS
+# -----------------------------------------------------------------------------
+# The default `pip install torch` on PyPI hands out the CPU-only wheel
+# on Windows; uv inherits that default. Every neural pass in this tool
+# fails on CPU (fp16 kernels don't exist), so we override the source
+# for `torch` + `torchvision` so `uv sync` pulls the cu124 wheels
+# deterministically — no "worked yesterday, broken today after a
+# resync" regressions. macOS falls through to PyPI for MPS support.
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+# -----------------------------------------------------------------------------
 # TOOL CONFIGURATIONS
 # -----------------------------------------------------------------------------
 

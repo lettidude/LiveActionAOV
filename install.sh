@@ -61,45 +61,30 @@ if ! uv python install 3.11 >>"$LOG_FILE" 2>&1; then
 fi
 ok "Python 3.11 provisioned"
 
-# 4. Sync dependencies — installs torch from PyPI. On Linux the
-#    default wheel is CUDA 12.1; on Windows it's CPU-only. Step 5
-#    swaps to the cu124 build so the version is consistent across
-#    platforms and covers RTX 30 / 40 / 50-series.
+# 4. Sync dependencies. `[tool.uv.sources]` in pyproject pins torch +
+#    torchvision to the pytorch-cu124 index on Windows/Linux; macOS
+#    falls through to PyPI for MPS support. `uv sync` is therefore
+#    authoritative — no separate reinstall step, no risk of a future
+#    resync silently downgrading to the CPU wheel.
 log "Installing dependencies (this may take several minutes)..."
 if ! uv sync --extra dev >>"$LOG_FILE" 2>&1; then
     fail "uv sync failed" "See $LOG_FILE for details. Common causes: network issues, incompatible torch wheel for platform"
 fi
 ok "Dependencies installed"
 
-# 5. Replace torch with the CUDA build on machines with an NVIDIA
-#    GPU. Neural passes need CUDA to run at usable speed; the fp16
-#    passes hard-fail on CPU. macOS skips this step — MPS is the
-#    acceleration path there and torch ships an MPS-aware wheel by
-#    default.
-if [[ -n "${DRIVER_VER:-}" ]]; then
-    log "Replacing torch with CUDA 12.4 build for NVIDIA GPU..."
-    if ! uv pip install --reinstall torch torchvision \
-            --index-url https://download.pytorch.org/whl/cu124 \
+# 5. Verify CUDA is actually available on Linux (macOS uses MPS so
+#    cuda.is_available() is always False and that's fine).
+if [[ "$(uname)" == "Linux" ]] && [[ -n "${DRIVER_VER:-}" ]]; then
+    if uv run python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" \
             >>"$LOG_FILE" 2>&1; then
-        log "⚠ WARNING: CUDA torch install failed. Re-run manually:"
-        log "  uv pip install --reinstall torch torchvision \\"
-        log "      --index-url https://download.pytorch.org/whl/cu124"
+        ok "torch.cuda.is_available() confirmed"
     else
-        ok "CUDA torch installed"
-        if uv run python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" \
-                >>"$LOG_FILE" 2>&1; then
-            ok "torch.cuda.is_available() confirmed"
-        else
-            log "⚠ WARNING: torch.cuda.is_available() is still False."
-            log "           Check driver version (nvidia-smi) and that the GPU isn't"
-            log "           claimed by another process."
-        fi
+        log "⚠ WARNING: torch.cuda.is_available() is False despite NVIDIA driver present."
+        log "           Check nvidia-smi output; try re-running after a reboot."
     fi
-elif [[ "$(uname)" == "Darwin" ]]; then
-    log "ℹ Skipping CUDA torch swap — using default MPS/CPU wheel on macOS."
-else
-    log "⚠ No NVIDIA driver detected — leaving default torch in place."
-    log "  Neural passes will refuse to run; install drivers first then re-run this script."
+elif [[ "$(uname)" == "Linux" ]]; then
+    log "⚠ No NVIDIA driver detected — neural passes will refuse to run."
+    log "  Install drivers then re-run this script."
 fi
 
 # 6. Smoke test
