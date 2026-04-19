@@ -354,11 +354,13 @@ def _base_attrs(
             base[f"{prefix}/label"] = str(hero.get("label", ""))
             base[f"{prefix}/track_id"] = int(hero.get("track_id", 0))
             base[f"{prefix}/score"] = float(hero.get("score", 0.0))
-    if applied_post:
+    # Temporal smoothers — stamped under `smooth/`.
+    smoothers = [p for p in applied_post if p["name"] == "temporal_smooth"]
+    if smoothers:
         # Disambiguate per-pass auto-wired smoothers via a `::<pass>` suffix on
         # the metadata key. Manual post entries keep their raw name.
         tagged: list[str] = []
-        for p in applied_post:
+        for p in smoothers:
             auto_for = p["params"].get("_auto_for")
             key = f"{p['name']}::{auto_for}" if auto_for else p["name"]
             tagged.append(key)
@@ -373,6 +375,20 @@ def _base_attrs(
                     p["params"]["fb_threshold_px"]
                 )
         base[f"{METADATA_NAMESPACE}/smooth/post_processors"] = ",".join(tagged)
+
+    # SSAO — stamped under `ao/`. Derived purely from Z + N channels, so
+    # we record the input provenance so downstream QC can tell a synth
+    # AO apart from a rendered one.
+    aos = [p for p in applied_post if p["name"] == "ssao"]
+    if aos:
+        p = aos[0]
+        base[f"{METADATA_NAMESPACE}/ao/derived_from"] = "depth+normals"
+        base[f"{METADATA_NAMESPACE}/ao/algorithm"] = p["algorithm"]
+        base[f"{METADATA_NAMESPACE}/ao/radius"] = float(p["params"].get("radius", 0.0))
+        base[f"{METADATA_NAMESPACE}/ao/samples"] = int(p["params"].get("samples", 0))
+        base[f"{METADATA_NAMESPACE}/ao/bias"] = float(p["params"].get("bias", 0.0))
+        base[f"{METADATA_NAMESPACE}/ao/intensity"] = float(p["params"].get("intensity", 1.0))
+
     return base
 
 
