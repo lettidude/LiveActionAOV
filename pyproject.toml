@@ -60,6 +60,17 @@ dev = [
 # Model-specific extras (user installs what they need)
 depthcrafter = ["diffusers>=0.30", "accelerate>=0.30"]
 normalcrafter = ["diffusers>=0.30", "accelerate>=0.30"]
+# Video-Depth-Anything uses a vendored ViT + temporal DPT backbone. The
+# model's internal resize path uses OpenCV; einops ships with the
+# DINOv2/motion-module blocks; easydict is needed by the temporal head.
+# xformers is optional (speed-up only; the attention layers have a
+# vanilla PyTorch fallback).
+video_depth_anything = [
+    "opencv-python-headless>=4.7",
+    "einops>=0.4",
+    "easydict>=1.10",
+    "huggingface_hub>=0.20",
+]
 # DepthPro ships through transformers (already a core dep), but we leave the
 # extra defined so users have a discoverable `pip install live-action-aov[depthpro]`
 # entry and future revisions can swap in apple-ml-depth-pro if needed.
@@ -97,10 +108,11 @@ liveaov-gui = "live_action_aov.gui.app:main"
 # groups in their own pyproject.toml. Core has zero hardcoded imports.
 
 [project.entry-points."live_action_aov.passes"]
-flow               = "live_action_aov.passes.flow.raft:RAFTPass"
-depth_anything_v2  = "live_action_aov.passes.depth.depth_anything_v2:DepthAnythingV2Pass"
-depthcrafter       = "live_action_aov.passes.depth.depthcrafter:DepthCrafterPass"
-depthpro           = "live_action_aov.passes.depth.depthpro:DepthProPass"
+flow                 = "live_action_aov.passes.flow.raft:RAFTPass"
+depth_anything_v2    = "live_action_aov.passes.depth.depth_anything_v2:DepthAnythingV2Pass"
+video_depth_anything = "live_action_aov.passes.depth.video_depth_anything:VideoDepthAnythingPass"
+depthcrafter         = "live_action_aov.passes.depth.depthcrafter:DepthCrafterPass"
+depthpro             = "live_action_aov.passes.depth.depthpro:DepthProPass"
 dsine              = "live_action_aov.passes.normals.dsine:DSINEPass"
 normalcrafter      = "live_action_aov.passes.normals.normalcrafter:NormalCrafterPass"
 sam3_matte         = "live_action_aov.passes.matte.sam3:SAM3MattePass"
