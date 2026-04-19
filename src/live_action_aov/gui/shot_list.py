@@ -47,6 +47,10 @@ class ShotListPanel(QWidget):
         self._list = QListWidget()
         self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self._list.currentItemChanged.connect(self._on_selection_changed)
+        self._list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        # Pin a minimum width so the "Add shot…" button + shortest shot
+        # name don't clip when the splitter is squashed.
+        self.setMinimumWidth(180)
 
         add_btn = QPushButton("Add shot…")
         add_btn.clicked.connect(self._on_add_clicked)
@@ -125,6 +129,10 @@ class ShotListPanel(QWidget):
     def _on_shot_added(self, shot: ShotState) -> None:
         item = QListWidgetItem(_format_item_label(shot))
         item.setData(Qt.ItemDataRole.UserRole, shot)
+        # Full info in a tooltip so the label can truncate without losing
+        # data — compers hover to confirm frame range + resolution when
+        # the panel is sized narrow.
+        item.setToolTip(_format_item_tooltip(shot))
         self._list.addItem(item)
         self._list.setCurrentItem(item)
 
@@ -143,56 +151,91 @@ class ShotListPanel(QWidget):
 
 
 def _format_item_label(shot: ShotState) -> str:
+    """One-line label for the shot list row.
+
+    Kept short so a narrow panel doesn't truncate the shot name itself.
+    Full info lives in the tooltip (`_format_item_tooltip`).
+    """
     start, end = shot.frame_range
     n = end - start + 1
-    return f"{shot.name}    [{n} frames @ {shot.resolution[0]}×{shot.resolution[1]}]"
+    return f"{shot.name}   ({n} fr)"
+
+
+def _format_item_tooltip(shot: ShotState) -> str:
+    start, end = shot.frame_range
+    n = end - start + 1
+    w, h = shot.resolution
+    lines = [
+        f"<b>{shot.name}</b>",
+        f"Folder: {shot.folder}",
+        f"Pattern: {shot.sequence_pattern}",
+        f"Frames: {start}–{end}  ({n} total)",
+        f"Resolution: {w} × {h}",
+    ]
+    if shot.detected is not None:
+        lines.append(f"Colorspace: {shot.colorspace_label()}")
+    return "<br/>".join(lines)
 
 
 def _sniff_sequence(folder: Path):
-    """Mirror the CLI's `_sniff_sequence` but also return the first-frame
-    path so the colorspace detector can probe pixels.
+    """Discover an EXR sequence in `folder` and return `(pattern,
+    frame_range, resolution, pixel_aspect, first_frame_path)`.
 
-    Skips `.utility.` / `.hero.` / `.mask.` sidecars that the tool itself
-    writes — otherwise they'd get picked up as the "plate" on a
-    previously-run shot.
+    Handles messy real-world folders:
+      - Multiple sequences (picks the one with the most frames).
+      - Extra files (`.lut`, `.txt`, screenshots, single-file refs) —
+        silently ignored, they don't contribute to any pattern.
+      - Sidecars from prior runs (`.utility.`, `.hero.`, `.mask.`) —
+        filtered out before sniffing so a re-added shot doesn't latch
+        onto its own output.
+
+    Algorithm: for each EXR, derive a template by replacing its final
+    digit-run before `.exr` with `#` of the same width. Group files by
+    template; pick the template with the most files. The frame range
+    comes from the min/max of the frame numbers in that group.
     """
-    exrs = sorted(
+    candidates = [
         p
         for p in folder.iterdir()
         if p.is_file()
         and p.suffix.lower() == ".exr"
         and not any(tok in p.name for tok in _SIDECAR_TOKENS)
-    )
-    if not exrs:
+    ]
+    if not candidates:
         raise FileNotFoundError(f"No .exr plate files found in {folder}")
 
-    sample = exrs[0].name
-    m = re.search(r"(\d{3,})(?=[^\d]*\.exr$)", sample)
-    if not m:
-        pattern = sample
-    else:
-        width = len(m.group(1))
-        pattern = sample[: m.start()] + ("#" * width) + sample[m.end() :]
+    # Each file contributes a (pattern, frame_number) if the last
+    # digit-run before `.exr` is parseable; otherwise the file is
+    # silently skipped (single-frame reference, etc.).
+    groups: dict[str, list[tuple[int, Path]]] = {}
+    tail_digits_re = re.compile(r"(\d+)(?=\.exr$)", re.IGNORECASE)
+    for p in candidates:
+        m = tail_digits_re.search(p.name)
+        if not m:
+            continue
+        digits = m.group(1)
+        width = len(digits)
+        pattern = p.name[: m.start()] + ("#" * width) + p.name[m.end() :]
+        groups.setdefault(pattern, []).append((int(digits), p))
 
-    # Frame range — scan filenames matching the pattern.
-    if "#" in pattern:
-        hashes = pattern.count("#")
-        frame_regex = re.compile(
-            re.escape(pattern).replace("#" * hashes, r"(\d{" + str(hashes) + r"})")
+    if not groups:
+        raise FileNotFoundError(
+            f"No sequenced .exr files found in {folder} "
+            "(single-file references and non-sequenced names were skipped)."
         )
-        frames: list[int] = []
-        for p in exrs:
-            m2 = frame_regex.fullmatch(p.name)
-            if m2:
-                frames.append(int(m2.group(1)))
-        frame_range = (min(frames), max(frames)) if frames else (0, 0)
-    else:
-        frame_range = (0, 0)
 
-    pixels, attrs = read_exr(exrs[0])
+    # Biggest sequence wins. Break ties by lexicographic pattern so the
+    # choice is deterministic across runs.
+    best_pattern = max(groups.keys(), key=lambda k: (len(groups[k]), -ord(k[0]) if k else 0))
+    entries = sorted(groups[best_pattern], key=lambda t: t[0])
+    frame_numbers = [f for f, _ in entries]
+    frame_range = (min(frame_numbers), max(frame_numbers))
+    first_frame_path = entries[0][1]
+
+    pixels, attrs = read_exr(first_frame_path)
     h, w = pixels.shape[:2]
     par = float(attrs.get("pixelAspectRatio", 1.0))
-    return pattern, frame_range, (w, h), par, exrs[0]
+    return best_pattern, frame_range, (w, h), par, first_frame_path
 
 
 __all__ = ["ShotListPanel"]

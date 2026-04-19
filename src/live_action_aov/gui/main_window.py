@@ -39,7 +39,14 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(_WINDOW_TITLE)
-        self.resize(1400, 820)
+        # Default to something that fits a 1080p laptop comfortably.
+        # 1400×820 was eating the taskbar on the dev machine and hiding
+        # the scrub slider off-screen; keep the footprint smaller.
+        self.resize(1200, 720)
+        # Anything smaller than this clips the scrub slider or chops the
+        # inspector in half — users can still resize below this but we
+        # won't let Qt auto-size into an unusable layout.
+        self.setMinimumSize(900, 560)
 
         self._registry = ShotRegistry()
 

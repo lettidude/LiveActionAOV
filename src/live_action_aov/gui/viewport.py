@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QRadioButton,
+    QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -65,10 +66,18 @@ class ViewportPanel(QWidget):
         mode_row.addStretch()
 
         # --- Image canvas ---
+        # Min width is a suggestion; the canvas grows to fill the
+        # splitter's centre column. Wrapping inside a QScrollArea is a
+        # future move when we add high-res overlays — for now the
+        # QLabel's scaled pixmap fits any viewport size.
         self._canvas = QLabel()
         self._canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._canvas.setMinimumSize(320, 180)
+        self._canvas.setMinimumSize(320, 200)
+        self._canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self._canvas.setStyleSheet("background: #1a1a1a; color: #888;")
+        self._canvas.setWordWrap(True)
         self._canvas.setText("(no shot loaded)")
 
         # --- Frame scrub slider + label ---
