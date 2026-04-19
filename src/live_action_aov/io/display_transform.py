@@ -92,7 +92,13 @@ class DisplayTransform:
         ev = float(analysis.get("ev", 0.0))
         out = frames.astype(np.float32, copy=False) * (2.0**ev)
         out = _tonemap(out, params.tonemap)
-        out = _apply_eotf(out, params.output_eotf)
+        # AgX's sigmoid already produces display-referred values — applying an
+        # sRGB EOTF on top is a double display transform and was the second
+        # half of the "near-white → ImageNet-black" DA-V2 failure. For every
+        # other tonemap (linear / reinhard / filmic) the output is still
+        # linear-light, so the caller-requested EOTF applies.
+        if str(params.tonemap).lower() != "agx":
+            out = _apply_eotf(out, params.output_eotf)
         if params.clamp:
             out = np.clip(out, 0.0, 1.0)
         return out
@@ -133,10 +139,16 @@ def _hable(x: np.ndarray) -> np.ndarray:
 def _agx(x: np.ndarray) -> np.ndarray:
     """AgX-lite: log encode → sigmoid → display.
 
-    This is the reference-flavoured implementation from the public AgX
-    ports (MIT-licensed descendants of @sobotka's AgX). It's compact but
-    faithful enough for VFX display: soft highlight roll-off, preserved
-    hue shifts in saturated reds/blues.
+    Sobotka / Minimal-AgX reference polynomial. The earlier fit in this
+    file had coefficients that evaluated to a nearly flat curve near
+    0.85–0.90 across the whole midtone range — the diagnostic PNG dump
+    for DA-V2 showed 18% grey inputs emerging at ~0.91 (near-white), so
+    the model saw a blown plate and fell back to a 2D radial prior.
+    The coefficients below are the Three.js / Iolite port that round-trips
+    18% grey → ~0.49 display and 1.0 → 1.0.
+
+    Output is already **display-referred** (sigmoid bakes the display
+    gamma); callers must not apply an additional sRGB EOTF on top.
     """
     # Log encode over a fixed EV range.
     x = np.clip(x, 1e-8, None)
@@ -144,16 +156,18 @@ def _agx(x: np.ndarray) -> np.ndarray:
     log_x = np.log2(x)
     norm = (log_x - min_ev) / (max_ev - min_ev)
     norm = np.clip(norm, 0.0, 1.0)
-    # 6th-order polynomial sigmoid fit to AgX's default look.
+    # 6th-order polynomial sigmoid (Minimal AgX default contrast).
     t = norm
+    t2 = t * t
+    t4 = t2 * t2
     sig = (
-        -6.52885450 * t**6
-        + 26.48932307 * t**5
-        - 43.89890909 * t**4
-        + 37.12859829 * t**3
-        - 16.90011450 * t**2
-        + 4.70550538 * t
-        + 0.00175529
+        15.5     * t4 * t2
+        - 40.14  * t4 * t
+        + 31.96  * t4
+        - 6.868  * t2 * t
+        + 0.4298 * t2
+        + 0.1191 * t
+        - 0.00232
     )
     return np.clip(sig, 0.0, 1.0)
 

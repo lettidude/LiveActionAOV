@@ -22,6 +22,7 @@ from live_action_aov.core.job import Job, PassConfig, PostConfig, Shot
 from live_action_aov.core.pass_base import TemporalMode, UtilityPass
 from live_action_aov.core.registry import get_registry
 from live_action_aov.executors.base import Executor
+from live_action_aov.io.readers.display_transform_reader import DisplayTransformedReader
 from live_action_aov.io.readers.oiio_exr import OIIOExrReader
 from live_action_aov.io.writers.exr import ExrSidecarWriter
 from live_action_aov.shared.optical_flow.cache import FlowCache
@@ -46,7 +47,24 @@ class LocalExecutor(Executor):
         ordered = topological_sort(nodes)
         resolved_by_name = {pc.name: (pc, cls) for (pc, cls) in resolved}
 
-        reader = OIIOExrReader(shot.folder, shot.sequence_pattern)
+        raw_reader = OIIOExrReader(shot.folder, shot.sequence_pattern)
+        if shot.apply_display_transform:
+            # Clip-uniform display transform (auto-exposure + AgX + sRGB
+            # EOTF) analysed once, applied on every read. Lets scene-referred
+            # plates (lin_rec709 / ACEScg / ACES) work with models trained
+            # on sRGB-display images. See
+            # `io.readers.display_transform_reader` for the full rationale.
+            wrapped = DisplayTransformedReader(
+                raw_reader,
+                params=shot.transform,
+                colorspace_override=(
+                    shot.colorspace if shot.colorspace and shot.colorspace != "auto" else None
+                ),
+            )
+            wrapped.analyze(shot.frame_range)
+            reader = wrapped
+        else:
+            reader = raw_reader
         writer = ExrSidecarWriter()
 
         # Shared state published between passes and post-processors.
