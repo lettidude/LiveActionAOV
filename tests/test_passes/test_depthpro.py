@@ -41,7 +41,7 @@ class _FakeDepthPro(DepthProPass):
         self._model = object()
 
         class _P:
-            def __call__(self, images, return_tensors, do_resize, size):
+            def __call__(self, images, return_tensors, do_resize, size, **kwargs):
                 # Pretend we resized to a small fixed size; return a tensor
                 # that's big enough for the bilinear upscale to do something.
                 inf = 32
