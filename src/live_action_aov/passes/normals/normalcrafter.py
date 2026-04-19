@@ -254,16 +254,23 @@ class NormalCrafterPass(UtilityPass):
         # 2. Downscale to max_res on the long edge (VRAM guard). Inference
         #    runs on the downscaled clip; we upsample normals back to plate
         #    res at the end, renormalising unit length afterwards.
+        #
+        #    Rounding UP to /64 (not down to /8). SVD's UNet has 3 spatial
+        #    downsample stages × 8-pixel VAE patch = 64px per total stride,
+        #    and the skip connections assume the spatial dims are ≥ the
+        #    training size (576 × 1024). Rounding DOWN produced 512 × 1024
+        #    on 2048×1080 plates, which crashed with
+        #        "Expected size 72 but got size 64 for tensor number 1"
+        #    — the latent grid was one row short. Ceiling to /64 pads up
+        #    to 576 × 1024 instead, which the UNet is happy with.
         max_res = int(self.params["max_res"])
         long_edge = max(plate_h, plate_w)
-        if long_edge > max_res:
-            scale = max_res / long_edge
-            inf_h = int(plate_h * scale)
-            inf_w = int(plate_w * scale)
-            # Round down to multiples of 8 so the pipeline's internal
-            # pad-to-64 step has minimal work.
-            inf_h = (inf_h // 8) * 8
-            inf_w = (inf_w // 8) * 8
+        scale = max_res / long_edge if long_edge > max_res else 1.0
+        if scale < 1.0:
+            import math
+
+            inf_h = max(576, math.ceil(plate_h * scale / 64) * 64)
+            inf_w = max(576, math.ceil(plate_w * scale / 64) * 64)
             import cv2
 
             rs = np.empty((stack_f.shape[0], inf_h, inf_w, 3), dtype=np.float32)

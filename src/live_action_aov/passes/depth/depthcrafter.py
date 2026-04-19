@@ -197,20 +197,25 @@ class DepthCrafterPass(UtilityPass):
 
         if frames.ndim != 4 or frames.shape[-1] != 3:
             raise ValueError(f"DepthCrafter preprocess expects (W, H, W_px, 3), got {frames.shape}")
+        import math
+
         self._load_model()
         n, plate_h, plate_w, _ = frames.shape
-        # Long-edge scaling, /64 rounding — matches DepthCrafter's
-        # own reference preprocessing exactly. Short-edge scaling
-        # works on 16:9-ish plates but produces UNet-incompatible
-        # shapes on anything wider (2048×1080 → 576×1088 was the
-        # "Expected 128 got 136" crash; long-edge gives 512×1024,
-        # the UNet's happy place). `max_res` is the canonical param;
-        # `inference_short_edge` kept as a legacy alias.
+        # Long-edge scaling, CEIL to /64, min 576 on both dims.
+        # SVD's UNet has 3 spatial downsamples × 8-pixel VAE patch =
+        # 64 px per stride, AND skip connections assume spatial dims
+        # ≥ the 576 × 1024 training size. Rounding NEAREST (what
+        # DepthCrafter's own util does) produces 512 × 1024 on 2048×
+        # 1080 plates, which the UNet rejects:
+        #   "Expected size 72 but got size 64 for tensor number 1"
+        # Ceiling to /64 pads up to 576 instead; slight aspect
+        # distortion at the input is undone when we upscale the
+        # depth output back to plate shape.
         max_res = int(self.params.get("max_res") or self.params["inference_short_edge"])
         long_edge = max(plate_h, plate_w, 1)
         scale = max_res / long_edge if long_edge > max_res else 1.0
-        inf_h = max(128, int(round(plate_h * scale / 64)) * 64)
-        inf_w = max(128, int(round(plate_w * scale / 64)) * 64)
+        inf_h = max(576, math.ceil(plate_h * scale / 64) * 64)
+        inf_w = max(576, math.ceil(plate_w * scale / 64) * 64)
 
         img = np.clip(frames, 0.0, 1.0).astype(np.float32, copy=False)
         t = torch.from_numpy(img).permute(0, 3, 1, 2)  # (N, 3, H, W)
