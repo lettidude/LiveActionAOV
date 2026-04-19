@@ -31,7 +31,6 @@ from live_action_aov.io.channels import (  # noqa: E402
 )
 from live_action_aov.passes.flow.raft import RAFTPass  # noqa: E402
 
-
 pytestmark = pytest.mark.slow
 
 
@@ -66,8 +65,15 @@ def test_raft_forward_motion_is_nonzero_on_moving_subject() -> None:
     # spec-mandated names and the Nuke-native aliases.
     plate_h, plate_w = pair.shape[1], pair.shape[2]
     expected = (
-        CH_MOTION_X, CH_MOTION_Y, CH_BACK_X, CH_BACK_Y, CH_FLOW_CONFIDENCE,
-        CH_FORWARD_U, CH_FORWARD_V, CH_BACKWARD_U, CH_BACKWARD_V,
+        CH_MOTION_X,
+        CH_MOTION_Y,
+        CH_BACK_X,
+        CH_BACK_Y,
+        CH_FLOW_CONFIDENCE,
+        CH_FORWARD_U,
+        CH_FORWARD_V,
+        CH_BACKWARD_U,
+        CH_BACKWARD_V,
     )
     for ch in expected:
         assert ch in channels, f"missing {ch}"
@@ -128,8 +134,15 @@ def test_raft_run_shot_produces_per_frame_channels_and_artifacts() -> None:
     assert sorted(per_frame.keys()) == [1, 2, 3]
     for f in (1, 2, 3):
         for ch in (
-            CH_MOTION_X, CH_MOTION_Y, CH_BACK_X, CH_BACK_Y, CH_FLOW_CONFIDENCE,
-            CH_FORWARD_U, CH_FORWARD_V, CH_BACKWARD_U, CH_BACKWARD_V,
+            CH_MOTION_X,
+            CH_MOTION_Y,
+            CH_BACK_X,
+            CH_BACK_Y,
+            CH_FLOW_CONFIDENCE,
+            CH_FORWARD_U,
+            CH_FORWARD_V,
+            CH_BACKWARD_U,
+            CH_BACKWARD_V,
         ):
             assert ch in per_frame[f]
 

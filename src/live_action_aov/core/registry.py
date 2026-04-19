@@ -64,11 +64,11 @@ class PluginRegistry:
         except TypeError:
             # Older importlib.metadata API (pre-3.10-style); shouldn't hit
             # on Python 3.11+, but stay defensive for third-party envs.
-            eps = im.entry_points().get(group, [])  # type: ignore[assignment]
+            eps = im.entry_points().get(group, [])  # type: ignore[arg-type]
         for ep in eps:
             try:
                 cls = ep.load()
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 # A broken third-party plugin must not take down the whole
                 # registry — log and continue.
                 import logging
@@ -102,7 +102,7 @@ class PluginRegistry:
         self.load_all()
         return sorted(self._passes)
 
-    def list_by_type(self, pass_type: "PassType | str") -> list[str]:
+    def list_by_type(self, pass_type: PassType | str) -> list[str]:
         from live_action_aov.core.pass_base import PassType as _PT
 
         self.load_all()
@@ -119,9 +119,7 @@ class PluginRegistry:
         try:
             return self._passes[name]
         except KeyError as e:
-            raise KeyError(
-                f"No pass named '{name}'. Available: {self.list_passes()}"
-            ) from e
+            raise KeyError(f"No pass named '{name}'. Available: {self.list_passes()}") from e
 
     def list_executors(self) -> list[str]:
         self.load_all()

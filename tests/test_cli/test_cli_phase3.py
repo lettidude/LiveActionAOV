@@ -112,9 +112,12 @@ def test_matanyone2_license_gate_blocks_without_opt_in(test_plate_1080p) -> None
     result = runner.invoke(
         app,
         [
-            "run-shot", str(test_plate_1080p),
-            "--passes", "matte",
-            "--refiner", "matanyone2",
+            "run-shot",
+            str(test_plate_1080p),
+            "--passes",
+            "matte",
+            "--refiner",
+            "matanyone2",
         ],
     )
     assert result.exit_code == 2
@@ -128,9 +131,12 @@ def test_matanyone2_gate_clears_with_opt_in(test_plate_1080p) -> None:
     result = runner.invoke(
         app,
         [
-            "run-shot", str(test_plate_1080p),
-            "--passes", "matte",
-            "--refiner", "matanyone2",
+            "run-shot",
+            str(test_plate_1080p),
+            "--passes",
+            "matte",
+            "--refiner",
+            "matanyone2",
             "--allow-noncommercial",
         ],
     )

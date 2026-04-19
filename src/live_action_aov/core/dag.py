@@ -94,9 +94,7 @@ def topological_sort(nodes: list[PassNode]) -> list[PassNode]:
 
     if len(out) != len(nodes):
         remaining = [n.name for n in nodes if n.name not in seen]
-        raise DagCycleError(
-            f"Cycle detected in pass dependency graph; unresolved: {remaining}"
-        )
+        raise DagCycleError(f"Cycle detected in pass dependency graph; unresolved: {remaining}")
     return out
 
 

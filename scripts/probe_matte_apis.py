@@ -91,7 +91,9 @@ def probe_sam3_detector() -> Any:
     with torch.no_grad():
         outputs = model(**inputs)
     print(f"  output type: {type(outputs).__name__}")
-    print(f"  output keys/attrs: {list(outputs.keys()) if hasattr(outputs, 'keys') else dir(outputs)[:15]}")
+    print(
+        f"  output keys/attrs: {list(outputs.keys()) if hasattr(outputs, 'keys') else dir(outputs)[:15]}"
+    )
 
     # Post-process — find the right method name dynamically.
     target_sizes_kw = None
@@ -117,12 +119,16 @@ def probe_sam3_detector() -> Any:
                     )
                 elif name == "post_process_masks":
                     results = pp_method(
-                        outputs.pred_masks if hasattr(outputs, "pred_masks") else outputs["pred_masks"],
+                        outputs.pred_masks
+                        if hasattr(outputs, "pred_masks")
+                        else outputs["pred_masks"],
                         original_sizes=[(256, 384)],
                     )
                 else:
                     results = pp_method(outputs)
-                print(f"  results type: {type(results).__name__}; len: {len(results) if hasattr(results, '__len__') else '?'}")
+                print(
+                    f"  results type: {type(results).__name__}; len: {len(results) if hasattr(results, '__len__') else '?'}"
+                )
                 if isinstance(results, list) and results:
                     first = results[0]
                     print(f"  results[0] type: {type(first).__name__}")
@@ -131,7 +137,7 @@ def probe_sam3_detector() -> Any:
                             shape = getattr(v, "shape", None)
                             dtype = getattr(v, "dtype", None)
                             print(f"    results[0][{k!r}]: shape={shape}, dtype={dtype}")
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 print(f"  {name} RAISED: {type(e).__name__}: {e}")
                 traceback.print_exc(limit=3)
             break
@@ -146,6 +152,7 @@ def probe_sam3_tracker() -> Any:
     _rule("SAM 3 — video tracker (PVS head)")
     try:
         from transformers import Sam3TrackerVideoModel, Sam3TrackerVideoProcessor
+
         print("Importing Sam3TrackerVideoModel / Sam3TrackerVideoProcessor: OK")
     except ImportError as e:
         print(f"FAIL: tracker classes not importable — {e}")
@@ -157,7 +164,7 @@ def probe_sam3_tracker() -> Any:
     try:
         proc = Sam3TrackerVideoProcessor.from_pretrained(repo)
         print(f"  tracker processor class: {type(proc).__name__}")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"FAIL loading tracker processor: {type(e).__name__}: {e}")
         return None
 
@@ -183,18 +190,18 @@ def probe_sam3_tracker() -> Any:
     print(f"\nLoading tracker model from {repo}...")
     try:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = Sam3TrackerVideoModel.from_pretrained(
-            repo, torch_dtype=torch.bfloat16
-        ).to(device)
+        model = Sam3TrackerVideoModel.from_pretrained(repo, torch_dtype=torch.bfloat16).to(device)
         print(f"  tracker model class: {type(model).__name__}")
-        print(f"  model.forward signature:")
+        print("  model.forward signature:")
         _sig(model.forward, "model.forward")
         # propagate_in_video_iterator is the method we rely on.
         if hasattr(model, "propagate_in_video_iterator"):
             _sig(model.propagate_in_video_iterator, "model.propagate_in_video_iterator")
         else:
-            print("  model.propagate_in_video_iterator: MISSING — will need another propagation path")
-    except Exception as e:  # noqa: BLE001
+            print(
+                "  model.propagate_in_video_iterator: MISSING — will need another propagation path"
+            )
+    except Exception as e:
         print(f"FAIL loading tracker model: {type(e).__name__}: {e}")
         traceback.print_exc(limit=3)
         return None
@@ -207,10 +214,8 @@ def probe_rvm() -> Any:
     _rule("RVM — recurrent video matting")
     print("Loading RVM mobilenetv3 via torch.hub.load('PeterL1n/RobustVideoMatting', ...)...")
     try:
-        model = torch.hub.load(
-            "PeterL1n/RobustVideoMatting", "mobilenetv3", trust_repo=True
-        )
-    except Exception as e:  # noqa: BLE001
+        model = torch.hub.load("PeterL1n/RobustVideoMatting", "mobilenetv3", trust_repo=True)
+    except Exception as e:
         print(f"FAIL loading RVM: {type(e).__name__}: {e}")
         traceback.print_exc(limit=3)
         return None
@@ -251,6 +256,7 @@ def main() -> int:
     print(f"numpy: {np.__version__}")
     try:
         import transformers
+
         print(f"transformers: {transformers.__version__}")
     except ImportError:
         print("transformers: NOT INSTALLED")
@@ -262,19 +268,19 @@ def main() -> int:
     rvm = None
     try:
         sam3_det = probe_sam3_detector()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"\nSAM3 detector probe crashed: {type(e).__name__}: {e}")
         traceback.print_exc(limit=5)
 
     try:
         sam3_trk = probe_sam3_tracker()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"\nSAM3 tracker probe crashed: {type(e).__name__}: {e}")
         traceback.print_exc(limit=5)
 
     try:
         rvm = probe_rvm()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"\nRVM probe crashed: {type(e).__name__}: {e}")
         traceback.print_exc(limit=5)
 

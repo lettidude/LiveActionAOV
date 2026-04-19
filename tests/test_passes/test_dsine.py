@@ -90,10 +90,16 @@ def test_convert_axes_helper_is_involutory() -> None:
 def test_scaled_intrinsics_match_resize_ratio() -> None:
     """fx,fy,cx,cy should scale by inf/plate on each axis (spec §11.3 trap 3)."""
     plate_h, plate_w = 1080, 1920
-    inf_h, inf_w = 540, 960          # exactly 0.5x on each axis
+    inf_h, inf_w = 540, 960  # exactly 0.5x on each axis
     K = _scaled_intrinsics(
-        plate_h, plate_w, inf_h, inf_w,
-        fx=1000.0, fy=1000.0, cx=960.0, cy=540.0,
+        plate_h,
+        plate_w,
+        inf_h,
+        inf_w,
+        fx=1000.0,
+        fy=1000.0,
+        cx=960.0,
+        cy=540.0,
     )
     K_np = K[0].cpu().numpy()
     # Both axes scaled by 0.5 → fx=500, fy=500, cx=480, cy=270.
@@ -109,10 +115,16 @@ def test_default_intrinsics_use_50mm_equivalent_heuristic() -> None:
     at plate res, then scale to inference res (design §8.4).
     """
     plate_h, plate_w = 1000, 1000
-    inf_h, inf_w = 500, 500          # 0.5x
+    inf_h, inf_w = 500, 500  # 0.5x
     K = _scaled_intrinsics(
-        plate_h, plate_w, inf_h, inf_w,
-        fx=None, fy=None, cx=None, cy=None,
+        plate_h,
+        plate_w,
+        inf_h,
+        inf_w,
+        fx=None,
+        fy=None,
+        cx=None,
+        cy=None,
     )
     K_np = K[0].cpu().numpy()
     # Plate fx = 0.8 * 1000 = 800; scaled 0.5 → 400.

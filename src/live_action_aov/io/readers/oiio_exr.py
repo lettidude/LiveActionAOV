@@ -85,8 +85,7 @@ class OIIOExrReader(ImageSequenceReader):
         frames = self._enumerate()
         if frame not in frames:
             raise FileNotFoundError(
-                f"Frame {frame} not present in sequence; available: "
-                f"{min(frames)}..{max(frames)}"
+                f"Frame {frame} not present in sequence; available: {min(frames)}..{max(frames)}"
             )
         return read_exr(frames[frame])
 

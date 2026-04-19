@@ -126,7 +126,7 @@ def probe_depthcrafter() -> Any:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pipe = pipe.to(device)
-    print(f"\nPipeline attrs:")
+    print("\nPipeline attrs:")
     print(f"  type: {type(pipe).__name__}")
     _sig(pipe.__call__, "pipe.__call__")
     for attr in ("unet", "vae", "image_encoder", "scheduler"):
@@ -138,7 +138,7 @@ def probe_depthcrafter() -> Any:
     print("\nRunning tiny synthetic forward (8 frames × 256x384)...")
     n, h, w = 8, 256, 384
     # DepthCrafter wants float in [0, 1]; try ndarray first.
-    video_np = (np.random.rand(n, h, w, 3).astype(np.float32))
+    video_np = np.random.rand(n, h, w, 3).astype(np.float32)
     for kw_name in ("video", "video_input", "image"):
         print(f"  trying kwarg {kw_name!r}...")
         try:
@@ -155,7 +155,10 @@ def probe_depthcrafter() -> Any:
             return {"pipe": pipe, "device": device, "video_kwarg": kw_name}
         except Exception as e:
             print(f"    FAILED: {type(e).__name__}: {str(e)[:200]}")
-            if isinstance(e, (RuntimeError, torch.cuda.OutOfMemoryError)) and "out of memory" in str(e).lower():
+            if (
+                isinstance(e, (RuntimeError, torch.cuda.OutOfMemoryError))
+                and "out of memory" in str(e).lower()
+            ):
                 raise
     print("  all known video kwargs failed — pipeline needs manual integration")
     return None
@@ -169,7 +172,7 @@ def probe_normalcrafter() -> Any:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pipe = pipe.to(device)
-    print(f"\nPipeline attrs:")
+    print("\nPipeline attrs:")
     print(f"  type: {type(pipe).__name__}")
     _sig(pipe.__call__, "pipe.__call__")
     for attr in ("unet", "vae", "image_encoder", "scheduler"):
@@ -179,7 +182,7 @@ def probe_normalcrafter() -> Any:
 
     print("\nRunning tiny synthetic forward (8 frames × 256x384)...")
     n, h, w = 8, 256, 384
-    video_np = (np.random.rand(n, h, w, 3).astype(np.float32))
+    video_np = np.random.rand(n, h, w, 3).astype(np.float32)
     for kw_name in ("video", "video_input", "image"):
         print(f"  trying kwarg {kw_name!r}...")
         try:
@@ -196,7 +199,10 @@ def probe_normalcrafter() -> Any:
             return {"pipe": pipe, "device": device, "video_kwarg": kw_name}
         except Exception as e:
             print(f"    FAILED: {type(e).__name__}: {str(e)[:200]}")
-            if isinstance(e, (RuntimeError, torch.cuda.OutOfMemoryError)) and "out of memory" in str(e).lower():
+            if (
+                isinstance(e, (RuntimeError, torch.cuda.OutOfMemoryError))
+                and "out of memory" in str(e).lower()
+            ):
                 raise
     print("  all known video kwargs failed — pipeline needs manual integration")
     return None
@@ -217,6 +223,7 @@ def main() -> int:
         print(f"CUDA device: {torch.cuda.get_device_name(0)}")
     try:
         import diffusers
+
         print(f"diffusers: {diffusers.__version__}")
     except ImportError:
         print("diffusers: NOT INSTALLED — run `pip install diffusers accelerate`")
@@ -227,13 +234,13 @@ def main() -> int:
     if not args.skip_depth:
         try:
             dc = probe_depthcrafter()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"\nDepthCrafter probe crashed: {type(e).__name__}: {e}")
             traceback.print_exc(limit=5)
     if not args.skip_normal:
         try:
             nc = probe_normalcrafter()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"\nNormalCrafter probe crashed: {type(e).__name__}: {e}")
             traceback.print_exc(limit=5)
 

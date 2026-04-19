@@ -35,7 +35,6 @@ import pytest
 
 from live_action_aov.passes.matte.sam3 import SAM3MattePass
 
-
 # ---------------------------------------------------------------------------
 # Deterministic fake — one person + one vehicle, both present every frame.
 # ---------------------------------------------------------------------------
@@ -84,10 +83,12 @@ def _artifacts() -> dict[str, dict[int, object]]:
     """
     n, h, w = 5, 32, 48
     plates = [np.full((h, w, 3), 0.5, dtype=np.float32) for _ in range(n)]
-    pass_ = _SchemaFake({
-        "concepts": ["person", "vehicle"],
-        "min_area_fraction": 0.001,
-    })
+    pass_ = _SchemaFake(
+        {
+            "concepts": ["person", "vehicle"],
+            "min_area_fraction": 0.001,
+        }
+    )
     pass_.run_shot(_FakeReader(plates, first=10), frame_range=(10, 10 + n - 1))
     return pass_.emit_artifacts()
 
@@ -135,9 +136,7 @@ def test_per_track_entry_has_exactly_three_keys(_artifacts) -> None:
 def test_label_is_plain_str(_artifacts) -> None:
     inner = next(iter(_artifacts["sam3_hard_masks"].values()))
     for tid, data in inner.items():
-        assert type(data["label"]) is str, (
-            f"Track {tid} label is {type(data['label'])}, want str"
-        )
+        assert type(data["label"]) is str, f"Track {tid} label is {type(data['label'])}, want str"
         assert data["label"], "label is empty"
 
 
@@ -148,27 +147,21 @@ def test_frames_is_sorted_list_of_plain_ints(_artifacts) -> None:
     inner = next(iter(_artifacts["sam3_hard_masks"].values()))
     for tid, data in inner.items():
         frames = data["frames"]
-        assert type(frames) is list, (
-            f"Track {tid} frames is {type(frames)}, want list"
-        )
+        assert type(frames) is list, f"Track {tid} frames is {type(frames)}, want list"
         assert all(type(f) is int for f in frames), (
             f"Track {tid} frames contains non-int: {[type(f) for f in frames]}"
         )
         assert frames == sorted(frames), f"Track {tid} frames not sorted: {frames}"
         # Frame indices must be absolute (use the reader's first=10), not
         # local (0-based). This is the biggest CorridorKey footgun.
-        assert min(frames) >= 10, (
-            f"Track {tid} frames leaked local indexing: {frames[:3]}..."
-        )
+        assert min(frames) >= 10, f"Track {tid} frames leaked local indexing: {frames[:3]}..."
 
 
 def test_stack_is_float32_3d_aligned_with_frames(_artifacts) -> None:
     inner = next(iter(_artifacts["sam3_hard_masks"].values()))
     for tid, data in inner.items():
         stack = data["stack"]
-        assert isinstance(stack, np.ndarray), (
-            f"Track {tid} stack is {type(stack)}, want np.ndarray"
-        )
+        assert isinstance(stack, np.ndarray), f"Track {tid} stack is {type(stack)}, want np.ndarray"
         assert stack.ndim == 3, f"Track {tid} stack.ndim = {stack.ndim}, want 3"
         # T dimension must match len(frames) exactly — CorridorKey does
         # `stack[i]` → mask at `frames[i]`, so mismatched lengths are fatal.
@@ -188,12 +181,8 @@ def test_stack_values_are_in_zero_one_range(_artifacts) -> None:
     inner = next(iter(_artifacts["sam3_hard_masks"].values()))
     for tid, data in inner.items():
         stack = data["stack"]
-        assert float(stack.min()) >= -1e-6, (
-            f"Track {tid} stack.min={stack.min()} < 0"
-        )
-        assert float(stack.max()) <= 1.0 + 1e-6, (
-            f"Track {tid} stack.max={stack.max()} > 1"
-        )
+        assert float(stack.min()) >= -1e-6, f"Track {tid} stack.min={stack.min()} < 0"
+        assert float(stack.max()) <= 1.0 + 1e-6, f"Track {tid} stack.max={stack.max()} > 1"
 
 
 def test_stack_hw_matches_plate_shape(_artifacts) -> None:
@@ -260,9 +249,7 @@ def test_sam3_instances_frames_is_subset_of_hard_mask_frames(_artifacts) -> None
         hero_frames = set(h["frames"])
         hard_frames = set(hard[tid]["frames"])
         missing = hero_frames - hard_frames
-        assert not missing, (
-            f"Hero {tid} references frames {missing} not present in hard-masks"
-        )
+        assert not missing, f"Hero {tid} references frames {missing} not present in hard-masks"
 
 
 # ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ class StandaloneAdapter(PipelineAdapter):
     def attach_ids(self, shot: Shot) -> Shot:
         return shot
 
-    def publish(self, shot: Shot) -> None:  # noqa: D401
+    def publish(self, shot: Shot) -> None:
         return
 
 

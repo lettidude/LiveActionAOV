@@ -37,7 +37,7 @@ class _FakeNormalCrafter(NormalCrafterPass):
         w, h = frames_pil[0].size
         n = len(frames_pil)
         normals = np.zeros((n, h, w, 3), dtype=np.float32)
-        normals[..., 0] = 1.0   # +X everywhere
+        normals[..., 0] = 1.0  # +X everywhere
         return normals
 
 
@@ -80,7 +80,7 @@ def test_run_shot_produces_unit_length_normals_per_frame() -> None:
         nz = out[f][CH_N_Z]
         assert nx.shape == ny.shape == nz.shape == (16, 24)
         assert nx.dtype == np.float32
-        mag = np.sqrt(nx ** 2 + ny ** 2 + nz ** 2)
+        mag = np.sqrt(nx**2 + ny**2 + nz**2)
         assert np.allclose(mag, 1.0, atol=1e-4)
 
 
@@ -108,7 +108,7 @@ def test_axis_conversion_flips_y_and_z_when_explicitly_requested() -> None:
             w, h = frames_pil[0].size
             n = len(frames_pil)
             normals = np.zeros((n, h, w, 3), dtype=np.float32)
-            normals[..., 2] = 1.0   # +Z
+            normals[..., 2] = 1.0  # +Z
             return normals
 
     frames = _flat_frames(n=5)

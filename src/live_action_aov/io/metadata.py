@@ -52,7 +52,7 @@ class CameraMetadata:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_exr_attrs(cls, attrs: dict[str, Any]) -> "CameraMetadata":
+    def from_exr_attrs(cls, attrs: dict[str, Any]) -> CameraMetadata:
         """Build a CameraMetadata from a raw EXR attribute dict.
 
         Attribute names differ across ARRI / RED / Nuke conventions; we try

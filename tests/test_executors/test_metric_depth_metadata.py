@@ -17,18 +17,17 @@ from typer.testing import CliRunner
 
 pytest.importorskip("torch")
 
-from live_action_aov.cli.app import app  # noqa: E402
-from live_action_aov.core.pass_base import (  # noqa: E402
+from live_action_aov.cli.app import app
+from live_action_aov.core.pass_base import (
     ChannelSpec,
     License,
     PassType,
     TemporalMode,
     UtilityPass,
 )
-from live_action_aov.core.registry import get_registry  # noqa: E402
-from live_action_aov.io.channels import CH_DEPTH_CONFIDENCE, CH_Z, CH_Z_RAW  # noqa: E402
-from live_action_aov.io.oiio_io import HAS_OIIO  # noqa: E402
-
+from live_action_aov.core.registry import get_registry
+from live_action_aov.io.channels import CH_DEPTH_CONFIDENCE, CH_Z, CH_Z_RAW
+from live_action_aov.io.oiio_io import HAS_OIIO
 
 runner = CliRunner()
 
@@ -94,8 +93,10 @@ def test_sidecar_has_metric_space_and_meters_unit(test_plate_1080p: Path) -> Non
     result = runner.invoke(
         app,
         [
-            "run-shot", str(test_plate_1080p),
-            "--passes", "fake_metric_depth",
+            "run-shot",
+            str(test_plate_1080p),
+            "--passes",
+            "fake_metric_depth",
         ],
     )
     assert result.exit_code == 0, result.stdout

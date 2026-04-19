@@ -14,9 +14,7 @@ def test_auto_exposure_returns_clip_wide_single_ev() -> None:
     # a single value, not per-frame (trap 4).
     frame = np.full((32, 32, 3), 0.09, dtype=np.float32)  # half a stop under target 0.18
     dt = DisplayTransform()
-    analysis = dt.analyze_clip(
-        [frame, frame], DisplayTransformParams(), working_space="acescg"
-    )
+    analysis = dt.analyze_clip([frame, frame], DisplayTransformParams(), working_space="acescg")
     assert "ev" in analysis
     # 0.18 / 0.09 = 2; log2(2) = 1
     assert analysis["ev"] == pytest.approx(1.0, abs=1e-4)

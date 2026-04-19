@@ -47,12 +47,11 @@ from live_action_aov.core.pass_base import (
 )
 from live_action_aov.io.channels import CH_Z, CH_Z_RAW
 
-
 # HF model IDs. Small/Base are Apache-2.0 (commercial OK); Large/Giant are
 # CC-BY-NC-4.0 — we refuse to load them from this class.
 _COMMERCIAL_VARIANTS: dict[str, str] = {
     "small": "depth-anything/Depth-Anything-V2-Small-hf",
-    "base":  "depth-anything/Depth-Anything-V2-Base-hf",
+    "base": "depth-anything/Depth-Anything-V2-Base-hf",
 }
 _NONCOMMERCIAL_VARIANTS: set[str] = {"large", "giant"}
 
@@ -75,7 +74,7 @@ class DepthAnythingV2Pass(UtilityPass):
     input_colorspace = "srgb_display"
 
     produces_channels = [
-        ChannelSpec(name=CH_Z,     description="Relative depth, per-clip normalized [0,1] (1=near)"),
+        ChannelSpec(name=CH_Z, description="Relative depth, per-clip normalized [0,1] (1=near)"),
         ChannelSpec(name=CH_Z_RAW, description="Raw model output (un-normalized)"),
     ]
     # Smooth Z (the comp-visible normalized depth). Z_raw is deliberately left
@@ -83,11 +82,11 @@ class DepthAnythingV2Pass(UtilityPass):
     smoothable_channels = [CH_Z]
 
     DEFAULT_PARAMS: dict[str, Any] = {
-        "variant": "small",            # "small" | "base"
-        "inference_short_edge": 518,   # ViT-14 trained size
-        "precision": "fp32",           # "fp32" | "fp16" (fp16 only if cuda)
-        "smooth": "auto",              # executor uses this to auto-wire TemporalSmoother
-        "depth_space": "relative",     # vs. "metric" (Depth Pro) — metadata hint
+        "variant": "small",  # "small" | "base"
+        "inference_short_edge": 518,  # ViT-14 trained size
+        "precision": "fp32",  # "fp32" | "fp16" (fp16 only if cuda)
+        "smooth": "auto",  # executor uses this to auto-wire TemporalSmoother
+        "depth_space": "relative",  # vs. "metric" (Depth Pro) — metadata hint
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -147,7 +146,6 @@ class DepthAnythingV2Pass(UtilityPass):
         """Input: (1, H, W, 3) float32 sRGB-display in [0,1]. Returns a dict
         with the processor-preprocessed pixel tensor + plate shape for upscale.
         """
-        import torch
 
         if frames.ndim != 4 or frames.shape[0] != 1 or frames.shape[-1] != 3:
             raise ValueError(
@@ -189,9 +187,7 @@ class DepthAnythingV2Pass(UtilityPass):
             "plate_shape": (plate_h, plate_w),
         }
 
-    def _debug_dump_preprocess(
-        self, img: np.ndarray, proc: Any, pixel_values: Any
-    ) -> None:
+    def _debug_dump_preprocess(self, img: np.ndarray, proc: Any, pixel_values: Any) -> None:
         """Dump the display-transformed input and the processor's normalized
         tensor (de-normalized back to image) to the directory in
         LAAOV_DEBUG_DA_V2 on the first frame only. No-op otherwise.
@@ -214,9 +210,9 @@ class DepthAnythingV2Pass(UtilityPass):
         mean = np.asarray(
             getattr(self._processor, "image_mean", [0.5, 0.5, 0.5]), dtype=np.float32
         )[:, None, None]
-        std = np.asarray(
-            getattr(self._processor, "image_std", [0.5, 0.5, 0.5]), dtype=np.float32
-        )[:, None, None]
+        std = np.asarray(getattr(self._processor, "image_std", [0.5, 0.5, 0.5]), dtype=np.float32)[
+            :, None, None
+        ]
         pv_img = np.clip(pv_np * std + mean, 0.0, 1.0)
         pv_img = np.transpose(pv_img, (1, 2, 0))
         Image.fromarray((pv_img * 255).astype(np.uint8)).save(
@@ -229,7 +225,9 @@ class DepthAnythingV2Pass(UtilityPass):
             f.write(f"input_min/max: {float(img.min()):.4f} / {float(img.max()):.4f}\n")
             f.write(f"processor image_mean: {list(mean.flatten())}\n")
             f.write(f"processor image_std:  {list(std.flatten())}\n")
-            f.write(f"size param: {{'height': {self.params['inference_short_edge']}, 'width': {self.params['inference_short_edge']}}}\n")
+            f.write(
+                f"size param: {{'height': {self.params['inference_short_edge']}, 'width': {self.params['inference_short_edge']}}}\n"
+            )
 
     def _debug_dump_depth(self, raw: np.ndarray) -> None:
         """Dump the normalized raw depth on the first frame as a PNG for
@@ -279,7 +277,7 @@ class DepthAnythingV2Pass(UtilityPass):
         plate_h, plate_w = tensor["plate_shape"]
         d = tensor["depth"]
         if d.ndim == 3:
-            d = d.unsqueeze(1)   # (B, 1, h, w)
+            d = d.unsqueeze(1)  # (B, 1, h, w)
         d_up = torch.nn.functional.interpolate(
             d, size=(plate_h, plate_w), mode="bilinear", align_corners=False
         )

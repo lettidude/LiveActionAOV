@@ -104,17 +104,17 @@ class NormalCrafterPass(UtilityPass):
         ChannelSpec(name=CH_N_Y, description="Camera-space normal y (OpenGL)"),
         ChannelSpec(name=CH_N_Z, description="Camera-space normal z (OpenGL)"),
     ]
-    smoothable_channels: list[str] = []   # VIDEO_CLIP: internally temporally coherent
+    smoothable_channels: list[str] = []  # VIDEO_CLIP: internally temporally coherent
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "model_id": "Yanrui95/NormalCrafter",
         "precision": "fp16",
-        "window_size": 14,            # pipeline's internal sliding window
-        "time_step_size": 10,         # stride between windows (overlap = window - stride)
-        "decode_chunk_size": 7,       # VAE decode chunk size (memory vs speed)
-        "max_res": 1024,              # cap longer edge for VRAM
+        "window_size": 14,  # pipeline's internal sliding window
+        "time_step_size": 10,  # stride between windows (overlap = window - stride)
+        "decode_chunk_size": 7,  # VAE decode chunk size (memory vs speed)
+        "max_res": 1024,  # cap longer edge for VRAM
         "seed": 42,
-        "cpu_offload": None,          # None | "model" | "sequential"
+        "cpu_offload": None,  # None | "model" | "sequential"
         # Axis convention. First run on CAT_070_0030 showed NormalCrafter
         # emits normals where visible-surface Z is ALREADY positive (i.e.
         # +Z toward camera — OpenGL convention). Applying an OpenCV→OpenGL
@@ -136,8 +136,7 @@ class NormalCrafterPass(UtilityPass):
             self.params.setdefault(k, v)
         if int(self.params["overlap"]) >= int(self.params["window"]):
             raise ValueError(
-                f"overlap ({self.params['overlap']}) must be < window "
-                f"({self.params['window']})"
+                f"overlap ({self.params['overlap']}) must be < window ({self.params['window']})"
             )
         self._pipeline: Any = None
         self._device: Any = None
@@ -182,10 +181,13 @@ class NormalCrafterPass(UtilityPass):
         # HF's auto-loader would otherwise instantiate the vanilla
         # `UNetSpatioTemporalConditionModel` and miss them.
         unet = DiffusersUNetSpatioTemporalConditionModelNormalCrafter.from_pretrained(
-            model_id, subfolder="unet", low_cpu_mem_usage=True,
+            model_id,
+            subfolder="unet",
+            low_cpu_mem_usage=True,
         )
         vae = AutoencoderKLTemporalDecoder.from_pretrained(
-            model_id, subfolder="vae",
+            model_id,
+            subfolder="vae",
         )
         unet.to(dtype=weight_dtype)
         vae.to(dtype=weight_dtype)
@@ -225,14 +227,10 @@ class NormalCrafterPass(UtilityPass):
         return frames
 
     def infer(self, tensor: Any) -> Any:
-        raise NotImplementedError(
-            "NormalCrafterPass is VIDEO_CLIP; drive it via run_shot."
-        )
+        raise NotImplementedError("NormalCrafterPass is VIDEO_CLIP; drive it via run_shot.")
 
     def postprocess(self, tensor: Any) -> dict[str, np.ndarray]:
-        raise NotImplementedError(
-            "NormalCrafterPass is VIDEO_CLIP; drive it via run_shot."
-        )
+        raise NotImplementedError("NormalCrafterPass is VIDEO_CLIP; drive it via run_shot.")
 
     # ------------------------------------------------------------------
     # Shot-level: one pipeline call across the whole clip.
@@ -267,6 +265,7 @@ class NormalCrafterPass(UtilityPass):
             inf_h = (inf_h // 8) * 8
             inf_w = (inf_w // 8) * 8
             import cv2
+
             rs = np.empty((stack_f.shape[0], inf_h, inf_w, 3), dtype=np.float32)
             for i in range(stack_f.shape[0]):
                 rs[i] = cv2.resize(stack_f[i], (inf_w, inf_h), interpolation=cv2.INTER_AREA)
@@ -280,13 +279,14 @@ class NormalCrafterPass(UtilityPass):
         frames_pil = self._to_pil(stack_u8)
 
         # 4. Inference (single hook so tests can bypass).
-        normals = self._infer_clip(frames_pil)     # (N, H, W, 3) in [-1, 1]
+        normals = self._infer_clip(frames_pil)  # (N, H, W, 3) in [-1, 1]
 
         # 5. Upscale back to plate res if we downscaled earlier, then
         #    renormalise unit length (spec trap 2 — bilinear blend breaks
         #    it even when each pixel was unit before).
         if normals.shape[1] != plate_h or normals.shape[2] != plate_w:
             import cv2
+
             up = np.empty((normals.shape[0], plate_h, plate_w, 3), dtype=np.float32)
             for i in range(normals.shape[0]):
                 up[i] = cv2.resize(
@@ -295,7 +295,7 @@ class NormalCrafterPass(UtilityPass):
                     interpolation=cv2.INTER_LINEAR,
                 )
             normals = up
-        mag = np.sqrt((normals ** 2).sum(axis=-1, keepdims=True))
+        mag = np.sqrt((normals**2).sum(axis=-1, keepdims=True))
         mag = np.maximum(mag, 1e-6)
         normals = normals / mag
 
@@ -305,7 +305,7 @@ class NormalCrafterPass(UtilityPass):
         if src.lower() != dst.lower():
             converted = np.empty_like(normals)
             for i in range(normals.shape[0]):
-                n = normals[i].transpose(2, 0, 1)         # (3, H, W)
+                n = normals[i].transpose(2, 0, 1)  # (3, H, W)
                 n = _convert_axes(n, src=src, dst=dst)
                 converted[i] = n.transpose(1, 2, 0)
             normals = converted
@@ -345,9 +345,7 @@ class NormalCrafterPass(UtilityPass):
         self._load_model()
         assert self._pipeline is not None
 
-        generator = torch.Generator(device=self._device).manual_seed(
-            int(self.params["seed"])
-        )
+        generator = torch.Generator(device=self._device).manual_seed(int(self.params["seed"]))
         with torch.inference_mode():
             result = self._pipeline(
                 frames_pil,
@@ -356,7 +354,7 @@ class NormalCrafterPass(UtilityPass):
                 window_size=int(self.params["window_size"]),
                 generator=generator,
             )
-        frames = result.frames[0]     # (N, H, W, 3), range (-1, 1)
+        frames = result.frames[0]  # (N, H, W, 3), range (-1, 1)
         return np.asarray(frames, dtype=np.float32)
 
 

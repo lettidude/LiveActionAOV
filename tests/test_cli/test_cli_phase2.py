@@ -10,7 +10,6 @@ from typer.testing import CliRunner
 from live_action_aov.cli.app import _resolve_semantic_passes, app
 from live_action_aov.io.oiio_io import HAS_OIIO
 
-
 runner = CliRunner()
 
 
@@ -70,9 +69,12 @@ def test_depthpro_gate_blocks_without_allow_noncommercial(
     result = runner.invoke(
         app,
         [
-            "run-shot", str(test_plate_1080p),
-            "--passes", "depth",
-            "--depth-backend", "depthpro",
+            "run-shot",
+            str(test_plate_1080p),
+            "--passes",
+            "depth",
+            "--depth-backend",
+            "depthpro",
         ],
     )
     assert result.exit_code == 2
@@ -88,9 +90,12 @@ def test_depthcrafter_gate_blocks_without_allow_noncommercial(
     result = runner.invoke(
         app,
         [
-            "run-shot", str(test_plate_1080p),
-            "--passes", "depth",
-            "--depth-backend", "depthcrafter",
+            "run-shot",
+            str(test_plate_1080p),
+            "--passes",
+            "depth",
+            "--depth-backend",
+            "depthcrafter",
         ],
     )
     assert result.exit_code == 2
@@ -105,9 +110,12 @@ def test_normalcrafter_gate_blocks_without_allow_noncommercial(
     result = runner.invoke(
         app,
         [
-            "run-shot", str(test_plate_1080p),
-            "--passes", "normals",
-            "--normals-backend", "normalcrafter",
+            "run-shot",
+            str(test_plate_1080p),
+            "--passes",
+            "normals",
+            "--normals-backend",
+            "normalcrafter",
         ],
     )
     assert result.exit_code == 2
@@ -126,8 +134,10 @@ def test_commercial_backends_pass_the_license_gate(test_plate_1080p: Path) -> No
     result = runner.invoke(
         app,
         [
-            "run-shot", str(test_plate_1080p),
-            "--passes", "noop",   # test-only commercial pass, skips the HF path
+            "run-shot",
+            str(test_plate_1080p),
+            "--passes",
+            "noop",  # test-only commercial pass, skips the HF path
         ],
     )
     # exit_code 0 on OIIO-present happy path, or 1 on other runtime issue —

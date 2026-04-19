@@ -65,9 +65,9 @@ class DSINEPass(UtilityPass):
     smoothable_channels = [CH_N_X, CH_N_Y, CH_N_Z]
 
     DEFAULT_PARAMS: dict[str, Any] = {
-        "inference_short_edge": 480,   # DSINE default
-        "precision": "fp32",           # "fp32" | "fp16" (fp16 only if cuda)
-        "smooth": "auto",              # executor auto-wires TemporalSmoother
+        "inference_short_edge": 480,  # DSINE default
+        "precision": "fp32",  # "fp32" | "fp16" (fp16 only if cuda)
+        "smooth": "auto",  # executor auto-wires TemporalSmoother
         # Intrinsics. `None` means "derive from shot/plate at inference time".
         "fx": None,
         "fy": None,
@@ -123,7 +123,7 @@ class DSINEPass(UtilityPass):
         # `sys.modules` (e.g. from diffusers). Clear the stale entry first.
         for stale in [m for m in list(sys.modules) if m == "models" or m.startswith("models.")]:
             del sys.modules[stale]
-        from models.dsine.v02 import DSINE_v02  # type: ignore
+        from models.dsine.v02 import DSINE_v02
 
         args = types.SimpleNamespace(
             NNET_architecture="v02",
@@ -181,15 +181,13 @@ class DSINEPass(UtilityPass):
         import torch
 
         if frames.ndim != 4 or frames.shape[0] != 1 or frames.shape[-1] != 3:
-            raise ValueError(
-                f"DSINEPass preprocess expects (1, H, W, 3), got {frames.shape}"
-            )
+            raise ValueError(f"DSINEPass preprocess expects (1, H, W, 3), got {frames.shape}")
         self._load_model()
         plate_h, plate_w = int(frames.shape[1]), int(frames.shape[2])
         inf_h, inf_w = _inference_size(plate_h, plate_w, int(self.params["inference_short_edge"]))
 
         img = np.clip(frames[0], 0.0, 1.0).astype(np.float32, copy=False)
-        t = torch.from_numpy(img).permute(2, 0, 1)[None]      # (1, 3, H, W)
+        t = torch.from_numpy(img).permute(2, 0, 1)[None]  # (1, 3, H, W)
         t = torch.nn.functional.interpolate(
             t, size=(inf_h, inf_w), mode="bilinear", align_corners=False
         )
@@ -199,9 +197,14 @@ class DSINEPass(UtilityPass):
         t = (t - mean) / std
 
         intrinsics = _scaled_intrinsics(
-            plate_h, plate_w, inf_h, inf_w,
-            fx=self.params["fx"], fy=self.params["fy"],
-            cx=self.params["cx"], cy=self.params["cy"],
+            plate_h,
+            plate_w,
+            inf_h,
+            inf_w,
+            fx=self.params["fx"],
+            fy=self.params["fy"],
+            cx=self.params["cx"],
+            cy=self.params["cy"],
         )
 
         return {
@@ -235,16 +238,14 @@ class DSINEPass(UtilityPass):
         plate_h, plate_w = tensor["plate_shape"]
         n = tensor["normals"]
         if n.ndim != 4 or n.shape[1] != 3:
-            raise ValueError(
-                f"Expected normals (B, 3, h, w), got {tuple(n.shape)}"
-            )
+            raise ValueError(f"Expected normals (B, 3, h, w), got {tuple(n.shape)}")
         n_up = torch.nn.functional.interpolate(
             n, size=(plate_h, plate_w), mode="bilinear", align_corners=False
         )
         # Trap 2: bilinear upscale breaks unit length — renormalize.
-        mag = torch.sqrt((n_up ** 2).sum(dim=1, keepdim=True)).clamp_min(1e-6)
+        mag = torch.sqrt((n_up**2).sum(dim=1, keepdim=True)).clamp_min(1e-6)
         n_unit = n_up / mag
-        n_np = n_unit[0].cpu().numpy().astype(np.float32)   # (3, H, W)
+        n_np = n_unit[0].cpu().numpy().astype(np.float32)  # (3, H, W)
 
         n_np = _convert_axes(
             n_np,
@@ -309,9 +310,9 @@ def _scaled_intrinsics(
     sy = inf_h / max(plate_h, 1)
     K = torch.tensor(
         [
-            [plate_fx * sx, 0.0,           plate_cx * sx],
-            [0.0,           plate_fy * sy, plate_cy * sy],
-            [0.0,           0.0,           1.0],
+            [plate_fx * sx, 0.0, plate_cx * sx],
+            [0.0, plate_fy * sy, plate_cy * sy],
+            [0.0, 0.0, 1.0],
         ],
         dtype=torch.float32,
     )[None]

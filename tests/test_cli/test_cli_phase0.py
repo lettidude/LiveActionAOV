@@ -11,7 +11,6 @@ import live_action_aov
 from live_action_aov.cli.app import app
 from live_action_aov.io.oiio_io import HAS_OIIO
 
-
 runner = CliRunner()
 
 
@@ -29,9 +28,7 @@ def test_plugins_list_includes_noop() -> None:
 
 @pytest.mark.skipif(not HAS_OIIO, reason="OpenImageIO not installed")
 def test_run_shot_produces_sidecar(test_plate_1080p: Path) -> None:
-    result = runner.invoke(
-        app, ["run-shot", str(test_plate_1080p), "--passes", "noop"]
-    )
+    result = runner.invoke(app, ["run-shot", str(test_plate_1080p), "--passes", "noop"])
     assert result.exit_code == 0, result.stdout
     # Sidecar file should have been written in the same folder.
     written = sorted(test_plate_1080p.glob("test_plate.utility.*.exr"))

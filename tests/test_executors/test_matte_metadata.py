@@ -19,23 +19,22 @@ from typer.testing import CliRunner
 
 pytest.importorskip("torch")
 
-from live_action_aov.cli.app import app  # noqa: E402
-from live_action_aov.core.pass_base import (  # noqa: E402
+from live_action_aov.cli.app import app
+from live_action_aov.core.pass_base import (
     ChannelSpec,
     License,
     PassType,
     TemporalMode,
     UtilityPass,
 )
-from live_action_aov.core.registry import get_registry  # noqa: E402
-from live_action_aov.io.channels import (  # noqa: E402
+from live_action_aov.core.registry import get_registry
+from live_action_aov.io.channels import (
     CH_MATTE_A,
     CH_MATTE_B,
     CH_MATTE_G,
     CH_MATTE_R,
 )
-from live_action_aov.io.oiio_io import HAS_OIIO  # noqa: E402
-
+from live_action_aov.io.oiio_io import HAS_OIIO
 
 runner = CliRunner()
 
@@ -191,8 +190,10 @@ def test_sidecar_has_matte_metadata_and_commercial_flag(test_plate_1080p: Path) 
     result = runner.invoke(
         app,
         [
-            "run-shot", str(test_plate_1080p),
-            "--passes", "fake_matte_detector,fake_refiner",
+            "run-shot",
+            str(test_plate_1080p),
+            "--passes",
+            "fake_matte_detector,fake_refiner",
         ],
     )
     assert result.exit_code == 0, result.stdout
@@ -252,9 +253,11 @@ def test_sidecar_commercial_flag_is_false_for_noncommercial_refiner(
     result = runner.invoke(
         app,
         [
-            "run-shot", str(test_plate_1080p),
-            "--passes", "fake_matte_detector,fake_nc_refiner",
-            "--allow-noncommercial",   # gate must be open for NC refiner
+            "run-shot",
+            str(test_plate_1080p),
+            "--passes",
+            "fake_matte_detector,fake_nc_refiner",
+            "--allow-noncommercial",  # gate must be open for NC refiner
         ],
     )
     assert result.exit_code == 0, result.stdout

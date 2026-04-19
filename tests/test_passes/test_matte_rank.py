@@ -11,10 +11,10 @@ from __future__ import annotations
 import pytest
 
 from live_action_aov.passes.matte.rank import (
+    SLOT_ORDER,
     HeroOverride,
     Instance,
     RankWeights,
-    SLOT_ORDER,
     rank_and_assign,
     score_instance,
 )
@@ -45,9 +45,8 @@ def test_slot_order_is_rgba() -> None:
 
 
 def test_score_instance_weighted_sum_matches_default_weights() -> None:
-    weights = RankWeights()   # area=0.4, centrality=0.2, motion=0.2, duration=0.2
-    inst = _inst(track_id=1, area=0.5, centrality=0.5, motion=0.5,
-                 frames=list(range(10)))
+    weights = RankWeights()  # area=0.4, centrality=0.2, motion=0.2, duration=0.2
+    inst = _inst(track_id=1, area=0.5, centrality=0.5, motion=0.5, frames=list(range(10)))
     s = score_instance(inst, weights, n_clip_frames=10)
     # area*0.5 + centrality*0.5 + motion*0.5 + duration(=1.0)*0.2
     expected = 0.4 * 0.5 + 0.2 * 0.5 + 0.2 * 0.5 + 0.2 * 1.0
@@ -60,10 +59,7 @@ def test_score_with_zero_clip_length_short_circuits() -> None:
 
 def test_top_four_selected_by_score_descending() -> None:
     """Six instances with varying area; top 4 claim RGBA."""
-    insts = [
-        _inst(track_id=i, area=area)
-        for i, area in enumerate([0.05, 0.5, 0.3, 0.1, 0.4, 0.2])
-    ]
+    insts = [_inst(track_id=i, area=area) for i, area in enumerate([0.05, 0.5, 0.3, 0.1, 0.4, 0.2])]
     heroes = rank_and_assign(insts, RankWeights(), n_clip_frames=10, max_heroes=4)
     assert len(heroes) == 4
     # Slots returned in canonical r,g,b,a order:
@@ -76,7 +72,7 @@ def test_override_claims_slot_before_score_ranking() -> None:
     insts = [
         _inst(track_id=1, area=0.5),
         _inst(track_id=2, area=0.3),
-        _inst(track_id=3, area=0.05),   # tiny — would never naturally rank
+        _inst(track_id=3, area=0.05),  # tiny — would never naturally rank
     ]
     heroes = rank_and_assign(
         insts,
@@ -86,7 +82,7 @@ def test_override_claims_slot_before_score_ranking() -> None:
         overrides=[HeroOverride(track_id=3, slot="r")],
     )
     by_slot = {h.slot: h.track_id for h in heroes}
-    assert by_slot["r"] == 3           # override wins
+    assert by_slot["r"] == 3  # override wins
     # The remaining two slots fill by score order.
     assert by_slot["g"] == 1
     assert by_slot["b"] == 2
@@ -111,7 +107,7 @@ def test_ties_broken_by_area_then_track_id() -> None:
     # Zero weights on non-area features so score depends only on area.
     w = RankWeights(area=0.0, centrality=0.0, motion=0.0, duration=0.0, user_priority=0.0)
     a = _inst(track_id=5, area=0.3)
-    b = _inst(track_id=2, area=0.3)     # same area, smaller id → wins the tie
+    b = _inst(track_id=2, area=0.3)  # same area, smaller id → wins the tie
     c = _inst(track_id=7, area=0.1)
     heroes = rank_and_assign([a, b, c], w, n_clip_frames=10, max_heroes=3)
     assert [h.track_id for h in heroes] == [2, 5, 7]
@@ -161,8 +157,6 @@ def test_user_priority_contributes_when_weighted() -> None:
     low = _inst(track_id=1, area=0.5, user_priority=0.0)
     high = _inst(track_id=2, area=0.05, user_priority=1.0)
     # Huge weight on user_priority ensures the low-area one wins.
-    weights = RankWeights(
-        area=0.1, centrality=0.0, motion=0.0, duration=0.0, user_priority=5.0
-    )
+    weights = RankWeights(area=0.1, centrality=0.0, motion=0.0, duration=0.0, user_priority=5.0)
     heroes = rank_and_assign([low, high], weights, n_clip_frames=10, max_heroes=2)
     assert heroes[0].track_id == 2 and heroes[0].slot == "r"

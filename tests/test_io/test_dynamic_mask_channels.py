@@ -28,12 +28,14 @@ pytestmark = pytest.mark.skipif(not HAS_OIIO, reason="OpenImageIO not installed"
 
 def test_order_channels_places_matte_in_canonical_order() -> None:
     """matte.r/g/b/a sit in the canonical-ordered head; dynamics follow."""
-    got = _order_channels([
-        f"{'mask.'}person",
-        CH_MATTE_A,
-        f"{'mask.'}vehicle",
-        CH_MATTE_R,
-    ])
+    got = _order_channels(
+        [
+            f"{'mask.'}person",
+            CH_MATTE_A,
+            f"{'mask.'}vehicle",
+            CH_MATTE_R,
+        ]
+    )
     # matte.r and matte.a both appear in CANONICAL_CHANNEL_ORDER, so they come
     # first in canonical positions; mask.* are unknowns appended in input order.
     assert got[0] == CH_MATTE_R
@@ -47,18 +49,21 @@ def test_writer_accepts_arbitrary_mask_concept_channels(tmp_path: Path) -> None:
     h, w = 16, 24
     writer = ExrSidecarWriter()
     channels = {
-        f"mask.person":    np.full((h, w), 0.10, dtype=np.float32),
-        f"mask.vehicle":   np.full((h, w), 0.20, dtype=np.float32),
-        f"mask.animal":    np.full((h, w), 0.30, dtype=np.float32),
-        CH_MATTE_R:        np.full((h, w), 0.40, dtype=np.float32),
-        CH_MATTE_G:        np.full((h, w), 0.50, dtype=np.float32),
-        CH_MATTE_B:        np.full((h, w), 0.60, dtype=np.float32),
-        CH_MATTE_A:        np.full((h, w), 0.70, dtype=np.float32),
+        "mask.person": np.full((h, w), 0.10, dtype=np.float32),
+        "mask.vehicle": np.full((h, w), 0.20, dtype=np.float32),
+        "mask.animal": np.full((h, w), 0.30, dtype=np.float32),
+        CH_MATTE_R: np.full((h, w), 0.40, dtype=np.float32),
+        CH_MATTE_G: np.full((h, w), 0.50, dtype=np.float32),
+        CH_MATTE_B: np.full((h, w), 0.60, dtype=np.float32),
+        CH_MATTE_A: np.full((h, w), 0.70, dtype=np.float32),
     }
     out_path = tmp_path / "dynamic.exr"
-    writer.write_frame(out_path, channels, attrs={"liveActionAOV/matte/concepts": "person,vehicle,animal"})
+    writer.write_frame(
+        out_path, channels, attrs={"liveActionAOV/matte/concepts": "person,vehicle,animal"}
+    )
 
     from live_action_aov.io.oiio_io import read_exr
+
     back, attrs = read_exr(out_path)
 
     # Every channel round-trips by value. OIIO may reorder internally, so

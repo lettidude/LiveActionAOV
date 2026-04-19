@@ -86,21 +86,21 @@ class RAFTPass(UtilityPass):
     ]
 
     DEFAULT_PARAMS: dict[str, Any] = {
-        "backend": "raft_large",         # "raft_large" | "raft_small"
-        "precision": "fp32",             # "fp32" | "fp16" (fp16 only if cuda)
+        "backend": "raft_large",  # "raft_large" | "raft_small"
+        "precision": "fp32",  # "fp32" | "fp16" (fp16 only if cuda)
         "fb_threshold_px": 1.0,
-        "inference_resolution": 520,     # target max-side in px (multiple of 8)
-        "num_flow_updates": 12,           # RAFT iters; raft_large default
+        "inference_resolution": 520,  # target max-side in px (multiple of 8)
+        "num_flow_updates": 12,  # RAFT iters; raft_large default
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         super().__init__(params)
         for k, v in self.DEFAULT_PARAMS.items():
             self.params.setdefault(k, v)
-        self._model = None
-        self._transforms = None
-        self._device = None
-        self._dtype = None
+        self._model: Any = None
+        self._transforms: Any = None
+        self._device: Any = None
+        self._dtype: Any = None
         # Filled by run_shot; emitted via emit_artifacts().
         self._forward: dict[int, np.ndarray] = {}
         self._backward: dict[int, np.ndarray] = {}
@@ -158,9 +158,7 @@ class RAFTPass(UtilityPass):
         import torch
 
         if frames.ndim != 4 or frames.shape[0] != 2:
-            raise ValueError(
-                f"RAFT PAIR preprocess expects (2, H, W, 3), got {frames.shape}"
-            )
+            raise ValueError(f"RAFT PAIR preprocess expects (2, H, W, 3), got {frames.shape}")
         self._load_model()
         assert self._transforms is not None and self._device is not None
 
@@ -256,9 +254,9 @@ class RAFTPass(UtilityPass):
         # Run RAFT on every consecutive pair. For pair (f, f+1) we get both
         # fwd (f → f+1) and bwd (f+1 → f). We store fwd at frame f and bwd
         # at frame f+1 so each frame's channels are semantically correct.
-        pair_fwd: dict[int, np.ndarray] = {}      # fwd at frame f = flow f → f+1
-        pair_bwd: dict[int, np.ndarray] = {}      # bwd at frame f+1 = flow f+1 → f
-        pair_conf: dict[int, np.ndarray] = {}     # confidence of fwd at f
+        pair_fwd: dict[int, np.ndarray] = {}  # fwd at frame f = flow f → f+1
+        pair_bwd: dict[int, np.ndarray] = {}  # bwd at frame f+1 = flow f+1 → f
+        pair_conf: dict[int, np.ndarray] = {}  # confidence of fwd at f
 
         plate_h: int | None = None
         plate_w: int | None = None
@@ -271,23 +269,26 @@ class RAFTPass(UtilityPass):
             model_in = self.preprocess(pair)
             model_out = self.infer(model_in)
             channels = self.postprocess(model_out)
-            pair_fwd[f] = np.stack(
-                [channels[CH_MOTION_X], channels[CH_MOTION_Y]], axis=0
-            )
-            pair_bwd[f + 1] = np.stack(
-                [channels[CH_BACK_X], channels[CH_BACK_Y]], axis=0
-            )
+            pair_fwd[f] = np.stack([channels[CH_MOTION_X], channels[CH_MOTION_Y]], axis=0)
+            pair_bwd[f + 1] = np.stack([channels[CH_BACK_X], channels[CH_BACK_Y]], axis=0)
             pair_conf[f] = channels[CH_FLOW_CONFIDENCE]
 
         # Assemble per-frame channel dicts. Endpoints get zero-valued flow.
         all_flow_channels = (
-            CH_MOTION_X, CH_MOTION_Y, CH_BACK_X, CH_BACK_Y, CH_FLOW_CONFIDENCE,
-            CH_FORWARD_U, CH_FORWARD_V, CH_BACKWARD_U, CH_BACKWARD_V,
+            CH_MOTION_X,
+            CH_MOTION_Y,
+            CH_BACK_X,
+            CH_BACK_Y,
+            CH_FLOW_CONFIDENCE,
+            CH_FORWARD_U,
+            CH_FORWARD_V,
+            CH_BACKWARD_U,
+            CH_BACKWARD_V,
         )
         if plate_h is None or plate_w is None:
             # Single-frame shot — nothing to compute.
             zero = np.zeros((1, 1), dtype=np.float32)
-            return {first: {k: zero for k in all_flow_channels}}
+            return {first: dict.fromkeys(all_flow_channels, zero)}
 
         zero2 = np.zeros((2, plate_h, plate_w), dtype=np.float32)
         zero1 = np.zeros((plate_h, plate_w), dtype=np.float32)
@@ -332,7 +333,7 @@ class RAFTPass(UtilityPass):
             "forward_flow": dict(self._forward),
             "backward_flow": dict(self._backward),
             "occlusion_mask": dict(self._occlusion),
-            "parallax_estimate": {f: parallax for f in self._forward},
+            "parallax_estimate": dict.fromkeys(self._forward, parallax),
         }
 
 

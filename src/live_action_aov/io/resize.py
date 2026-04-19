@@ -36,9 +36,7 @@ class ResizeParams(BaseModel):
 ChannelType = Literal["continuous", "discrete", "normal_vector", "flow_vector"]
 
 
-def target_size(
-    src_size: tuple[int, int], params: ResizeParams
-) -> tuple[int, int]:
+def target_size(src_size: tuple[int, int], params: ResizeParams) -> tuple[int, int]:
     """Compute (w, h) target size given source size and ResizeParams."""
     sw, sh = src_size
     if params.mode is ResizeMode.EXACT:

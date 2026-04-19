@@ -13,7 +13,7 @@ behavior without the diffusers/torch stack.
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -109,11 +109,9 @@ def stitch_windowed_predictions(
     wt = np.zeros(n_frames, dtype=np.float32)
 
     n_windows = len(predictions)
-    for i, (pred, start) in enumerate(zip(predictions, starts)):
+    for i, (pred, start) in enumerate(zip(predictions, starts, strict=True)):
         if pred.shape[1:] != trailing_shape:
-            raise ValueError(
-                f"Window {i} trailing shape {pred.shape[1:]} != {trailing_shape}"
-            )
+            raise ValueError(f"Window {i} trailing shape {pred.shape[1:]} != {trailing_shape}")
         window = pred.shape[0]
         w = trapezoid_weight(window, overlap)
         if endpoint_unramped:

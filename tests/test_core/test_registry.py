@@ -14,7 +14,7 @@ def _package_installed() -> bool:
     (editable or otherwise). Tests that require discovery skip when not."""
     try:
         return len(list(im.entry_points(group=GROUP_EXECUTORS))) > 0
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 

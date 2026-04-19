@@ -48,6 +48,7 @@ class LocalExecutor(Executor):
         resolved_by_name = {pc.name: (pc, cls) for (pc, cls) in resolved}
 
         raw_reader = OIIOExrReader(shot.folder, shot.sequence_pattern)
+        reader: OIIOExrReader | DisplayTransformedReader
         if shot.apply_display_transform:
             # Clip-uniform display transform (auto-exposure + AgX + sRGB
             # EOTF) analysed once, applied on every read. Lets scene-referred
@@ -114,13 +115,15 @@ class LocalExecutor(Executor):
             if flow_available:
                 for node in ordered:
                     pc, cls = resolved_by_name[node.name]
-                    smooth_param = pc.params.get("smooth", getattr(cls, "DEFAULT_PARAMS", {}).get("smooth"))
+                    smooth_param = pc.params.get(
+                        "smooth", getattr(cls, "DEFAULT_PARAMS", {}).get("smooth")
+                    )
                     if not _smooth_wanted(smooth_param):
                         continue
                     if getattr(cls, "temporal_mode", None) != TemporalMode.PER_FRAME:
                         continue
-                    channels = list(getattr(cls, "smoothable_channels", []) or [])
-                    if not channels:
+                    smoothable = list(getattr(cls, "smoothable_channels", []) or [])
+                    if not smoothable:
                         continue
                     auto_name = f"temporal_smooth::{node.name}"
                     if auto_name in existing_post_names:
@@ -128,7 +131,7 @@ class LocalExecutor(Executor):
                     auto_post.append(
                         PostConfig(
                             name="temporal_smooth",
-                            params={"applied_to": channels, "_auto_for": node.name},
+                            params={"applied_to": smoothable, "_auto_for": node.name},
                         )
                     )
 
@@ -142,9 +145,7 @@ class LocalExecutor(Executor):
                         f"Available: {sorted(registry._post)}"
                     )
                 post_instance = post_cls(post_cfg.params)
-                per_frame_channels = post_instance.apply(
-                    per_frame_channels, flow_cache, shot.name
-                )
+                per_frame_channels = post_instance.apply(per_frame_channels, flow_cache, shot.name)
                 applied_post.append(
                     {
                         "name": post_cfg.name,

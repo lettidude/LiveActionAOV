@@ -54,10 +54,7 @@ class _FakeReader:
 
 def _varying_frames(n: int, h: int = 16, w: int = 24) -> list[np.ndarray]:
     """Frames whose mean intensity ramps linearly across the shot."""
-    return [
-        np.full((h, w, 3), 0.1 + 0.8 * (i / max(n - 1, 1)), dtype=np.float32)
-        for i in range(n)
-    ]
+    return [np.full((h, w, 3), 0.1 + 0.8 * (i / max(n - 1, 1)), dtype=np.float32) for i in range(n)]
 
 
 def test_license_is_noncommercial_gated() -> None:
@@ -77,9 +74,7 @@ def test_overlap_geq_window_rejected() -> None:
 def test_run_shot_covers_every_frame_and_normalizes_per_clip() -> None:
     """Clip longer than one window — exercises the sliding-window path."""
     frames = _varying_frames(n=30)
-    pass_ = _FakeDepthCrafter(
-        {"window": 12, "overlap": 4, "inference_short_edge": 16}
-    )
+    pass_ = _FakeDepthCrafter({"window": 12, "overlap": 4, "inference_short_edge": 16})
     reader = _FakeReader(frames)
     out = pass_.run_shot(reader, frame_range=(1, 30))
 
