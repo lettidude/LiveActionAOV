@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from live_action_aov.gui.cuda_check import CudaState, cuda_state
 from live_action_aov.gui.inspector import InspectorPanel
+from live_action_aov.gui.log_panel import LogPanel
 from live_action_aov.gui.pass_catalog import has_noncommercial
 from live_action_aov.gui.shot_list import ShotListPanel
 from live_action_aov.gui.shot_state import ShotRegistry, ShotState
@@ -104,10 +105,24 @@ class MainWindow(QMainWindow):
         self._reveal_btn.setToolTip("Open the sidecar output folder.")
         self._reveal_btn.clicked.connect(self._on_reveal_clicked)
 
+        # Log-panel toggle — the panel stays hidden until the user
+        # opts in, so the prep-UX surface area doesn't shrink for
+        # people who just want to submit and walk away.
+        self._log_toggle_btn = QPushButton("Show log")
+        self._log_toggle_btn.setCheckable(True)
+        self._log_toggle_btn.setChecked(False)
+        self._log_toggle_btn.toggled.connect(self._on_log_toggle)
+
         bottom_row = QHBoxLayout()
         bottom_row.addWidget(self._submit_btn)
         bottom_row.addWidget(self._progress, stretch=1)
+        bottom_row.addWidget(self._log_toggle_btn)
         bottom_row.addWidget(self._reveal_btn)
+
+        # Log panel — stays at the bottom of the window, wired to
+        # SubmitWorker.progress + Python logging. Hidden by default.
+        self._log_panel = LogPanel()
+        self._log_panel.setVisible(False)
 
         central = QWidget()
         central_layout = QVBoxLayout(central)
@@ -120,6 +135,7 @@ class MainWindow(QMainWindow):
             central_layout.addWidget(banner)
         central_layout.addWidget(splitter, stretch=1)
         central_layout.addLayout(bottom_row)
+        central_layout.addWidget(self._log_panel)
         self.setCentralWidget(central)
         self._build_menus()
 
@@ -238,6 +254,7 @@ class MainWindow(QMainWindow):
             # Done with the whole batch.
             self._progress.setVisible(False)
             self.statusBar().showMessage("Batch complete.", 8_000)
+            self._log_panel.append_lifecycle("===== Batch complete =====")
             self._refresh_submit_button(None)
             return
         shot = self._queue[0]
@@ -251,6 +268,10 @@ class MainWindow(QMainWindow):
         if remaining > 1:
             msg += f"   ({remaining} shots left in batch)"
         self.statusBar().showMessage(msg)
+        self._log_panel.append_lifecycle(
+            f"===== Submit start: {shot.name} "
+            f"({len(shot.enabled_models)} model{'s' if len(shot.enabled_models) != 1 else ''}) ====="
+        )
         self._submit_worker.submit(shot)
 
     def _on_submit_progress(self, fraction: float, label: str) -> None:
@@ -258,6 +279,13 @@ class MainWindow(QMainWindow):
         # Keep the percentage visible AND the stage label — compositors
         # want to see "Pass 2/3: depth_anything_v2" not just 67%.
         self._progress.setFormat(f"{int(fraction * 100)}%  —  {label}")
+        # Mirror to the log panel so a hidden progress bar still leaves
+        # a paper trail.
+        self._log_panel.append_progress(fraction, label)
+
+    def _on_log_toggle(self, checked: bool) -> None:
+        self._log_panel.setVisible(checked)
+        self._log_toggle_btn.setText("Hide log" if checked else "Show log")
 
     def _on_submit_finished(self, result: SubmitResult) -> None:
         # Locate the shot that produced the result by identity.
@@ -272,9 +300,18 @@ class MainWindow(QMainWindow):
         if result.success:
             target.status = "done"
             target.last_sidecar_dir = result.sidecar_dir
+            self._log_panel.append_lifecycle(
+                f"===== Submit done: {target.name} → {result.sidecar_dir} ====="
+            )
         else:
             target.status = "failed"
             target.last_error = result.error or "unknown error"
+            self._log_panel.append_error(
+                f"Submit failed — {target.name}: {target.last_error}"
+            )
+            self._log_panel.append_lifecycle(
+                f"===== Submit FAILED: {target.name} ====="
+            )
             # In a batch, a failure on one shot shouldn't nuke the
             # whole queue — warn the user and keep going. For a single
             # shot, surface the error as a blocking dialog.
