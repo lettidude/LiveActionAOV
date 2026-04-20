@@ -89,13 +89,13 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             True,
             ("sam3_matte", "rvm_refiner"),
         ),
-        ModelEntry(
-            "sam3_matanyone2",
-            "SAM3 + MatAnyone2",
-            "CC-BY-NC-4.0",
-            False,
-            ("sam3_matte", "matanyone2"),
-        ),
+        # SAM3 + MatAnyone2 intentionally withheld from the GUI
+        # catalog until the MatAnyone2 refiner's `_refine_instance`
+        # is implemented (currently a stub that raises
+        # NotImplementedError). CLI users with `--refiner matanyone2`
+        # still get a clear error pointing at the stub; GUI users
+        # shouldn't have a broken option staring at them. Add back
+        # once the real torch.hub load + recurrent forward lands.
     ],
 }
 
