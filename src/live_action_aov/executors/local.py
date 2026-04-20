@@ -112,6 +112,18 @@ class LocalExecutor(Executor):
             flow_available = "forward_flow" in artifacts and bool(artifacts["forward_flow"])
             existing_post_names = {p.name for p in job.post}
             auto_post: list[PostConfig] = []
+
+            # Auto-wire PositionFromDepth if any frame carries a Z channel
+            # and the user didn't already schedule their own. P = unproject
+            # of Z + intrinsics; every Nuke relight gizmo needs it and it's
+            # free once depth exists. See post/position_from_depth.py for
+            # the intrinsics-source priority chain.
+            from live_action_aov.io.channels import CH_Z as _CH_Z
+
+            has_depth = any(_CH_Z in ch for ch in per_frame_channels.values())
+            if has_depth and "position_from_depth" not in existing_post_names:
+                auto_post.append(PostConfig(name="position_from_depth", params={}))
+
             if flow_available:
                 for node in ordered:
                     pc, cls = resolved_by_name[node.name]
@@ -145,13 +157,24 @@ class LocalExecutor(Executor):
                         f"Available: {sorted(registry._post)}"
                     )
                 post_instance = post_cls(post_cfg.params)
-                per_frame_channels = post_instance.apply(per_frame_channels, flow_cache, shot.name)
+                per_frame_channels = post_instance.apply(
+                    per_frame_channels, flow_cache, shot.name, shot=shot
+                )
+                # Capture any resolved state the post left on itself
+                # (e.g. PositionFromDepth stamps intrinsics_source +
+                # resolved_intrinsics after apply). This gets forwarded to
+                # the sidecar metadata in _base_attrs.
+                params_snapshot = dict(post_instance.params)
+                if hasattr(post_instance, "intrinsics_source"):
+                    params_snapshot["_intrinsics_source"] = post_instance.intrinsics_source
+                if getattr(post_instance, "resolved_intrinsics", None) is not None:
+                    params_snapshot["_resolved_intrinsics"] = post_instance.resolved_intrinsics
                 applied_post.append(
                     {
                         "name": post_cfg.name,
                         "algorithm": getattr(post_instance, "algorithm", post_cfg.name),
                         "applied_to": list(post_instance.params.get("applied_to") or []),
-                        "params": dict(post_instance.params),
+                        "params": params_snapshot,
                     }
                 )
 
@@ -375,6 +398,22 @@ def _base_attrs(
                     p["params"]["fb_threshold_px"]
                 )
         base[f"{METADATA_NAMESPACE}/smooth/post_processors"] = ",".join(tagged)
+
+    # Position derivation — lives under `position/`.
+    positions = [p for p in applied_post if p["name"] == "position_from_depth"]
+    if positions:
+        p = positions[0]
+        base[f"{METADATA_NAMESPACE}/position/derived_from"] = "depth"
+        base[f"{METADATA_NAMESPACE}/position/algorithm"] = p["algorithm"]
+        src = p["params"].get("_intrinsics_source", "approximate_from_hfov")
+        base[f"{METADATA_NAMESPACE}/position/intrinsics_source"] = src
+        resolved = p["params"].get("_resolved_intrinsics")
+        if resolved is not None:
+            fx, fy, cx, cy = resolved
+            base[f"{METADATA_NAMESPACE}/position/fx"] = float(fx)
+            base[f"{METADATA_NAMESPACE}/position/fy"] = float(fy)
+            base[f"{METADATA_NAMESPACE}/position/cx"] = float(cx)
+            base[f"{METADATA_NAMESPACE}/position/cy"] = float(cy)
 
     # SSAO — stamped under `ao/`. Derived purely from Z + N channels, so
     # we record the input provenance so downstream QC can tell a synth

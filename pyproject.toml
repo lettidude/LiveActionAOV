@@ -121,8 +121,9 @@ rvm_refiner        = "live_action_aov.passes.matte.rvm:RVMRefinerPass"
 matanyone2         = "live_action_aov.passes.matte.matanyone2:MatAnyone2RefinerPass"
 
 [project.entry-points."live_action_aov.post"]
-temporal_smooth = "live_action_aov.post.temporal_smooth:TemporalSmoother"
-ssao            = "live_action_aov.post.ssao:SSAOPost"
+temporal_smooth      = "live_action_aov.post.temporal_smooth:TemporalSmoother"
+position_from_depth  = "live_action_aov.post.position_from_depth:PositionFromDepth"
+ssao                 = "live_action_aov.post.ssao:SSAOPost"
 
 [project.entry-points."live_action_aov.executors"]
 local    = "live_action_aov.executors.local:LocalExecutor"

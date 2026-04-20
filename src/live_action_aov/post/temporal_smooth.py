@@ -49,6 +49,7 @@ class TemporalSmoother:
         per_frame_channels: dict[int, dict[str, np.ndarray]],
         flow_cache: FlowCache,
         shot_id: str,
+        **_kwargs: Any,
     ) -> dict[int, dict[str, np.ndarray]]:
         """Return a new per-frame channel dict with the selected channels smoothed.
 
