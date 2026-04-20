@@ -197,25 +197,34 @@ class DepthCrafterPass(UtilityPass):
 
         if frames.ndim != 4 or frames.shape[-1] != 3:
             raise ValueError(f"DepthCrafter preprocess expects (W, H, W_px, 3), got {frames.shape}")
-        import math
-
         self._load_model()
         n, plate_h, plate_w, _ = frames.shape
-        # Long-edge scaling, CEIL to /64, min 576 on both dims.
-        # SVD's UNet has 3 spatial downsamples × 8-pixel VAE patch =
-        # 64 px per stride, AND skip connections assume spatial dims
-        # ≥ the 576 × 1024 training size. Rounding NEAREST (what
-        # DepthCrafter's own util does) produces 512 × 1024 on 2048×
-        # 1080 plates, which the UNet rejects:
-        #   "Expected size 72 but got size 64 for tensor number 1"
-        # Ceiling to /64 pads up to 576 instead; slight aspect
-        # distortion at the input is undone when we upscale the
-        # depth output back to plate shape.
-        max_res = int(self.params.get("max_res") or self.params["inference_short_edge"])
-        long_edge = max(plate_h, plate_w, 1)
-        scale = max_res / long_edge if long_edge > max_res else 1.0
-        inf_h = max(576, math.ceil(plate_h * scale / 64) * 64)
-        inf_w = max(576, math.ceil(plate_w * scale / 64) * 64)
+        # SVD-xt's UNet is hard-tied to exactly 576 × 1024. Earlier
+        # attempts to preserve plate aspect (long-edge scaling with
+        # /64 ceiling) worked for 16:9-ish plates but crashed on
+        # anything TALLER than 16:9 — a 2048 × 1408 open-gate plate
+        # rounds to 704 × 1024 and the UNet rejects it:
+        #   "Expected size 72 but got size 88 for tensor number 1"
+        # (72 = 576/8, 88 = 704/8 in latent space.) The same class of
+        # crash hit 16:9 plates at 640-short-edge and 2048×1080 plates
+        # at 512-short-edge earlier in today's debugging. SVD UNet
+        # skip connections have zero tolerance for anything off-spec.
+        #
+        # Fix: force exactly 576 × 1024 regardless of plate aspect.
+        # Depth is a relative scalar field, so non-uniform stretching
+        # at the model input is reversed when we bilinear-upscale the
+        # depth output back to plate dimensions. The per-pixel depth
+        # values remain correct; only the model's intermediate "view"
+        # of the frame is aspect-distorted, which it tolerates well
+        # (tested on 2048×1080, 2048×1152, 2048×1408 plates — all
+        # produce usable depth).
+        #
+        # A letterbox path (preserve aspect, pad to 576×1024, crop
+        # output) is strictly better for model quality but needs the
+        # postprocess pipeline to track unpadded regions. TODO: add
+        # as `input_fit: stretch | letterbox` param in a follow-up.
+        inf_h = 576
+        inf_w = 1024
 
         img = np.clip(frames, 0.0, 1.0).astype(np.float32, copy=False)
         t = torch.from_numpy(img).permute(0, 3, 1, 2)  # (N, 3, H, W)

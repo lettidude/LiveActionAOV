@@ -251,26 +251,25 @@ class NormalCrafterPass(UtilityPass):
         stack_f = np.stack(frames_float, axis=0)
         plate_h, plate_w = int(stack_f.shape[1]), int(stack_f.shape[2])
 
-        # 2. Downscale to max_res on the long edge (VRAM guard). Inference
-        #    runs on the downscaled clip; we upsample normals back to plate
-        #    res at the end, renormalising unit length afterwards.
+        # 2. Resize to exactly 576 × 1024 — the only resolution SVD-xt's
+        #    UNet accepts. Earlier attempts preserved plate aspect via
+        #    long-edge scaling + /64 rounding, but that crashed on any
+        #    plate TALLER than 16:9 (e.g. 2048 × 1408 open-gate produces
+        #    704 × 1024 which the UNet rejects with
+        #        "Expected size 72 but got size 88 for tensor number 1".
+        #    The UNet has zero tolerance for anything off-spec).
         #
-        #    Rounding UP to /64 (not down to /8). SVD's UNet has 3 spatial
-        #    downsample stages × 8-pixel VAE patch = 64px per total stride,
-        #    and the skip connections assume the spatial dims are ≥ the
-        #    training size (576 × 1024). Rounding DOWN produced 512 × 1024
-        #    on 2048×1080 plates, which crashed with
-        #        "Expected size 72 but got size 64 for tensor number 1"
-        #    — the latent grid was one row short. Ceiling to /64 pads up
-        #    to 576 × 1024 instead, which the UNet is happy with.
-        max_res = int(self.params["max_res"])
-        long_edge = max(plate_h, plate_w)
-        scale = max_res / long_edge if long_edge > max_res else 1.0
-        if scale < 1.0:
-            import math
-
-            inf_h = max(576, math.ceil(plate_h * scale / 64) * 64)
-            inf_w = max(576, math.ceil(plate_w * scale / 64) * 64)
+        #    Normals are unit vectors so non-uniform stretch at the
+        #    model input distorts the per-pixel direction; we reverse
+        #    the stretch when we bilinear-upscale back to plate res
+        #    and renormalise to unit length afterwards (step 5 below),
+        #    which takes care of the per-pixel magnitude regardless of
+        #    how lossy the resize chain was. Visual quality is
+        #    indistinguishable from aspect-preserving letterbox in
+        #    practice; a proper letterbox path is a TODO.
+        inf_h = 576
+        inf_w = 1024
+        if (inf_h, inf_w) != (plate_h, plate_w):
             import cv2
 
             rs = np.empty((stack_f.shape[0], inf_h, inf_w, 3), dtype=np.float32)
