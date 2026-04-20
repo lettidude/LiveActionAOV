@@ -138,7 +138,9 @@ rvm_refiner        = "live_action_aov.passes.matte.rvm:RVMRefinerPass"
 matanyone2         = "live_action_aov.passes.matte.matanyone2:MatAnyone2RefinerPass"
 
 [project.entry-points."live_action_aov.post"]
-temporal_smooth = "live_action_aov.post.temporal_smooth:TemporalSmoother"
+temporal_smooth      = "live_action_aov.post.temporal_smooth:TemporalSmoother"
+position_from_depth  = "live_action_aov.post.position_from_depth:PositionFromDepth"
+ssao                 = "live_action_aov.post.ssao:SSAOPost"
 
 [project.entry-points."live_action_aov.executors"]
 local    = "live_action_aov.executors.local:LocalExecutor"
@@ -219,9 +221,10 @@ select = [
 ignore = [
     "E501",
     "B008",
-    # Capital-letter tensor-dim locals (B, H, W, T, N, C…) are the
-    # universal naming convention in our ML / VFX code.
-    "N806",
+    # Capital-letter tensor-dim locals and function args (B, H, W, T,
+    # N, C, Z, …) are the universal naming convention in our ML / VFX /
+    # geometry code.
+    "N806", "N803",
     # Class-level `DEFAULT_PARAMS = {...}` gets shallow-copied into each
     # instance; wrapping in ClassVar would mislead readers into thinking
     # it's a shared singleton.
