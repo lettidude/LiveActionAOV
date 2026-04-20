@@ -258,6 +258,23 @@ class LocalExecutor(Executor):
                 if "sam3_hard_masks" in provides or "sam3_instances" in provides:
                     matte_detector_cls = cls
 
+            # Proxy mode: passes ran at the downsampled resolution, but
+            # sidecars should still line up with the plate in comp. So
+            # we upscale every channel back to the native plate size
+            # right before writing. Professional VFX tools treat proxy
+            # as invisible to downstream comp — sidecars at proxy res
+            # force a Nuke Resize + quality loss that's avoidable here.
+            plate_w, plate_h = shot.resolution
+            needs_upscale = False
+            if shot.proxy_long_edge is not None:
+                # Check the first channel's shape against plate res.
+                for cdict in per_frame_channels.values():
+                    for arr in cdict.values():
+                        if arr.ndim >= 2 and (arr.shape[0] != plate_h or arr.shape[1] != plate_w):
+                            needs_upscale = True
+                        break
+                    break
+
             first_written: Path | None = None
             total_frames = max(1, len(per_frame_channels))
             for frame_write_idx, (frame_idx, channels) in enumerate(per_frame_channels.items()):
@@ -267,6 +284,8 @@ class LocalExecutor(Executor):
                         min(frac, 0.99),
                         f"Writing sidecars ({frame_write_idx}/{total_frames})",
                     )
+                if needs_upscale:
+                    channels = _upscale_channels_to_plate(channels, plate_h, plate_w)
                 out_path = sidecar_dir / sidecar_template.format(frame=frame_idx)
                 attrs = dict(attrs_base)
                 attrs[f"{METADATA_NAMESPACE}/frame"] = frame_idx
@@ -498,6 +517,63 @@ def _base_attrs(
         base[f"{METADATA_NAMESPACE}/ao/intensity"] = float(p["params"].get("intensity", 1.0))
 
     return base
+
+
+def _upscale_channels_to_plate(
+    channels: dict[str, Any],
+    plate_h: int,
+    plate_w: int,
+) -> dict[str, Any]:
+    """Upscale each per-frame channel array back to plate resolution.
+
+    Proxy mode ran passes at a smaller resolution for speed; sidecars
+    should still match the plate so comp can use them without an
+    extra Resize node. Depth / normals / AO / matte are all scalar-ish
+    fields; bilinear upscale is correct for depth + matte + AO. For
+    normals we'd ideally renormalise to unit length post-upscale, but
+    the NormalCrafter pass already renormalises inside its own
+    run_shot after its own internal resize step, so by the time we
+    get here normals are unit-length at the proxy resolution and the
+    bilinear upscale introduces tiny sub-unit drift that's
+    indistinguishable in comp. Flow channels (motion.x/y etc.) are
+    pixel-magnitude fields — bilinear upscale is topologically
+    correct but the magnitudes need to scale by the upscale ratio
+    (pixels mean different things at different resolutions). We
+    apply that correction inline.
+    """
+    import cv2
+
+    upscaled: dict[str, Any] = {}
+    scale_w: float | None = None
+    scale_h: float | None = None
+    flow_channels = {
+        "motion.x",
+        "motion.y",
+        "back.x",
+        "back.y",
+        "forward.u",
+        "forward.v",
+        "backward.u",
+        "backward.v",
+    }
+    for name, arr in channels.items():
+        if arr.ndim < 2 or (arr.shape[0] == plate_h and arr.shape[1] == plate_w):
+            upscaled[name] = arr
+            continue
+        if scale_w is None:
+            scale_h = plate_h / arr.shape[0]
+            scale_w = plate_w / arr.shape[1]
+        up = cv2.resize(arr, (plate_w, plate_h), interpolation=cv2.INTER_LINEAR)
+        if name in flow_channels:
+            # Flow vectors are in source-pixel units. When we upscale
+            # the field, each vector's magnitude scales with the
+            # pixel-stride change — otherwise a 5-pixel displacement
+            # at proxy res stays 5 pixels at plate res, which is
+            # pointing a frame at the wrong target position.
+            axis_scale = scale_w if name.endswith((".x", ".u")) else scale_h
+            up = up * float(axis_scale or 1.0)
+        upscaled[name] = up.astype(arr.dtype, copy=False)
+    return upscaled
 
 
 __all__ = ["LocalExecutor"]
