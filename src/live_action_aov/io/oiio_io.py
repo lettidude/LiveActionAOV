@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """EXR read/write via OpenImageIO.
 
 Thin wrapper: keeps OIIO imports and error handling in one place. Everyone

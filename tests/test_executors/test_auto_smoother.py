@@ -134,10 +134,10 @@ def test_smoother_auto_wires_when_flow_and_per_frame_pass_present(
     sidecar = sorted(test_plate_1080p.glob("test_plate.utility.*.exr"))[0]
     _, attrs = read_exr(sidecar)
     names = " ".join(f"{k}={v}" for k, v in attrs.items())
-    assert "liveActionAOV/smooth/post_processors" in attrs
+    assert "liveaov/smooth/post_processors" in attrs
     # Auto-wired entry is tagged with `::<pass_name>`.
     assert "temporal_smooth::fake_depth_for_smooth_test" in attrs.get(
-        "liveActionAOV/smooth/post_processors", ""
+        "liveaov/smooth/post_processors", ""
     ), names
 
 
@@ -157,4 +157,4 @@ def test_smoother_NOT_wired_when_no_flow_pass(test_plate_1080p: Path) -> None:
 
     sidecar = sorted(test_plate_1080p.glob("test_plate.utility.*.exr"))[0]
     _, attrs = read_exr(sidecar)
-    assert "liveActionAOV/smooth/post_processors" not in attrs
+    assert "liveaov/smooth/post_processors" not in attrs

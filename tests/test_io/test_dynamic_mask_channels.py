@@ -59,7 +59,7 @@ def test_writer_accepts_arbitrary_mask_concept_channels(tmp_path: Path) -> None:
     }
     out_path = tmp_path / "dynamic.exr"
     writer.write_frame(
-        out_path, channels, attrs={"liveActionAOV/matte/concepts": "person,vehicle,animal"}
+        out_path, channels, attrs={"liveaov/matte/concepts": "person,vehicle,animal"}
     )
 
     from live_action_aov.io.oiio_io import read_exr
@@ -82,4 +82,4 @@ def test_writer_accepts_arbitrary_mask_concept_channels(tmp_path: Path) -> None:
             f"Channel {name} did not survive round-trip"
         )
     # Concept-list attribute survives.
-    assert attrs.get("liveActionAOV/matte/concepts") == "person,vehicle,animal"
+    assert attrs.get("liveaov/matte/concepts") == "person,vehicle,animal"

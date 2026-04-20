@@ -128,9 +128,9 @@ frame". The pass zeros out hallucinated alpha post-inference. The
 `test_instance_absent_frames_zeroed` test pins this behavior.
 
 **`matte_heroes` artifact**: published for the executor to stamp
-`liveActionAOV/matte/hero_{r,g,b,a}/{label,track_id,score}` onto every
+`liveaov/matte/hero_{r,g,b,a}/{label,track_id,score}` onto every
 sidecar, plus the commercial flag (derived from this pass's license).
-QC pipelines can use `liveActionAOV/matte/commercial = "true"|"false"`
+QC pipelines can use `liveaov/matte/commercial = "true"|"false"`
 programmatically before delivering to clients.
 
 ### `src/live_action_aov/passes/matte/__init__.py`
@@ -165,14 +165,14 @@ frame_outputs = instance.run_shot(reader, shot.frame_range)
 ```
 
 **Matte metadata block** in `_base_attrs`:
-- `liveActionAOV/matte/concepts = "person,vehicle,..."` (from `matte_concepts`)
-- `liveActionAOV/matte/hero_r/label|track_id|score` for every slot
+- `liveaov/matte/concepts = "person,vehicle,..."` (from `matte_concepts`)
+- `liveaov/matte/hero_r/label|track_id|score` for every slot
   covered by a hero (from `matte_heroes`)
 
 Per-sidecar:
-- `liveActionAOV/matte/detector = "sam3_matte"`
-- `liveActionAOV/matte/refiner  = "rvm_refiner"`
-- `liveActionAOV/matte/commercial = "true"` (derived from the refiner's
+- `liveaov/matte/detector = "sam3_matte"`
+- `liveaov/matte/refiner  = "rvm_refiner"`
+- `liveaov/matte/commercial = "true"` (derived from the refiner's
   license — always a string, not a bool, so Nuke reads it as a scalar)
 
 The detector + refiner are discovered by walking the DAG for passes that
@@ -244,11 +244,11 @@ uv run liveaov run-shot A:/tmp/plate3 --passes flow,matte
 #     - mask.person, mask.vehicle, ... (one per detected concept)
 #     - matte.r, matte.g, matte.b, matte.a (top-4 heroes, per-clip slot lock)
 #     - 9 flow channels
-# → `liveActionAOV/matte/detector = "sam3_matte"`
-# → `liveActionAOV/matte/refiner = "rvm_refiner"`
-# → `liveActionAOV/matte/commercial = "true"`
-# → `liveActionAOV/matte/concepts = "person,vehicle,..."`
-# → `liveActionAOV/matte/hero_r/label = "person"` etc.
+# → `liveaov/matte/detector = "sam3_matte"`
+# → `liveaov/matte/refiner = "rvm_refiner"`
+# → `liveaov/matte/commercial = "true"`
+# → `liveaov/matte/concepts = "person,vehicle,..."`
+# → `liveaov/matte/hero_r/label = "person"` etc.
 
 # Explicit detector + refiner (equivalent).
 uv run liveaov run-shot A:/tmp/plate3 --passes flow,sam3_matte,rvm_refiner
@@ -276,13 +276,13 @@ Channel names  :
   - matte.b
   - matte.a
 Matte metadata :
-  - liveActionAOV/matte/commercial = true
-  - liveActionAOV/matte/concepts = person,vehicle,animal,sky
-  - liveActionAOV/matte/detector = sam3_matte
-  - liveActionAOV/matte/hero_r/label = person
-  - liveActionAOV/matte/hero_r/score = 0.91
-  - liveActionAOV/matte/hero_r/track_id = 17
-  - liveActionAOV/matte/refiner = rvm_refiner
+  - liveaov/matte/commercial = true
+  - liveaov/matte/concepts = person,vehicle,animal,sky
+  - liveaov/matte/detector = sam3_matte
+  - liveaov/matte/hero_r/label = person
+  - liveaov/matte/hero_r/score = 0.91
+  - liveaov/matte/hero_r/track_id = 17
+  - liveaov/matte/refiner = rvm_refiner
 ```
 
 Nuke reads this as two layers: `mask` (with 4 sub-channels) and `matte`
@@ -441,7 +441,7 @@ uv run liveaov run-shot A:/tmp/plate3 --passes matte --refiner matanyone2
 # Opt in — gate clears, runs on GPU.
 uv run liveaov run-shot A:/tmp/plate3 --passes matte --refiner matanyone2 \
     --allow-noncommercial
-# `liveActionAOV/matte/commercial = "false"` stamped on every sidecar
+# `liveaov/matte/commercial = "false"` stamped on every sidecar
 ```
 
 Added in `pyproject.toml`:
@@ -465,7 +465,7 @@ What it does:
 3. Reads back one sidecar, asserts *structural* invariants only:
    - ≥1 dynamic `mask.<concept>` channel
    - all four `matte.{r,g,b,a}` channels
-   - `liveActionAOV/matte/commercial = "true"`
+   - `liveaov/matte/commercial = "true"`
    - detector + refiner identity stamped
    - matte values in `[0, 1]`, at least one non-zero
 

@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Hero ranking + per-clip slot assignment (spec §13.1 Phase 3).
 
 Pure Python, no model dependencies. Both the detector pass (to build the

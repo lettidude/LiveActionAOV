@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Pass plugin contract.
 
 Every built-in and third-party pass subclasses `UtilityPass` and is discovered

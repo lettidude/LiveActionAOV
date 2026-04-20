@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """JSON sidecar writer (minimal in v1).
 
 Used today for shot-level metadata dumps from `liveaov analyze`. In v2a the

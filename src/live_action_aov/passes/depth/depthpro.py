@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Depth Pro pass (metric depth, spec §13.1 Phase 2 round 2).
 
 Backend: Apple ML Research's Depth Pro (`apple/DepthPro` on HuggingFace, via

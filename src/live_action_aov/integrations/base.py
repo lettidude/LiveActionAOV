@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """PipelineAdapter ABC.
 
 A pipeline adapter translates between our `Shot` / `Job` model and an

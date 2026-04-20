@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Typer CLI surface.
 
 The full command set (discover / analyze / run / run-shot / preflight /

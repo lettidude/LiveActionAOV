@@ -105,8 +105,8 @@ def test_sidecar_has_metric_space_and_meters_unit(test_plate_1080p: Path) -> Non
 
     sidecar = sorted(test_plate_1080p.glob("test_plate.utility.*.exr"))[0]
     _, attrs = read_exr(sidecar)
-    assert attrs.get("liveActionAOV/depth/space") == "metric"
-    assert attrs.get("liveActionAOV/depth/unit") == "meters"
+    assert attrs.get("liveaov/depth/space") == "metric"
+    assert attrs.get("liveaov/depth/unit") == "meters"
     # Relative-depth wiring must NOT have fired.
-    assert "liveActionAOV/depth/normalization/min" not in attrs
-    assert "liveActionAOV/depth/normalization/max" not in attrs
+    assert "liveaov/depth/normalization/min" not in attrs
+    assert "liveaov/depth/normalization/max" not in attrs

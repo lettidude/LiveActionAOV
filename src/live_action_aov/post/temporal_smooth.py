@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Flow-guided temporal smoothing (design §9.1).
 
 Post-processor — NOT a pass. Runs after all passes complete, mutating the

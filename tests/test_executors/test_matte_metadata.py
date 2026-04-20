@@ -1,4 +1,4 @@
-"""Executor writes `liveActionAOV/matte/*` metadata when a matte pipeline runs.
+"""Executor writes `liveaov/matte/*` metadata when a matte pipeline runs.
 
 Wires fake detector + fake refiner into the registry (both commercial-safe,
 so the license gate is inactive) and asserts the sidecar has:
@@ -204,16 +204,16 @@ def test_sidecar_has_matte_metadata_and_commercial_flag(test_plate_1080p: Path) 
     _, attrs = read_exr(sidecar)
 
     # Detector + refiner identity attributes.
-    assert attrs.get("liveActionAOV/matte/detector") == "fake_matte_detector"
-    assert attrs.get("liveActionAOV/matte/refiner") == "fake_refiner"
+    assert attrs.get("liveaov/matte/detector") == "fake_matte_detector"
+    assert attrs.get("liveaov/matte/refiner") == "fake_refiner"
     # Commercial flag — MIT refiner → "true" (string, not bool, for Nuke).
-    assert attrs.get("liveActionAOV/matte/commercial") == "true"
+    assert attrs.get("liveaov/matte/commercial") == "true"
     # Concept list (comma-joined) from matte_concepts artifact.
-    assert attrs.get("liveActionAOV/matte/concepts") == "person"
+    assert attrs.get("liveaov/matte/concepts") == "person"
     # Hero metadata for slot r — label, track_id, score all present.
-    assert attrs.get("liveActionAOV/matte/hero_r/label") == "person"
-    assert int(attrs.get("liveActionAOV/matte/hero_r/track_id")) == 42
-    assert float(attrs.get("liveActionAOV/matte/hero_r/score")) == pytest.approx(0.91)
+    assert attrs.get("liveaov/matte/hero_r/label") == "person"
+    assert int(attrs.get("liveaov/matte/hero_r/track_id")) == 42
+    assert float(attrs.get("liveaov/matte/hero_r/score")) == pytest.approx(0.91)
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +267,8 @@ def test_sidecar_commercial_flag_is_false_for_noncommercial_refiner(
     sidecar = sorted(test_plate_1080p.glob("test_plate.utility.*.exr"))[0]
     _, attrs = read_exr(sidecar)
 
-    assert attrs.get("liveActionAOV/matte/refiner") == "fake_nc_refiner"
-    assert attrs.get("liveActionAOV/matte/commercial") == "false"
+    assert attrs.get("liveaov/matte/refiner") == "fake_nc_refiner"
+    assert attrs.get("liveaov/matte/commercial") == "false"
     # Detector identity + hero metadata still come through.
-    assert attrs.get("liveActionAOV/matte/detector") == "fake_matte_detector"
-    assert attrs.get("liveActionAOV/matte/hero_r/label") == "person"
+    assert attrs.get("liveaov/matte/detector") == "fake_matte_detector"
+    assert attrs.get("liveaov/matte/hero_r/label") == "person"

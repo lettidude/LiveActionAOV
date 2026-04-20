@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """CameraPass stub — declared in v1, implemented in v2a.
 
 This class exists so: (1) the architecture flows through a non-EXR pass and

@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Typer application for the `liveaov` CLI.
 
 Phase 0 surface:
@@ -45,7 +50,8 @@ console = Console()
 
 def _version_callback(value: bool) -> None:
     if value:
-        typer.echo(f"liveaov {live_action_aov.__version__}")
+        typer.echo(f"LiveActionAOV v{live_action_aov.__version__}")
+        typer.echo("by Leonardo Paolini")
         raise typer.Exit()
 
 
@@ -252,7 +258,7 @@ def inspect_cmd(
     """Dump channels, metadata, and hero summary for a sidecar EXR.
 
     The first stop when verifying a pipeline run: confirms `mask.<concept>`
-    + `matte.{r,g,b,a}` channels landed, the `liveActionAOV/*` metadata
+    + `matte.{r,g,b,a}` channels landed, the `liveaov/*` metadata
     block is stamped correctly, and shows which hero ended up in which
     slot. Pixel-level QC (edge quality, temporal flicker) still belongs in
     Nuke — this command is the plumbing check that comes before that.

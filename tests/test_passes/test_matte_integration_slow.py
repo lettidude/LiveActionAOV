@@ -14,7 +14,7 @@ What it does:
 3. Reads back one sidecar EXR and asserts the *structural* invariants:
    - at least one `mask.<concept>` channel
    - all four `matte.r/g/b/a` channels present
-   - `liveActionAOV/matte/commercial = "true"`
+   - `liveaov/matte/commercial = "true"`
    - detector + refiner identity stamped
 4. The actual mask *pixel quality* is unverified — we trust upstream
    model QC for that; this test only proves the plumbing is intact.
@@ -133,11 +133,11 @@ def test_real_sam3_plus_rvm_end_to_end(_integration_plate: Path) -> None:
     )
 
     # Metadata: commercial-safe default, both identities stamped.
-    assert attrs.get("liveActionAOV/matte/commercial") == "true"
-    assert attrs.get("liveActionAOV/matte/detector") == "sam3_matte"
-    assert attrs.get("liveActionAOV/matte/refiner") == "rvm_refiner"
+    assert attrs.get("liveaov/matte/commercial") == "true"
+    assert attrs.get("liveaov/matte/detector") == "sam3_matte"
+    assert attrs.get("liveaov/matte/refiner") == "rvm_refiner"
     # Concept list is non-empty (mirrors the mask.* channel assertion).
-    concepts = attrs.get("liveActionAOV/matte/concepts", "")
+    concepts = attrs.get("liveaov/matte/concepts", "")
     assert concepts, "matte/concepts attr is empty but mask.* channels exist"
 
     # Sanity: matte channels are within [0, 1] on every frame.

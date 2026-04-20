@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Sliding-window planning + weighted overlap stitching.
 
 Used by VIDEO_CLIP passes (DepthCrafter, NormalCrafter) to handle clips

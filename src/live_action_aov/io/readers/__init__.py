@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Image sequence readers.
 
 `ImageSequenceReader` is the ABC; `OIIOExrReader` is the v1 concrete

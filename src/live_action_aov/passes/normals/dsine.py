@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """DSINE normals pass (commercial-safe fallback, spec §13.1 Phase 2).
 
 Backend: Baegwang-Bin DSINE (MIT weights). Loaded via `torch.hub.load`

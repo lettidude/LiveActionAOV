@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Robust Video Matting refiner (spec §13.1 Phase 3).
 
 Backend: `PeterL1n/RobustVideoMatting` — a light recurrent network that
@@ -71,7 +76,7 @@ class RVMRefinerPass(UtilityPass):
             "Robust Video Matting (PeterL1n/RobustVideoMatting) is MIT-"
             "licensed. No usage gate needed — both inference and outputs "
             "are commercial-safe. Sidecars stamp "
-            "`utilityPass/matte/commercial = true` so downstream QC can "
+            "`liveaov/matte/commercial = true` so downstream QC can "
             "distinguish them from MatAnyone 2 (NTU-S-Lab-1.0, NC) deliverables."
         ),
     )
@@ -377,7 +382,7 @@ class RVMRefinerPass(UtilityPass):
 
     # ------------------------------------------------------------------
     # Artifact emission — expose the refined hero list so the executor
-    # can stamp `utilityPass/matte/*` metadata onto every sidecar.
+    # can stamp `liveaov/matte/*` metadata onto every sidecar.
     # ------------------------------------------------------------------
 
     def emit_artifacts(self) -> dict[str, dict[int, Any]]:

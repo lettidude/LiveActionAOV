@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """GUI entry point — Phase 5 deliverable.
 
 Phase 0 ships a stub that prints a pointer to the roadmap so the console

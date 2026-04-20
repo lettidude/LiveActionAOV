@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Depth Anything V2 pass (commercial-safe fallback, spec §13.1 Phase 2).
 
 Backend: `transformers.pipeline("depth-estimation", "depth-anything/Depth-Anything-V2-Small-hf")`.

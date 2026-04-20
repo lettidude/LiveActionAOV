@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """ImageSequenceReader ABC (design §14, decision 3).
 
 Discovery goes through the `live_action_aov.io.readers` entry-point group so

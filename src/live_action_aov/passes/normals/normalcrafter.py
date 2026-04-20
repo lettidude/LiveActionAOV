@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """NormalCrafter pass (VIDEO_CLIP, temporal-native normals).
 
 Backend: the vendored NormalCrafter pipeline from

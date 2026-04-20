@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Execution backends.
 
 `LocalExecutor` is the v1 implementation (single-GPU, in-process).

@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Job / Shot / Task — the data model that moves through the pipeline.
 
 Shot is the human-prepared unit; Job is the execution unit (a Shot plus a
