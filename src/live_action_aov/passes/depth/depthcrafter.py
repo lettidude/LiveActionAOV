@@ -240,23 +240,39 @@ class DepthCrafterPass(UtilityPass):
 
     def _infer_window(self, tensor: Any) -> Any:
         """Run the diffusers pipeline on a window. Overridden in tests."""
+        import numpy as np
         import torch
 
         assert self._pipeline is not None
         with torch.no_grad():
+            # `output_type="np"` skips the default PIL conversion in
+            # `video_processor.postprocess_video` — that conversion
+            # gives us `List[List[PIL.Image]]` which crashed the
+            # downstream `.ndim` checks. We want raw floats.
             result = self._pipeline(
                 video=tensor["video"],
                 num_inference_steps=int(self.params["num_inference_steps"]),
                 guidance_scale=float(self.params["guidance_scale"]),
+                output_type="np",
             )
-        # DepthCrafter pipelines typically return a dict with `.depth` or
-        # `.frames`; normalize to a torch.Tensor of shape (N, H, W).
         depth = getattr(result, "depth", None)
         if depth is None and hasattr(result, "frames"):
             depth = result.frames
         if depth is None:
             raise RuntimeError("DepthCrafter pipeline returned no `.depth`/`.frames` attribute")
-        return depth
+        # `np` output from postprocess_video is still batched as a list
+        # at the outer level (one entry per batch item in the SVD
+        # pipeline). Peel the first (only) batch; the inner array is
+        # (N, H, W, 3) with depth replicated across 3 channels.
+        if isinstance(depth, list):
+            if not depth:
+                raise RuntimeError("DepthCrafter pipeline returned an empty frames list")
+            depth = depth[0]
+        depth = np.asarray(depth)
+        if depth.ndim == 4 and depth.shape[-1] == 3:
+            # 3 channels are identical (depth replicated); collapse to 1.
+            depth = depth.mean(axis=-1)
+        return torch.from_numpy(depth.astype(np.float32))
 
     def postprocess(self, tensor: Any) -> dict[str, np.ndarray]:
         """Upscale window depth to plate res. Returns Z_raw + Z_raw (same
