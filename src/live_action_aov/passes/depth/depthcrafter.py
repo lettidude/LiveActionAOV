@@ -260,18 +260,33 @@ class DepthCrafterPass(UtilityPass):
             depth = result.frames
         if depth is None:
             raise RuntimeError("DepthCrafter pipeline returned no `.depth`/`.frames` attribute")
-        # `np` output from postprocess_video is still batched as a list
-        # at the outer level (one entry per batch item in the SVD
-        # pipeline). Peel the first (only) batch; the inner array is
-        # (N, H, W, 3) with depth replicated across 3 channels.
+        # Normalise the pipeline's output to a 3D (N, H, W) tensor.
+        # `postprocess_video(output_type="np")` can return:
+        #   - an ndarray of shape (batch, N, H, W, 3)          — 5D
+        #   - an ndarray of shape (N, H, W, 3)                 — 4D
+        #   - a list of (N, H, W, 3) arrays (one per batch)    — list of 4D
+        # plus older variants with 3D inner arrays if channels got
+        # squeezed upstream. We peel batch / list wrappers, collapse
+        # the replicated RGB channel, and raise loud if something
+        # exotic comes back — better than passing a 5D tensor into
+        # `F.interpolate` and getting a cryptic spatial-dim error
+        # downstream.
         if isinstance(depth, list):
             if not depth:
                 raise RuntimeError("DepthCrafter pipeline returned an empty frames list")
             depth = depth[0]
         depth = np.asarray(depth)
+        if depth.ndim == 5:
+            # (batch, N, H, W, C) — take first batch item.
+            depth = depth[0]
         if depth.ndim == 4 and depth.shape[-1] == 3:
-            # 3 channels are identical (depth replicated); collapse to 1.
+            # Depth is replicated across RGB channels; collapse to 1.
             depth = depth.mean(axis=-1)
+        if depth.ndim != 3:
+            raise RuntimeError(
+                f"DepthCrafter pipeline returned unexpected depth shape {depth.shape}; "
+                "expected (N, H, W) or (N, H, W, 3) after peeling batch."
+            )
         return torch.from_numpy(depth.astype(np.float32))
 
     def postprocess(self, tensor: Any) -> dict[str, np.ndarray]:
