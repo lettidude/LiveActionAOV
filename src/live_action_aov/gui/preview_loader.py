@@ -239,18 +239,27 @@ def _to_qimage_display_transformed(
 
 
 # Preview-local colorspace helpers — no OCIO, no config dependency.
+#
+# Goal: actually differentiate color spaces that share a role label
+# but have different primaries (lin_rec709 vs ACEScg vs ACES2065-1).
+# The earlier "treat-every-linear-space-the-same" shortcut made the
+# preview identical for all three, which confused users testing the
+# colorspace override. Matrices below are from the Academy CTL
+# reference: AP1 / AP0 → linear sRGB primaries (D65, Bradford CAT
+# from the ACES D60 white point).
 
-_ALREADY_LINEAR = {
+_LINEAR_SRGB = {
     "linear",
     "lin_rec709",
-    "scene_linear",
-    "acescg",
-    "aces2065_1",
     "linear_srgb",
     "linear_rec709",
     "rec709_linear",
+    "scene_linear",  # role name — treat as linear sRGB for preview
 }
 _DISPLAY_SRGB_LIKE = {
+    # sRGB and Rec.709 share primaries; their EOTFs differ very
+    # slightly but are visually indistinguishable on an 8-bit
+    # preview. Treat as one bucket.
     "srgb",
     "srgb_display",
     "srgb_texture",
@@ -261,22 +270,53 @@ _DISPLAY_SRGB_LIKE = {
     "gamma_22",
 }
 
+# AP1 (ACEScg) → linear sRGB.
+_ACESCG_TO_SRGB = np.array(
+    [
+        [1.70505, -0.62179, -0.08326],
+        [-0.13026, 1.14080, -0.01055],
+        [-0.02400, -0.12897, 1.15297],
+    ],
+    dtype=np.float32,
+)
+
+# AP0 (ACES2065-1) → linear sRGB.
+_ACES2065_TO_SRGB = np.array(
+    [
+        [2.52169, -1.13413, -0.38756],
+        [-0.27648, 1.37272, -0.09624],
+        [-0.01538, -0.15298, 1.16835],
+    ],
+    dtype=np.float32,
+)
+
+
+def _apply_matrix(pixels: np.ndarray, M: np.ndarray) -> np.ndarray:
+    """Apply a 3×3 colour transform to (..., 3) pixels."""
+    rgb = pixels.astype(np.float32, copy=False)
+    flat = rgb.reshape(-1, 3)
+    return (flat @ M.T).reshape(rgb.shape)
+
 
 def _preview_to_linear(pixels: np.ndarray, colorspace: str) -> np.ndarray:
-    """Decode to scene-linear using only well-known math.
+    """Decode to linear sRGB primaries for the preview pipeline.
 
-    Scene-linear / wide-gamut spaces (acescg etc.) are treated as
-    already-linear; their primaries differ from sRGB but the preview
-    doesn't chromatic-adapt — that's an executor-time concern.
-    Display-referred spaces go through the sRGB inverse EOTF. Unknown
-    names fall through as identity + a silent no-op so the preview
-    never raises.
+    - Display-referred (sRGB / Rec.709): apply sRGB inverse EOTF.
+    - ACEScg (AP1): apply AP1 → linear sRGB matrix.
+    - ACES2065-1 (AP0): apply AP0 → linear sRGB matrix.
+    - Linear Rec.709 / linear / scene_linear: identity (already in
+      the right primary set).
+    - Unknown: identity + silent no-op so preview never raises.
     """
     key = colorspace.strip().lower()
-    if key in _ALREADY_LINEAR:
-        return pixels.astype(np.float32, copy=False)
     if key in _DISPLAY_SRGB_LIKE:
         return _srgb_to_linear(pixels)
+    if key == "acescg":
+        return _apply_matrix(pixels, _ACESCG_TO_SRGB)
+    if key in {"aces2065_1", "aces2065", "aces"}:
+        return _apply_matrix(pixels, _ACES2065_TO_SRGB)
+    if key in _LINEAR_SRGB:
+        return pixels.astype(np.float32, copy=False)
     return pixels.astype(np.float32, copy=False)
 
 
