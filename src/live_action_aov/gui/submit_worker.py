@@ -147,6 +147,7 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
         apply_display_transform=True,
         passes_enabled=list(state.enabled_models),
         output_dir=output_dir,
+        proxy_long_edge=state.proxy_long_edge,
     )
 
 

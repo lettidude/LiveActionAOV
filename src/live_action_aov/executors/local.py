@@ -25,6 +25,7 @@ from live_action_aov.core.registry import get_registry
 from live_action_aov.executors.base import Executor
 from live_action_aov.io.readers.display_transform_reader import DisplayTransformedReader
 from live_action_aov.io.readers.oiio_exr import OIIOExrReader
+from live_action_aov.io.readers.proxy import wrap_if_proxy
 from live_action_aov.io.writers.exr import ExrSidecarWriter
 from live_action_aov.shared.optical_flow.cache import FlowCache
 
@@ -64,8 +65,13 @@ class LocalExecutor(Executor):
         ordered = topological_sort(nodes)
         resolved_by_name = {pc.name: (pc, cls) for (pc, cls) in resolved}
 
-        raw_reader = OIIOExrReader(shot.folder, shot.sequence_pattern)
-        reader: OIIOExrReader | DisplayTransformedReader
+        raw_reader: Any = OIIOExrReader(shot.folder, shot.sequence_pattern)
+        # Proxy resolution for fast iterations. Wraps the raw reader
+        # with a resize-on-read shim before the display transform sees
+        # anything, so exposure analysis runs on the downsampled clip
+        # too (consistent with what the passes see). `None` = no-op.
+        raw_reader = wrap_if_proxy(raw_reader, shot.proxy_long_edge)
+        reader: Any
         if shot.apply_display_transform:
             # Clip-uniform display transform (auto-exposure + AgX + sRGB
             # EOTF) analysed once, applied on every read. Lets scene-referred
@@ -147,8 +153,14 @@ class LocalExecutor(Executor):
             # the intrinsics-source priority chain.
             from live_action_aov.io.channels import (
                 CH_N_X as _CH_N_X,
+            )
+            from live_action_aov.io.channels import (
                 CH_N_Y as _CH_N_Y,
+            )
+            from live_action_aov.io.channels import (
                 CH_N_Z as _CH_N_Z,
+            )
+            from live_action_aov.io.channels import (
                 CH_Z as _CH_Z,
             )
 

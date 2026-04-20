@@ -88,6 +88,13 @@ class Shot(BaseModel):
     # or a shot-named folder under a shared render root.
     output_dir: Path | None = None
 
+    # Proxy resolution for fast iteration. `None` = plate-native.
+    # When set, every plate frame is resized down to this long-edge
+    # before passes see it; sidecars land at the proxy resolution.
+    # Big disk-I/O + plate-size-scaling-pass savings on 4K / 6K
+    # plates. Pixel aspect is preserved. GUI Output tab flips it.
+    proxy_long_edge: int | None = None
+
     status: ShotStatus = "new"
     notes: str = ""
 

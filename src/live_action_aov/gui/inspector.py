@@ -197,6 +197,21 @@ class InspectorPanel(QWidget):
         self._resolved_out_label.setStyleSheet("color: #aaa; font-size: 10pt;")
         self._resolved_out_label.setWordWrap(True)
 
+        # Proxy resolution — fast-iteration dropdown. Plate-native
+        # is the default; users drop to 540p / 720p / 1080p for
+        # quick passes before committing to a full-res run.
+        self._proxy_combo = QComboBox()
+        self._proxy_combo.addItem("Full plate (native)", None)
+        self._proxy_combo.addItem("1080p  (long edge 1920)", 1920)
+        self._proxy_combo.addItem("720p  (long edge 1280)", 1280)
+        self._proxy_combo.addItem("540p  (long edge 960)", 960)
+        self._proxy_combo.setToolTip(
+            "Resize every plate frame to this long edge before passes "
+            "see it. Sidecars are written at the same resolution. Use "
+            "for fast iteration; switch back to Full plate for delivery."
+        )
+        self._proxy_combo.currentIndexChanged.connect(self._on_proxy_changed)
+
         # --- Reset button ---
         # One-click rollback to the auto-detected colorspace + auto-
         # seeded exposure. Users experimenting with overrides want a
@@ -419,6 +434,17 @@ class InspectorPanel(QWidget):
         output_layout.addLayout(out_root_row)
         output_layout.addLayout(external_name_row)
         output_layout.addWidget(self._resolved_out_label)
+        output_layout.addSpacing(16)
+        output_layout.addWidget(_section_label("Proxy resolution"))
+        proxy_hint = QLabel(
+            "Resize plate before passes run. Sidecars land at the "
+            "chosen resolution. Great for fast-iteration test runs; "
+            "switch back to Full plate before delivery."
+        )
+        proxy_hint.setStyleSheet("color: #888; font-size: 9pt;")
+        proxy_hint.setWordWrap(True)
+        output_layout.addWidget(proxy_hint)
+        output_layout.addWidget(self._proxy_combo)
         output_layout.addStretch()
         output_tab = _scrollable(output_layout)
 
@@ -506,6 +532,18 @@ class InspectorPanel(QWidget):
             self._external_name_edit.setEnabled(shot.output_mode == "external")
             self._subfolder_name_edit.setText(shot.output_subfolder_name)
             self._external_name_edit.setText(shot.output_external_name)
+            # Match the proxy combo's current index to the shot value.
+            # itemData returns the stored payload; None = Full plate
+            # (index 0), 1920/1280/960 = 1/2/3. Any other value falls
+            # through to Full plate.
+            proxy_index = 0
+            for i in range(self._proxy_combo.count()):
+                if self._proxy_combo.itemData(i) == shot.proxy_long_edge:
+                    proxy_index = i
+                    break
+            self._proxy_combo.blockSignals(True)
+            self._proxy_combo.setCurrentIndex(proxy_index)
+            self._proxy_combo.blockSignals(False)
             self._rebuild_resolved_out_label()
 
             # Pass radios reflect the stored enabled_models. The single-
@@ -629,6 +667,12 @@ class InspectorPanel(QWidget):
         self._rebuild_resolved_out_label()
         self._broadcast_output_to_all_shots()
 
+    def _on_proxy_changed(self, idx: int) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.proxy_long_edge = self._proxy_combo.itemData(idx)
+        self._broadcast_output_to_all_shots()
+
     def _on_pick_external_root(self) -> None:
         if self._current is None:
             return
@@ -644,7 +688,9 @@ class InspectorPanel(QWidget):
         shot propagates to every other shot in the registry. Users
         overwhelmingly want a single destination for a batch; the
         per-shot storage model is kept because `Shot` uses it for
-        serialisation, but the GUI never lets it diverge."""
+        serialisation, but the GUI never lets it diverge. Proxy
+        resolution also broadcasts — it's an output-tab control and
+        the batch-wide consistency rule applies."""
         if self._current is None:
             return
         active = self._current
@@ -656,6 +702,7 @@ class InspectorPanel(QWidget):
             shot.output_subfolder_name = active.output_subfolder_name
             shot.output_external_root = active.output_external_root
             shot.output_external_name = active.output_external_name
+            shot.proxy_long_edge = active.proxy_long_edge
             self._registry.notify_updated(shot)
 
     def _rebuild_resolved_out_label(self) -> None:

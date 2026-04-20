@@ -112,6 +112,13 @@ class ShotState:
     # called this session".
     output_external_name: str = ""
 
+    # Proxy resolution for fast iterations. `None` = plate-native.
+    # Long-edge target in pixels — 1920 = 1080p, 1280 = 720p,
+    # 960 = 540p. Applied as a resize-on-read wrapper in the
+    # executor; sidecars land at the proxy resolution (big disk
+    # savings on 4K / 6K plates).
+    proxy_long_edge: int | None = None
+
     # Per-shot queue flag. The list panel renders a checkbox beside
     # each shot; Submit local iterates every queued shot in order.
     queued: bool = True
