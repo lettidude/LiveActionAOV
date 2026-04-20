@@ -377,7 +377,7 @@ def _base_attrs(
             base[f"{prefix}/label"] = str(hero.get("label", ""))
             base[f"{prefix}/track_id"] = int(hero.get("track_id", 0))
             base[f"{prefix}/score"] = float(hero.get("score", 0.0))
-    # Temporal smoothers — live under `smooth/`.
+    # Temporal smoothers — stamped under `smooth/`.
     smoothers = [p for p in applied_post if p["name"] == "temporal_smooth"]
     if smoothers:
         # Disambiguate per-pass auto-wired smoothers via a `::<pass>` suffix on
@@ -414,6 +414,19 @@ def _base_attrs(
             base[f"{METADATA_NAMESPACE}/position/fy"] = float(fy)
             base[f"{METADATA_NAMESPACE}/position/cx"] = float(cx)
             base[f"{METADATA_NAMESPACE}/position/cy"] = float(cy)
+
+    # SSAO — stamped under `ao/`. Derived purely from Z + N channels, so
+    # we record the input provenance so downstream QC can tell a synth
+    # AO apart from a rendered one.
+    aos = [p for p in applied_post if p["name"] == "ssao"]
+    if aos:
+        p = aos[0]
+        base[f"{METADATA_NAMESPACE}/ao/derived_from"] = "depth+normals"
+        base[f"{METADATA_NAMESPACE}/ao/algorithm"] = p["algorithm"]
+        base[f"{METADATA_NAMESPACE}/ao/radius"] = float(p["params"].get("radius", 0.0))
+        base[f"{METADATA_NAMESPACE}/ao/samples"] = int(p["params"].get("samples", 0))
+        base[f"{METADATA_NAMESPACE}/ao/bias"] = float(p["params"].get("bias", 0.0))
+        base[f"{METADATA_NAMESPACE}/ao/intensity"] = float(p["params"].get("intensity", 1.0))
 
     return base
 
