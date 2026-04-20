@@ -39,11 +39,13 @@ def test_noop_pass_produces_sidecar_with_Z_channel(test_plate_1080p: Path) -> No
     sidecar = shot.sidecars.get("utility")
     assert sidecar is not None and sidecar.exists()
 
-    # Verify channel content.
+    # Verify channel content. NoOpPass writes Z; the PositionFromDepth
+    # post-processor now derives P.x/P.y/P.z automatically from any Z.
+    # So the sidecar carries Z + the three P channels (4 total).
     pixels, attrs = read_exr(sidecar)
-    assert attrs["nchannels"] == 1
-    assert attrs["channelnames"] == [CH_Z]
-    # NoOpPass writes zeros.
+    assert attrs["nchannels"] == 4
+    assert set(attrs["channelnames"]) == {CH_Z, "P.x", "P.y", "P.z"}
+    # NoOpPass writes zeros; P derived from Z=0 is also 0.
     assert pixels.max() == 0.0
     # Metadata namespace landed in the header.
     assert any(k.startswith("liveActionAOV/") for k in attrs)

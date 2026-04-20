@@ -24,6 +24,18 @@ CH_N_Z = "N.z"
 CH_NORMALS_CONFIDENCE = "normals.confidence"
 NORMAL_CHANNELS = (CH_N_X, CH_N_Y, CH_N_Z, CH_NORMALS_CONFIDENCE)
 
+# --- Position (camera-space, metres when depth is metric, else relative) ---
+# Derived from Z + intrinsics via the `PositionFromDepth` post-processor —
+# runs automatically whenever a depth pass is in the job. Pinhole math:
+#   P.x = (u - cx) / fx * Z
+#   P.y = (v - cy) / fy * Z
+#   P.z = Z
+# Consumed by relight gizmos, envRelight, 3DGS export, etc.
+CH_P_X = "P.x"
+CH_P_Y = "P.y"
+CH_P_Z = "P.z"
+POSITION_CHANNELS = (CH_P_X, CH_P_Y, CH_P_Z)
+
 # --- Flow (pixels at plate resolution) ---
 # The spec (§5.1) locks motion.x/y + back.x/y as the canonical names. Nuke's
 # VectorBlur and the wider VFX ecosystem expect the "forward/backward .u/.v"
@@ -75,6 +87,7 @@ def is_mask_channel(name: str) -> bool:
 #: emitting; unknown channels follow in insertion order.
 CANONICAL_CHANNEL_ORDER: tuple[str, ...] = (
     *DEPTH_CHANNELS,
+    *POSITION_CHANNELS,
     *NORMAL_CHANNELS,
     *FLOW_CHANNELS,
     *MATTE_CHANNELS,
@@ -101,6 +114,9 @@ __all__ = [
     "CH_N_X",
     "CH_N_Y",
     "CH_N_Z",
+    "CH_P_X",
+    "CH_P_Y",
+    "CH_P_Z",
     "CH_Z",
     "CH_Z_RAW",
     "DEPTH_CHANNELS",
@@ -108,5 +124,6 @@ __all__ = [
     "MASK_PREFIX",
     "MATTE_CHANNELS",
     "NORMAL_CHANNELS",
+    "POSITION_CHANNELS",
     "is_mask_channel",
 ]
