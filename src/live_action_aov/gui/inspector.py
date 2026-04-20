@@ -37,7 +37,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -57,6 +56,21 @@ from PySide6.QtWidgets import (
 from live_action_aov.gui.pass_catalog import PASS_CATALOG
 from live_action_aov.gui.shot_state import ShotRegistry, ShotState
 from live_action_aov.io.colorspace_detect import SUPPORTED_COLORSPACES
+
+
+def _category_of(model_key: str) -> str | None:
+    """Which category section does this model belong to?
+
+    Central lookup so the selection handler can drop the sibling keys
+    in a model's category when a new radio is chosen. Returns None for
+    keys the catalog doesn't know about (shouldn't happen, but we
+    guard rather than KeyError on a stale shot).
+    """
+    for category, entries in PASS_CATALOG.items():
+        for entry in entries:
+            if entry.key == model_key:
+                return category
+    return None
 
 
 class InspectorPanel(QWidget):
@@ -194,12 +208,20 @@ class InspectorPanel(QWidget):
         self._reset_btn.clicked.connect(self._on_reset_clicked)
 
         # --- Passes — THE main feature ---
-        # One checkbox per model in the catalog, grouped by category.
-        # Multiple models per category OK (run both DA-V2 and DepthPro
-        # if you want); the executor just processes them in order.
-        # License marker next to each label so users see NC status
-        # without hunting through tooltips.
-        self._model_checks: dict[str, QCheckBox] = {}
+        # One radio per model, grouped exclusively per category. The
+        # sidecar has a single `Z` / `N.*` / matte slot per channel —
+        # picking two depth models just has the second overwrite the
+        # first, wasting compute. Radios make the single-pick nature
+        # visually obvious; an explicit "Off" per category covers the
+        # "I don't want depth at all" case.
+        #
+        # License marker sits next to each label (green = commercial,
+        # amber = non-commercial). Flow has one entry + Off; Matte is
+        # a single combo + Off; Depth and Normals are where the
+        # single-select constraint really matters.
+        self._model_radios: dict[str, QRadioButton] = {}
+        self._off_radios: dict[str, QRadioButton] = {}
+        self._category_groups: dict[str, QButtonGroup] = {}
         passes_block = QVBoxLayout()
         passes_block.setSpacing(4)
         for category, entries in PASS_CATALOG.items():
@@ -209,18 +231,44 @@ class InspectorPanel(QWidget):
             )
             header.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             passes_block.addWidget(header)
+
+            group = QButtonGroup(self)
+            group.setExclusive(True)
+            self._category_groups[category] = group
+
+            # "Off" is the default — users opt in per category. Keeping
+            # it visible rather than hidden-by-default makes the "I
+            # don't want depth right now" intent explicit.
+            off_row = QWidget()
+            off_row.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            off_layout = QHBoxLayout(off_row)
+            off_layout.setContentsMargins(16, 0, 0, 0)
+            off_layout.setSpacing(6)
+            off_radio = QRadioButton("Off")
+            off_radio.setStyleSheet("color: #888;")
+            off_radio.setChecked(True)
+            off_radio.toggled.connect(
+                lambda checked, cat=category: checked and self._on_category_off(cat)
+            )
+            self._off_radios[category] = off_radio
+            group.addButton(off_radio)
+            off_layout.addWidget(off_radio)
+            off_layout.addStretch()
+            passes_block.addWidget(off_row)
+
             for entry in entries:
                 row = QWidget()
                 row.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
                 row_layout = QHBoxLayout(row)
                 row_layout.setContentsMargins(16, 0, 0, 0)
                 row_layout.setSpacing(6)
-                cb = QCheckBox(entry.label)
-                cb.toggled.connect(
-                    lambda checked, key=entry.key: self._on_model_toggled(key, checked)
+                radio = QRadioButton(entry.label)
+                radio.toggled.connect(
+                    lambda checked, key=entry.key: checked and self._on_model_selected(key)
                 )
-                self._model_checks[entry.key] = cb
-                row_layout.addWidget(cb)
+                self._model_radios[entry.key] = radio
+                group.addButton(radio)
+                row_layout.addWidget(radio)
                 row_layout.addStretch()
                 colour = "#5ec864" if entry.commercial else "#e0a040"
                 prefix = "" if entry.commercial else "⚠ "
@@ -391,10 +439,30 @@ class InspectorPanel(QWidget):
             self._external_name_edit.setText(shot.output_external_name)
             self._rebuild_resolved_out_label()
 
-            # Pass model checkboxes reflect the stored enabled_models.
+            # Pass radios reflect the stored enabled_models. The single-
+            # select constraint is enforced in the selection handler;
+            # here we just surface whatever's in the state — if more
+            # than one model from a category slipped in (legacy YAMLs,
+            # CLI handoff), we pick the first one to display and leave
+            # the state alone until the user edits.
             enabled = set(shot.enabled_models)
-            for key, cb in self._model_checks.items():
-                cb.setChecked(key in enabled)
+            for category, entries in PASS_CATALOG.items():
+                # Block signals on the whole group so programmatic
+                # setChecked doesn't fire the handler and clobber state.
+                group = self._category_groups[category]
+                for btn in group.buttons():
+                    btn.blockSignals(True)
+                picked: str | None = None
+                for entry in entries:
+                    if entry.key in enabled:
+                        picked = entry.key
+                        break
+                if picked is not None:
+                    self._model_radios[picked].setChecked(True)
+                else:
+                    self._off_radios[category].setChecked(True)
+                for btn in group.buttons():
+                    btn.blockSignals(False)
 
             # Render the auto-EV provenance line. Matches the format
             # of the colorspace line: value + source + a small evidence
@@ -518,15 +586,32 @@ class InspectorPanel(QWidget):
         resolved = self._current.resolve_output_dir()
         self._resolved_out_label.setText(f"→ {resolved}")
 
-    def _on_model_toggled(self, key: str, checked: bool) -> None:
+    def _on_model_selected(self, key: str) -> None:
+        """Radio turned on — enforce single-select per category by
+        dropping any other model from this key's category from
+        `enabled_models` and adding `key` itself."""
         if self._building or self._current is None:
             return
-        enabled = list(self._current.enabled_models)
-        if checked and key not in enabled:
-            enabled.append(key)
-        elif not checked and key in enabled:
-            enabled.remove(key)
+        category = _category_of(key)
+        if category is None:
+            return
+        # Collect the keys that belong to this category from the catalog
+        # so we can prune them all in one pass.
+        category_keys = {e.key for e in PASS_CATALOG.get(category, [])}
+        enabled = [k for k in self._current.enabled_models if k not in category_keys]
+        enabled.append(key)
         self._current.enabled_models = enabled
+        self._registry.notify_updated(self._current)
+
+    def _on_category_off(self, category: str) -> None:
+        """The category's "Off" radio was turned on — drop every model
+        belonging to that category from `enabled_models`."""
+        if self._building or self._current is None:
+            return
+        category_keys = {e.key for e in PASS_CATALOG.get(category, [])}
+        self._current.enabled_models = [
+            k for k in self._current.enabled_models if k not in category_keys
+        ]
         self._registry.notify_updated(self._current)
 
     def _on_reset_clicked(self) -> None:
