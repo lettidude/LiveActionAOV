@@ -154,9 +154,7 @@ def _filter_liveaov_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
     (width / height / nchannels / channelnames / pixelAspectRatio) and anything
     not under our namespace."""
     return {
-        k: v
-        for k, v in sorted(attrs.items())
-        if isinstance(k, str) and k.startswith("liveaov/")
+        k: v for k, v in sorted(attrs.items()) if isinstance(k, str) and k.startswith("liveaov/")
     }
 
 
@@ -251,9 +249,7 @@ def format_text(report: SidecarReport) -> str:
         meta_key_width = max(len(k) for k in report.metadata)
         for k, v in report.metadata.items():
             short = k.removeprefix("liveaov/")
-            lines.append(
-                f"  {short.ljust(meta_key_width - len('liveaov/'))}  = {_fmt_value(v)}"
-            )
+            lines.append(f"  {short.ljust(meta_key_width - len('liveaov/'))}  = {_fmt_value(v)}")
     else:
         lines.append("liveaov metadata: (none)")
 
