@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QTabWidget,
@@ -366,19 +367,35 @@ class InspectorPanel(QWidget):
         # write-destination controls which are only touched once per
         # batch.
 
+        # Helper — every tab wraps its content in a scroll area so when
+        # the log panel at the bottom of the main window eats vertical
+        # space, rows stop collapsing on top of each other. User
+        # reported the Passes rows overlapping when the log opened;
+        # a scroll area keeps natural heights and adds a scrollbar
+        # when needed.
+        def _scrollable(content_layout: QVBoxLayout) -> QScrollArea:
+            content = QWidget()
+            content.setLayout(content_layout)
+            sa = QScrollArea()
+            sa.setWidget(content)
+            sa.setWidgetResizable(True)
+            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            sa.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            sa.setStyleSheet("QScrollArea { border: none; }")
+            return sa
+
         # Passes tab.
-        passes_tab = QWidget()
-        passes_layout = QVBoxLayout(passes_tab)
+        passes_layout = QVBoxLayout()
         passes_layout.setContentsMargins(8, 8, 8, 8)
         passes_layout.addWidget(passes_header)
         passes_layout.addWidget(passes_hint)
         passes_layout.addLayout(passes_block)
         passes_layout.addStretch()
+        passes_tab = _scrollable(passes_layout)
 
         # Preview tab — colourspace + exposure controls live together
         # because they both affect the viewport render.
-        preview_tab = QWidget()
-        preview_layout = QVBoxLayout(preview_tab)
+        preview_layout = QVBoxLayout()
         preview_layout.setContentsMargins(8, 8, 8, 8)
         preview_layout.addWidget(_section_label("Colorspace"))
         preview_layout.addLayout(cs_block)
@@ -389,10 +406,10 @@ class InspectorPanel(QWidget):
         preview_layout.addSpacing(12)
         preview_layout.addWidget(self._reset_btn)
         preview_layout.addStretch()
+        preview_tab = _scrollable(preview_layout)
 
         # Output tab.
-        output_tab = QWidget()
-        output_layout = QVBoxLayout(output_tab)
+        output_layout = QVBoxLayout()
         output_layout.setContentsMargins(8, 8, 8, 8)
         output_layout.addWidget(_section_label("Output"))
         output_layout.addWidget(self._out_inplace)
@@ -403,6 +420,7 @@ class InspectorPanel(QWidget):
         output_layout.addLayout(external_name_row)
         output_layout.addWidget(self._resolved_out_label)
         output_layout.addStretch()
+        output_tab = _scrollable(output_layout)
 
         tabs = QTabWidget()
         tabs.addTab(passes_tab, "Passes")
