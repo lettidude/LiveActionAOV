@@ -315,6 +315,21 @@ class InspectorPanel(QWidget):
                 )
             )
 
+        # "Apply to all shots" — one-click broadcast of the active
+        # shot's pass selections to every other shot in the queue.
+        # Unlike Output (which is always session-wide), Passes stay
+        # per-shot by default because users might want different
+        # models per shot; the button is the escape hatch when they
+        # don't.
+        self._apply_passes_btn = QPushButton("Apply passes to all shots")
+        self._apply_passes_btn.setToolTip(
+            "Copy the currently-selected model in each category "
+            "(incl. Off choices) to every other shot in the list."
+        )
+        self._apply_passes_btn.clicked.connect(self._on_apply_passes_to_all)
+        passes_block.addSpacing(8)
+        passes_block.addWidget(self._apply_passes_btn)
+
         # --- Assemble ---
         form = QFormLayout()
         form.addRow("Shot:", self._name_label)
@@ -580,21 +595,21 @@ class InspectorPanel(QWidget):
         self._out_root_btn.setEnabled(mode == "external")
         self._external_name_edit.setEnabled(mode == "external")
         self._rebuild_resolved_out_label()
-        self._registry.notify_updated(self._current)
+        self._broadcast_output_to_all_shots()
 
     def _on_subfolder_name_edited(self, text: str) -> None:
         if self._building or self._current is None:
             return
         self._current.output_subfolder_name = text.strip() or "utility"
         self._rebuild_resolved_out_label()
-        self._registry.notify_updated(self._current)
+        self._broadcast_output_to_all_shots()
 
     def _on_external_name_edited(self, text: str) -> None:
         if self._building or self._current is None:
             return
         self._current.output_external_name = text.strip()  # empty → default to shot.name
         self._rebuild_resolved_out_label()
-        self._registry.notify_updated(self._current)
+        self._broadcast_output_to_all_shots()
 
     def _on_pick_external_root(self) -> None:
         if self._current is None:
@@ -604,7 +619,26 @@ class InspectorPanel(QWidget):
             return
         self._current.output_external_root = Path(folder)
         self._rebuild_resolved_out_label()
-        self._registry.notify_updated(self._current)
+        self._broadcast_output_to_all_shots()
+
+    def _broadcast_output_to_all_shots(self) -> None:
+        """Output is effectively session-wide: any change on the active
+        shot propagates to every other shot in the registry. Users
+        overwhelmingly want a single destination for a batch; the
+        per-shot storage model is kept because `Shot` uses it for
+        serialisation, but the GUI never lets it diverge."""
+        if self._current is None:
+            return
+        active = self._current
+        for shot in self._registry.shots():
+            if shot is active:
+                self._registry.notify_updated(shot)
+                continue
+            shot.output_mode = active.output_mode
+            shot.output_subfolder_name = active.output_subfolder_name
+            shot.output_external_root = active.output_external_root
+            shot.output_external_name = active.output_external_name
+            self._registry.notify_updated(shot)
 
     def _rebuild_resolved_out_label(self) -> None:
         if self._current is None:
@@ -649,6 +683,32 @@ class InspectorPanel(QWidget):
             k for k in self._current.enabled_models if k not in category_keys
         ]
         self._registry.notify_updated(self._current)
+
+    def _on_apply_passes_to_all(self) -> None:
+        """Broadcast the active shot's enabled_models list to every
+        other shot in the registry. Non-destructive wrt Output etc. —
+        only `enabled_models` is copied."""
+        if self._current is None:
+            return
+        source = list(self._current.enabled_models)
+        count = 0
+        for shot in self._registry.shots():
+            if shot is self._current:
+                continue
+            shot.enabled_models = list(source)
+            self._registry.notify_updated(shot)
+            count += 1
+        # Tiny feedback — tooltip-style text in the button so the user
+        # knows the click did something on a repeat press.
+        from PySide6.QtCore import QTimer
+
+        original = self._apply_passes_btn.text()
+        self._apply_passes_btn.setText(
+            f"Applied to {count} shot{'s' if count != 1 else ''} ✓"
+        )
+        QTimer.singleShot(
+            1500, lambda: self._apply_passes_btn.setText(original)
+        )
 
     def _on_reset_clicked(self) -> None:
         """Revert both knobs to auto-detected values in one shot."""
