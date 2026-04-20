@@ -34,7 +34,10 @@ class ModelEntry:
 # Grouped by category; rendering order inside a category is the list
 # order, so the commercial-safe default sits at the top of each group.
 PASS_CATALOG: dict[str, list[ModelEntry]] = {
-    "Flow": [
+    # "Motion" (not "Flow") to match VFX terminology and the
+    # `motion.x/y` channel names the executor actually emits. The
+    # plugin name stays `flow` — only the user-facing label changed.
+    "Motion": [
         ModelEntry("flow", "RAFT", "Apache-2.0", True, ("flow",)),
     ],
     "Depth": [

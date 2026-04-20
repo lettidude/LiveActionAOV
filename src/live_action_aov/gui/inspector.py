@@ -222,15 +222,40 @@ class InspectorPanel(QWidget):
         self._model_radios: dict[str, QRadioButton] = {}
         self._off_radios: dict[str, QRadioButton] = {}
         self._category_groups: dict[str, QButtonGroup] = {}
+        # Collapsible section containers so users can hide categories
+        # they aren't using — matters more as the catalog grows with
+        # future models (fresnel, alt-depth backends, etc.).
+        self._category_sections: dict[str, QWidget] = {}
+        self._category_headers: dict[str, QPushButton] = {}
         passes_block = QVBoxLayout()
         passes_block.setSpacing(4)
         for category, entries in PASS_CATALOG.items():
-            header = QLabel(category)
-            header.setStyleSheet(
-                "font-weight: 600; color: #dcdcdc; padding: 8px 0 2px 0;"
+            # Header button — flat, label-like, but clickable to toggle
+            # the section below. Chevron prefix makes expand/collapse
+            # state readable at a glance.
+            header_btn = QPushButton(f"▾  {category}")
+            header_btn.setCheckable(True)
+            header_btn.setChecked(True)
+            header_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            header_btn.setStyleSheet(
+                "QPushButton {"
+                " font-weight: 600; color: #dcdcdc; text-align: left;"
+                " padding: 8px 0 2px 0; border: none; background: transparent;"
+                "}"
+                "QPushButton:hover { color: #ffffff; }"
             )
-            header.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-            passes_block.addWidget(header)
+            header_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            self._category_headers[category] = header_btn
+            passes_block.addWidget(header_btn)
+
+            # One section widget per category wraps every row inside —
+            # show/hide toggles visibility as a unit without the rows
+            # needing to know about the header.
+            section = QWidget()
+            section_layout = QVBoxLayout(section)
+            section_layout.setContentsMargins(0, 0, 0, 0)
+            section_layout.setSpacing(4)
+            self._category_sections[category] = section
 
             group = QButtonGroup(self)
             group.setExclusive(True)
@@ -254,7 +279,7 @@ class InspectorPanel(QWidget):
             group.addButton(off_radio)
             off_layout.addWidget(off_radio)
             off_layout.addStretch()
-            passes_block.addWidget(off_row)
+            section_layout.addWidget(off_row)
 
             for entry in entries:
                 row = QWidget()
@@ -277,7 +302,18 @@ class InspectorPanel(QWidget):
                     f"color: {colour}; font-size: 10pt; padding-right: 2px;"
                 )
                 row_layout.addWidget(license_marker)
-                passes_block.addWidget(row)
+                section_layout.addWidget(row)
+
+            passes_block.addWidget(section)
+            # Wire the header click — late so the closure captures the
+            # right section widget. Toggling hides the section as a
+            # unit (no layout churn) and updates the chevron arrow.
+            header_btn.toggled.connect(
+                lambda checked, h=header_btn, s=section, c=category: (
+                    s.setVisible(checked),
+                    h.setText(f"{'▾' if checked else '▸'}  {c}"),
+                )
+            )
 
         # --- Assemble ---
         form = QFormLayout()
