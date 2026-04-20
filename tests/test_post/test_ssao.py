@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from live_action_aov.io.channels import CH_N_X, CH_N_Y, CH_N_Z, CH_Z
+from live_action_aov.io.channels import CH_AO, CH_N_X, CH_N_Y, CH_N_Z, CH_Z
 from live_action_aov.post.ssao import SSAOPost
 
 
@@ -32,16 +32,16 @@ def test_output_channel_named_ao_and_matches_z_shape():
     post = SSAOPost({"radius": 0.1, "samples": 8})
     frames = {0: _flat_frame(12, 20)}
     out = post.apply(frames, flow_cache=None, shot_id="s")
-    assert "ao" in out[0]
-    assert out[0]["ao"].shape == out[0][CH_Z].shape
-    assert out[0]["ao"].dtype == np.float32
+    assert CH_AO in out[0]
+    assert out[0][CH_AO].shape == out[0][CH_Z].shape
+    assert out[0][CH_AO].dtype == np.float32
 
 
 def test_output_is_in_unit_range():
     post = SSAOPost({"radius": 0.4, "samples": 16, "intensity": 2.0})
     frames = {0: _flat_frame(16, 16)}
     out = post.apply(frames, flow_cache=None, shot_id="s")
-    ao = out[0]["ao"]
+    ao = out[0][CH_AO]
     assert float(ao.min()) >= 0.0
     assert float(ao.max()) <= 1.0
 
@@ -52,7 +52,7 @@ def test_flat_surface_facing_camera_is_unoccluded():
     post = SSAOPost({"radius": 0.3, "samples": 16, "bias": 0.0})
     frames = {0: _flat_frame(32, 32)}
     out = post.apply(frames, flow_cache=None, shot_id="s")
-    ao = out[0]["ao"]
+    ao = out[0][CH_AO]
     # Exactly 1.0 in the interior; edge pixels can clamp to the same Z
     # as the sampled neighbour, which with `bias=0` produces borderline
     # equal-to-expected reads. Keep the assertion generous.
@@ -72,7 +72,7 @@ def test_intensity_zero_leaves_ao_at_one():
         CH_N_Z: np.ones((h, w), dtype=np.float32),
     }
     out = SSAOPost({"intensity": 0.0}).apply({0: frame}, flow_cache=None, shot_id="s")
-    assert np.allclose(out[0]["ao"], 1.0)
+    assert np.allclose(out[0][CH_AO], 1.0)
 
 
 def test_depth_step_produces_occlusion_near_the_wall():
@@ -91,7 +91,7 @@ def test_depth_step_produces_occlusion_near_the_wall():
         CH_N_Z: np.ones((h, w), dtype=np.float32),
     }
     post = SSAOPost({"radius": 0.3, "samples": 32, "bias": 0.005, "intensity": 1.0})
-    ao = post.apply({0: frame}, flow_cache=None, shot_id="s")[0]["ao"]
+    ao = post.apply({0: frame}, flow_cache=None, shot_id="s")[0][CH_AO]
 
     # Left-side pixels near the seam should be meaningfully darker than
     # left-side pixels far from the seam.
@@ -108,7 +108,7 @@ def test_missing_z_skips_frame_without_adding_ao():
         CH_N_Z: np.ones((8, 8), dtype=np.float32),
     }
     out = SSAOPost({}).apply({0: frame}, flow_cache=None, shot_id="s")
-    assert "ao" not in out[0]
+    assert CH_AO not in out[0]
 
 
 def test_missing_one_normal_component_skips_frame():
@@ -119,7 +119,7 @@ def test_missing_one_normal_component_skips_frame():
         CH_N_Z: np.ones((8, 8), dtype=np.float32),
     }
     out = SSAOPost({}).apply({0: frame}, flow_cache=None, shot_id="s")
-    assert "ao" not in out[0]
+    assert CH_AO not in out[0]
 
 
 def test_deterministic_across_frames():
@@ -131,7 +131,7 @@ def test_deterministic_across_frames():
         1: _flat_frame(16, 16, z=0.5),
     }
     out = SSAOPost({"samples": 16}).apply(frames, flow_cache=None, shot_id="s")
-    assert np.array_equal(out[0]["ao"], out[1]["ao"])
+    assert np.array_equal(out[0][CH_AO], out[1][CH_AO])
 
 
 def test_defaults_are_spec_compliant():
@@ -152,7 +152,7 @@ def test_zero_samples_is_noop():
     # divide-by-zero when computing the occluded fraction.
     frames = {0: _flat_frame(8, 8)}
     out = SSAOPost({"samples": 0}).apply(frames, flow_cache=None, shot_id="s")
-    assert "ao" not in out[0]
+    assert CH_AO not in out[0]
 
 
 def test_apply_returns_same_dict_identity_for_in_place_mutation():
