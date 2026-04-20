@@ -145,11 +145,29 @@ class LocalExecutor(Executor):
             # of Z + intrinsics; every Nuke relight gizmo needs it and it's
             # free once depth exists. See post/position_from_depth.py for
             # the intrinsics-source priority chain.
-            from live_action_aov.io.channels import CH_Z as _CH_Z
+            from live_action_aov.io.channels import (
+                CH_N_X as _CH_N_X,
+                CH_N_Y as _CH_N_Y,
+                CH_N_Z as _CH_N_Z,
+                CH_Z as _CH_Z,
+            )
 
             has_depth = any(_CH_Z in ch for ch in per_frame_channels.values())
             if has_depth and "position_from_depth" not in existing_post_names:
                 auto_post.append(PostConfig(name="position_from_depth", params={}))
+
+            # Auto-wire SSAO when both depth and a full normal triplet
+            # landed in `per_frame_channels`. Hemispheric sampling gives
+            # compers a baked ambient-occlusion channel for free — no
+            # catalog entry needed on the GUI side yet. Defaults are
+            # conservative (16 samples); users can override via a
+            # manual post config in the Job YAML.
+            has_normals = any(
+                _CH_N_X in ch and _CH_N_Y in ch and _CH_N_Z in ch
+                for ch in per_frame_channels.values()
+            )
+            if has_depth and has_normals and "ssao" not in existing_post_names:
+                auto_post.append(PostConfig(name="ssao", params={}))
 
             if flow_available:
                 for node in ordered:
