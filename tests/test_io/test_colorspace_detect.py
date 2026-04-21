@@ -135,3 +135,103 @@ def test_supported_list_includes_auto_sentinel():
     assert "lin_rec709" in SUPPORTED_COLORSPACES
     assert "srgb_display" in SUPPORTED_COLORSPACES
     assert "acescg" in SUPPORTED_COLORSPACES
+
+
+def test_supported_list_includes_log_colorspaces():
+    # LogC3/LogC4/SLog3 are the capture spaces the tool needs to accept
+    # in the UI dropdown — without them the user has no way to tell the
+    # preview "these pixels are log".
+    for name in ("arri_logc3", "arri_logc4", "sony_slog3"):
+        assert name in SUPPORTED_COLORSPACES
+
+
+# ---------------------------------------------------------------------------
+# Camera-metadata detection — the lying-tag fix
+# ---------------------------------------------------------------------------
+
+
+def test_arri_logc4_detected_from_arri_raw_gamma_value():
+    # Alexa 35 plates direct-converted via ARRI Reference Tool carry a
+    # grab-bag of metadata under the `Arri Raw.*` namespace. The
+    # authoritative one for capture-space is `Gamma Value`.
+    attrs = {
+        "oiio:ColorSpace": "lin_rec709",  # lying header, a la ACTIONVFX / ART exports
+        "Arri Raw.Gamma Value:": "AWG4 D65 LOGC4",
+    }
+    d = detect_colorspace(attrs)
+    assert d.detected == "arri_logc4"
+    assert d.confident is True
+    assert "camera metadata" in d.reason
+    assert "Gamma Value" in d.reason
+
+
+def test_arri_logc4_detected_from_unicolor_gamma():
+    # uniColor.gamma = "Arri LogC4" is what the ARRI Reference Tool v4+
+    # writes under the "uniColor" attr family.
+    attrs = {
+        "oiio:ColorSpace": "lin_rec709",
+        "uniColor.gamma:": "Arri LogC4",
+    }
+    d = detect_colorspace(attrs)
+    assert d.detected == "arri_logc4"
+    assert "camera metadata" in d.reason
+
+
+def test_arri_logc4_detected_from_tech_details():
+    # Some pipelines write a single consolidated `tech_details_color_space`
+    # attr with "LogC4 AWG4" — the CAT plate from the project's test
+    # fixtures does this.
+    attrs = {
+        "oiio:ColorSpace": "lin_rec709",
+        "tech_details_color_space": "LogC4 AWG4",
+    }
+    d = detect_colorspace(attrs)
+    assert d.detected == "arri_logc4"
+
+
+def test_arri_logc3_detected_over_logc4_when_only_logc3_marker_present():
+    # Make sure "logc3" wins when that's what the metadata says. Order
+    # of checks in `_CAMERA_METADATA_MARKERS` has LogC4 first (so a
+    # "LogC4 AWG4" string doesn't match a generic "logc" rule), but a
+    # plain "LOGC3" string still needs to be routed to LogC3.
+    attrs = {"Arri Raw.Gamma Value:": "AWG3 D65 LOGC3"}
+    d = detect_colorspace(attrs)
+    assert d.detected == "arri_logc3"
+
+
+def test_sony_slog3_detected_from_camera_color_space():
+    # Sony Venice / FX-series X-OCN exports typically write
+    # `CameraColorSpace` or similar with "S-Log3 S-Gamut3.Cine".
+    attrs = {
+        "oiio:ColorSpace": "lin_rec709",
+        "CameraColorSpace": "S-Log3 S-Gamut3.Cine",
+    }
+    d = detect_colorspace(attrs)
+    assert d.detected == "sony_slog3_cine"
+
+
+def test_camera_metadata_wins_over_lying_oiio_header():
+    # Core promise of the new detection ladder: when the header says
+    # lin_rec709 but the camera metadata says log, the camera wins.
+    # Without this, AgX tonemapping was being applied to log pixels
+    # and the preview was visually wrong for every ARRI/Sony plate
+    # that went through the ART default export path.
+    attrs = {
+        "oiio:ColorSpace": "lin_rec709",
+        "uniColor.gamma:": "Arri LogC4",
+        "cameraMake": "ARRI",
+    }
+    d = detect_colorspace(attrs)
+    assert d.detected == "arri_logc4", (
+        "Camera metadata should win over a lying oiio:ColorSpace header."
+    )
+
+
+def test_clean_oiio_header_still_works_without_camera_metadata():
+    # Make sure we didn't regress the common case: a Nuke / Resolve
+    # export with no camera metadata and a correct `oiio:ColorSpace`
+    # header still goes through the header path.
+    attrs = {"oiio:ColorSpace": "lin_rec709"}
+    d = detect_colorspace(attrs)
+    assert d.detected == "lin_rec709"
+    assert "header" in d.reason

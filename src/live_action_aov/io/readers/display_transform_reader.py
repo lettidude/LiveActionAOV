@@ -40,6 +40,7 @@ import numpy as np
 
 from live_action_aov.core.pass_base import DisplayTransformParams
 from live_action_aov.io import ocio_color
+from live_action_aov.io.colorspace_detect import detect_colorspace
 from live_action_aov.io.display_transform import DisplayTransform
 from live_action_aov.io.readers.base import ImageSequenceReader
 
@@ -160,20 +161,20 @@ _LINEAR_COLORSPACES = {
 
 
 def _sniff_colorspace_extended(attrs: dict[str, Any], fallback: str) -> str:
-    """Like `ocio_color.sniff_colorspace` but also reads OIIO's own
-    `oiio:ColorSpace` attribute (which is what OpenEXR writers like
-    Resolve and Nuke typically set)."""
-    for key in (
-        "colorspace",
-        "OCIO/colorspace",
-        "ocio:colorspace",
-        "oiio:ColorSpace",
-        "oiio:colorspace",
-    ):
-        v = attrs.get(key)
-        if isinstance(v, str) and v:
-            return v
-    return ocio_color.sniff_colorspace(attrs, fallback=fallback)
+    """Delegate to the full detection ladder in `colorspace_detect`.
+
+    The detector runs camera-metadata sniffing BEFORE trusting
+    `oiio:ColorSpace`, which is critical for ARRI / Sony plates whose
+    OIIO stamp routinely lies about Log encoding. An older version of
+    this function read the header attributes directly and short-
+    circuited before the camera-metadata check, so lying-tag plates
+    went through the display transform as lin_rec709 — visually wrong
+    and quietly so. The detector now owns the full ladder; this
+    wrapper exists only to fold `detected.detected` out of the
+    structured result.
+    """
+    result = detect_colorspace(attrs, sample_pixels=None, fallback=fallback)
+    return result.detected
 
 
 __all__ = ["DisplayTransformedReader"]

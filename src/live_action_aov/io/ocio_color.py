@@ -25,6 +25,38 @@ except ImportError:  # pragma: no cover
     HAS_OCIO = False
 
 
+# Map our canonical short names to the colorspace names the OCIO studio-
+# config uses. Keeps the GUI / CLI vocabulary stable even as upstream
+# renames the config entries; any alias the user types (e.g. directly
+# `"ARRI LogC4"` from a Nuke OCIO node) still passes through unchanged
+# because we fall back to the literal string below.
+_CANONICAL_TO_OCIO: dict[str, str] = {
+    "acescg": "ACEScg",
+    "aces2065_1": "ACES2065-1",
+    "lin_rec709": "Linear Rec.709 (sRGB)",
+    "linear": "Linear Rec.709 (sRGB)",
+    "srgb_display": "sRGB - Display",
+    "rec709_display": "Rec.1886 Rec.709 - Display",
+    # Log sources — OCIO studio-config ships inverse curves + gamut
+    # conversion in a single named transform so a single getProcessor
+    # call takes us from LogC-encoded AWG4 pixels to ACEScg linear.
+    "arri_logc3": "ARRI LogC3 (EI800)",
+    "arri_logc4": "ARRI LogC4",
+    "sony_slog3": "S-Log3 S-Gamut3",
+    "sony_slog3_cine": "S-Log3 S-Gamut3.Cine",
+    "sony_slog3_venice": "S-Log3 Venice S-Gamut3",
+    "sony_slog3_venice_cine": "S-Log3 Venice S-Gamut3.Cine",
+}
+
+
+def _resolve_ocio_name(name: str) -> str:
+    """Translate a canonical-short name to its studio-config name. If the
+    input isn't in the table it's passed through verbatim — OCIO will
+    raise a clear `ColorSpace not found` error if it's also not a valid
+    studio-config entry."""
+    return _CANONICAL_TO_OCIO.get(name, name)
+
+
 def get_config() -> Any:
     """Return the active OCIO config (from $OCIO or built-in default)."""
     if not HAS_OCIO:
@@ -54,7 +86,7 @@ def to_linear(frames: np.ndarray, from_space: str, config: Any | None = None) ->
             cfg.getCanonicalName("scene_linear")
             or cfg.getRoleColorSpace(ocio.ROLE_SCENE_LINEAR).getName()
         )
-        proc = cfg.getProcessor(from_space, dst).getDefaultCPUProcessor()
+        proc = cfg.getProcessor(_resolve_ocio_name(from_space), dst).getDefaultCPUProcessor()
         arr = np.ascontiguousarray(frames.astype(np.float32, copy=False))
         flat = arr.reshape(-1, arr.shape[-1])
         proc.applyRGB(flat) if arr.shape[-1] == 3 else proc.applyRGBA(flat)
@@ -70,7 +102,7 @@ def from_linear(frames: np.ndarray, to_space: str, config: Any | None = None) ->
             cfg.getCanonicalName("scene_linear")
             or cfg.getRoleColorSpace(ocio.ROLE_SCENE_LINEAR).getName()
         )
-        proc = cfg.getProcessor(src, to_space).getDefaultCPUProcessor()
+        proc = cfg.getProcessor(src, _resolve_ocio_name(to_space)).getDefaultCPUProcessor()
         arr = np.ascontiguousarray(frames.astype(np.float32, copy=False))
         flat = arr.reshape(-1, arr.shape[-1])
         proc.applyRGB(flat) if arr.shape[-1] == 3 else proc.applyRGBA(flat)
