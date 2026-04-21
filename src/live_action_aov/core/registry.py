@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Plugin registry — entry-point discovery.
 
 Core has *zero* hardcoded pass imports. At startup we walk the

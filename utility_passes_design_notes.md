@@ -167,39 +167,39 @@ Every sidecar EXR records the full pipeline state for reproducibility:
 
 ```
 # Input
-utilityPass/input/colorspace         "acescg" | "linear_rec709" | "arri_logc4" | ...
-utilityPass/input/exposure_offset    +2.3
-utilityPass/input/exposure_anchor    "median_p50" | "p75" | "mean_log"
-utilityPass/input/tonemap            "agx" | "filmic" | "reinhard" | "none"
-utilityPass/input/eotf               "srgb" | "rec709" | "linear"
+liveaov/input/colorspace         "acescg" | "linear_rec709" | "arri_logc4" | ...
+liveaov/input/exposure_offset    +2.3
+liveaov/input/exposure_anchor    "median_p50" | "p75" | "mean_log"
+liveaov/input/tonemap            "agx" | "filmic" | "reinhard" | "none"
+liveaov/input/eotf               "srgb" | "rec709" | "linear"
 
 # Per-pass provenance
-utilityPass/depth/model              "depthcrafter" | "depth_pro" | "depth_anything_v2"
-utilityPass/depth/version            model version hash
-utilityPass/depth/space              "metric" | "relative_clip" | "relative_frame"
-utilityPass/depth/units              "meters" | "normalized"
-utilityPass/depth/license            "apache-2.0" | "sam-license" | ...
-utilityPass/depth/commercial         true | false
+liveaov/depth/model              "depthcrafter" | "depth_pro" | "depth_anything_v2"
+liveaov/depth/version            model version hash
+liveaov/depth/space              "metric" | "relative_clip" | "relative_frame"
+liveaov/depth/units              "meters" | "normalized"
+liveaov/depth/license            "apache-2.0" | "sam-license" | ...
+liveaov/depth/commercial         true | false
 
-utilityPass/normals/model            "normalcrafter" | "dsine"
-utilityPass/normals/space            "camera"
-utilityPass/normals/convention       "+X_right,+Y_up,+Z_toward_camera"
+liveaov/normals/model            "normalcrafter" | "dsine"
+liveaov/normals/space            "camera"
+liveaov/normals/convention       "+X_right,+Y_up,+Z_toward_camera"
 
-utilityPass/flow/model               "raft" | "sea_raft" | "unimatch"
-utilityPass/flow/direction           "forward" | "backward" | "bidirectional"
-utilityPass/flow/unit                "pixels_at_plate_res"
+liveaov/flow/model               "raft" | "sea_raft" | "unimatch"
+liveaov/flow/direction           "forward" | "backward" | "bidirectional"
+liveaov/flow/unit                "pixels_at_plate_res"
 
-utilityPass/matte/detector           "sam3" | "sam2"
-utilityPass/matte/refiner            "matanyone2" | "rvm" | "none"
-utilityPass/matte/concepts           ["person", "vehicle", "tree", ...]
-utilityPass/matte/hero_r/label       "person"
-utilityPass/matte/hero_r/track_id    17
-utilityPass/matte/hero_r/score       0.87
+liveaov/matte/detector           "sam3" | "sam2"
+liveaov/matte/refiner            "matanyone2" | "rvm" | "none"
+liveaov/matte/concepts           ["person", "vehicle", "tree", ...]
+liveaov/matte/hero_r/label       "person"
+liveaov/matte/hero_r/track_id    17
+liveaov/matte/hero_r/score       0.87
 
 # Temporal smoothing
-utilityPass/smooth/applied_to        ["depth", "normals"]
-utilityPass/smooth/algorithm         "flow_guided_ema_v1"
-utilityPass/smooth/fb_threshold      1.0
+liveaov/smooth/applied_to        ["depth", "normals"]
+liveaov/smooth/algorithm         "flow_guided_ema_v1"
+liveaov/smooth/fb_threshold      1.0
 ```
 
 ### 5.3 Shot data model
@@ -945,7 +945,7 @@ Based on research into FBX tooling pain and DCC ecosystem:
 
 ### 20.6 Distortion — deferred to v2b
 
-v2a: **pinhole assumption, documented**. Output carries metadata `utilityPass/camera/distortion_model: "pinhole"`. For shots that need distortion handled, MM artists use our solve as starting point in their tool of choice.
+v2a: **pinhole assumption, documented**. Output carries metadata `liveaov/camera/distortion_model: "pinhole"`. For shots that need distortion handled, MM artists use our solve as starting point in their tool of choice.
 
 v2b options to evaluate:
 - **Classical self-calibration**: find straight edges in the scene (Hough + edge detection), fit radial distortion coefficients. Works OK for architectural plates; bad on organic scenes.
@@ -1329,7 +1329,7 @@ Already defined in Section 6. Any class implementing it + declared via entry poi
 - Auto-registration in CLI and GUI
 - License gating applied from the class's `license` attribute
 - VRAM planning, resize handling, temporal smoothing integration — all inherited
-- Metadata recording in sidecar EXR (`utilityPass/<name>/...`) — free
+- Metadata recording in sidecar EXR (`liveaov/<name>/...`) — free
 - Access to shared artifacts (flow, depth, masks) via `requires_artifacts`
 
 ### 24.3 Plugin registry (core implementation)

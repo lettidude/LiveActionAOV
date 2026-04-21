@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Sidecar writers.
 
 `SidecarWriter` is the ABC. v1 ships `ExrSidecarWriter` and a minimal

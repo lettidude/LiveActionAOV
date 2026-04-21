@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Video Depth Anything pass (temporal-native, commercial-safe, spec §13.1 Phase 2).
 
 Backend: the vendored VideoDepthAnything model from

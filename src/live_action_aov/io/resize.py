@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Pass-type-aware resize (design §8).
 
 The critical insight: different output types need different resize rules.

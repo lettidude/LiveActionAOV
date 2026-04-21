@@ -1,10 +1,15 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """MatAnyone 2 refiner — higher-quality soft-alpha matting (spec §13.1 Phase 3).
 
 Backend: `pq-yang/MatAnyone` — a memory-based video matting network that
 typically beats RVM on hair/fur, thin limbs, and transparency. License is
 `NTU-S-Lab-1.0` (non-commercial research license), so this pass is
 gated behind `--allow-noncommercial`; sidecars written with this refiner
-stamp `utilityPass/matte/commercial = "false"` so downstream QC can
+stamp `liveaov/matte/commercial = "false"` so downstream QC can
 distinguish them from RVM-refined deliverables before shipping to clients.
 
 Contract parity with RVM (intentional — the executor discovers the
@@ -70,7 +75,7 @@ class MatAnyone2RefinerPass(UtilityPass):
             "derivative product of the alpha mattes are NC-only. The CLI "
             "license gate blocks this pass unless --allow-noncommercial is "
             "set, and sidecars written by this refiner stamp "
-            "`utilityPass/matte/commercial = false` so downstream QC can "
+            "`liveaov/matte/commercial = false` so downstream QC can "
             "catch NC deliverables before they reach a commercial client."
         ),
     )

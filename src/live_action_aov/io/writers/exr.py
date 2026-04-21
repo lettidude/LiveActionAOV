@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """EXR sidecar writer.
 
 Writes a multi-channel EXR with channels ordered against
@@ -6,7 +11,7 @@ expectations). Unknown-but-valid channels (e.g. dynamic `mask.<concept>`)
 are appended in insertion order after the canonical channels.
 
 Metadata is written as EXR custom attributes with slash-namespaced keys
-(e.g. `liveActionAOV/depth/model`), which Nuke displays as a nested tree.
+(e.g. `liveaov/depth/model`), which Nuke displays as a nested tree.
 """
 
 from __future__ import annotations

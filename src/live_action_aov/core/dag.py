@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """DAG scheduler: resolves inter-pass artifact dependencies.
 
 Each pass declares `requires_artifacts` and `provides_artifacts`. The

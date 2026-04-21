@@ -43,7 +43,7 @@ Channels (11):
     mask.person           [  0.000,  1.000]  mean=0.148
     mask.vehicle          [  0.000,  0.980]  mean=0.031
 
-liveActionAOV metadata:
+liveaov metadata:
   matte/commercial       = "true"
   matte/detector         = "sam3_matte"
   matte/refiner          = "rvm_refiner"

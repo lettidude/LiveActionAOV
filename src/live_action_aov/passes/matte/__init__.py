@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Matte passes (design §2.5 / spec §13.1 Phase 3).
 
 Shape:
@@ -9,7 +14,7 @@ Shape:
   packs them into `matte.r/g/b/a`.
 - `matanyone2.py` — higher-quality soft-alpha refiner behind the same
   `requires_artifacts` contract as RVM. Non-commercial
-  (NTU-S-Lab-1.0). Stamps `utilityPass/matte/commercial = "false"` on
+  (NTU-S-Lab-1.0). Stamps `liveaov/matte/commercial = "false"` on
   sidecars so downstream QC can distinguish NC deliverables. Round 2.
 - `rank.py`  — pure-Python per-clip hero ranking + slot assignment.
   Consumed by `sam3.py` (to build `sam3_instances`) and by user overrides.

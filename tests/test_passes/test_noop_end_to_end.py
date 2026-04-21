@@ -48,5 +48,5 @@ def test_noop_pass_produces_sidecar_with_Z_channel(test_plate_1080p: Path) -> No
     # NoOpPass writes zeros; P derived from Z=0 is also 0.
     assert pixels.max() == 0.0
     # Metadata namespace landed in the header.
-    assert any(k.startswith("liveActionAOV/") for k in attrs)
+    assert any(k.startswith("liveaov/") for k in attrs)
     assert attrs["pixelAspectRatio"] == 1.0

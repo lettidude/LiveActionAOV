@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """RAFT optical-flow pass (torchvision backend).
 
 Backend: `torchvision.models.optical_flow.raft_large` (BSD-3, weights ship

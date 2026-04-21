@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Camera pass — v1 stub only.
 
 Full implementation lands in v2a (design §20). The stub declares

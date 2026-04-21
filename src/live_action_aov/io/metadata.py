@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """CameraMetadata — cinema camera attributes extracted from EXR + sidecars.
 
 Implemented fully in v1 even though only v2a's CameraPass really uses it,

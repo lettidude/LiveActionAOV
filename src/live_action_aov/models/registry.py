@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """ModelRegistry — lazy load, reference count, VRAM aware.
 
 Phase 0 ships a minimal implementation: registration, lazy `get()`,

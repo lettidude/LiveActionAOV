@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """DeadlineExecutor — stub for v2.
 
 Declared in `pyproject.toml` and discovered via entry points so the CLI can

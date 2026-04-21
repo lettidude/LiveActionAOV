@@ -28,7 +28,7 @@ def test_write_read_multichannel_roundtrip(tmp_path: Path) -> None:
         out,
         pixels,
         channel_names=["Z", "N.x", "motion.x"],
-        attrs={"liveActionAOV/test": "value", "liveActionAOV/count": 3},
+        attrs={"liveaov/test": "value", "liveaov/count": 3},
         pixel_aspect=2.0,
     )
     back, attrs = read_exr(out)
@@ -36,4 +36,4 @@ def test_write_read_multichannel_roundtrip(tmp_path: Path) -> None:
     assert np.allclose(back, pixels, atol=1e-5)
     assert attrs["pixelAspectRatio"] == pytest.approx(2.0)
     # Custom attrs survive the round-trip.
-    assert attrs.get("liveActionAOV/test") == "value"
+    assert attrs.get("liveaov/test") == "value"

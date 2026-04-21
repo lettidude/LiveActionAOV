@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """SAM 3 concept detector + video tracker (spec §13.1 Phase 3).
 
 Backend: `facebookresearch/sam3` on HuggingFace. Takes a list of concept

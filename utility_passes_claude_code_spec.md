@@ -250,47 +250,47 @@ mask.<concept>              # e.g. mask.person, mask.vehicle, mask.sky
 ### 4.2 Metadata schema (written to sidecar EXR header)
 
 ```
-utilityPass/version                   "1.0.0"
-utilityPass/created                   ISO 8601 timestamp
-utilityPass/plate_source              absolute path to source plate
+liveaov/version                   "1.0.0"
+liveaov/created                   ISO 8601 timestamp
+liveaov/plate_source              absolute path to source plate
 
-utilityPass/input/colorspace          "acescg" | "linear_rec709" | ...
-utilityPass/input/exposure_offset     float EV stops
-utilityPass/input/exposure_anchor     "median_p50" | "p75" | "mean_log"
-utilityPass/input/tonemap             "agx" | "filmic" | "reinhard" | "none"
-utilityPass/input/eotf                "srgb" | "rec709" | "linear"
+liveaov/input/colorspace          "acescg" | "linear_rec709" | ...
+liveaov/input/exposure_offset     float EV stops
+liveaov/input/exposure_anchor     "median_p50" | "p75" | "mean_log"
+liveaov/input/tonemap             "agx" | "filmic" | "reinhard" | "none"
+liveaov/input/eotf                "srgb" | "rec709" | "linear"
 
-utilityPass/<pass_name>/model         model identifier
-utilityPass/<pass_name>/version       model version or hash
-utilityPass/<pass_name>/license       "apache-2.0" | "cc-by-nc-4.0" | ...
-utilityPass/<pass_name>/commercial    "true" | "false"
-utilityPass/<pass_name>/params        JSON-serialized pass params
+liveaov/<pass_name>/model         model identifier
+liveaov/<pass_name>/version       model version or hash
+liveaov/<pass_name>/license       "apache-2.0" | "cc-by-nc-4.0" | ...
+liveaov/<pass_name>/commercial    "true" | "false"
+liveaov/<pass_name>/params        JSON-serialized pass params
 
 # Depth-specific
-utilityPass/depth/space               "metric" | "relative_clip" | "relative_frame"
-utilityPass/depth/units               "meters" | "normalized"
+liveaov/depth/space               "metric" | "relative_clip" | "relative_frame"
+liveaov/depth/units               "meters" | "normalized"
 
 # Normals-specific
-utilityPass/normals/space             "camera"
-utilityPass/normals/convention        "+X_right,+Y_up,+Z_toward_camera"
+liveaov/normals/space             "camera"
+liveaov/normals/convention        "+X_right,+Y_up,+Z_toward_camera"
 
 # Flow-specific
-utilityPass/flow/direction            "forward" | "backward" | "bidirectional"
-utilityPass/flow/unit                 "pixels_at_plate_res"
+liveaov/flow/direction            "forward" | "backward" | "bidirectional"
+liveaov/flow/unit                 "pixels_at_plate_res"
 
 # Matte-specific
-utilityPass/matte/detector            "sam3"
-utilityPass/matte/refiner             "matanyone2" | "rvm" | "none"
-utilityPass/matte/concepts            JSON array of detected concepts
-utilityPass/matte/hero_r/label        string
-utilityPass/matte/hero_r/track_id     int
-utilityPass/matte/hero_r/score        float
+liveaov/matte/detector            "sam3"
+liveaov/matte/refiner             "matanyone2" | "rvm" | "none"
+liveaov/matte/concepts            JSON array of detected concepts
+liveaov/matte/hero_r/label        string
+liveaov/matte/hero_r/track_id     int
+liveaov/matte/hero_r/score        float
 # same for hero_g, hero_b, hero_a
 
 # Smoother
-utilityPass/smooth/applied_to         JSON array of pass names
-utilityPass/smooth/algorithm          "flow_guided_ema_v1"
-utilityPass/smooth/fb_threshold       float
+liveaov/smooth/applied_to         JSON array of pass names
+liveaov/smooth/algorithm          "flow_guided_ema_v1"
+liveaov/smooth/fb_threshold       float
 ```
 
 ### 4.3 Core dataclasses (use Pydantic v2)
@@ -994,7 +994,7 @@ uv run utility-passes run-shot tests/fixtures/test_plate_1080p/ --passes noop
 # - tests/fixtures/test_plate_1080p/test_plate.utility.####.exr exists for each frame
 # - Output EXR has correct resolution, pixel aspect, metadata preserved
 # - Output opens cleanly in Nuke (manual verification) — channels listed correctly
-# - oiio --info on the output shows the expected utilityPass/* metadata entries
+# - oiio --info on the output shows the expected liveaov/* metadata entries
 ```
 
 Also: CI passes (lint + tests), `utility-passes --version` works, entry-point discovery returns `NoOpPass` via `PluginRegistry.list_passes()`.
@@ -1245,12 +1245,12 @@ passes:
 Extensive — record ranking decisions so the Nuke-side (future gizmo) can label correctly:
 
 ```
-utilityPass/matte/detector             "sam3"
-utilityPass/matte/refiner              "rvm"
-utilityPass/matte/concepts             JSON array
-utilityPass/matte/hero_r/label         "person"
-utilityPass/matte/hero_r/track_id      17
-utilityPass/matte/hero_r/score         0.87
+liveaov/matte/detector             "sam3"
+liveaov/matte/refiner              "rvm"
+liveaov/matte/concepts             JSON array
+liveaov/matte/hero_r/label         "person"
+liveaov/matte/hero_r/track_id      17
+liveaov/matte/hero_r/score         0.87
 # ...for each of r, g, b, a
 ```
 

@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """LiveActionAOV — AI-driven VFX plate preprocessor.
 
 Public surface (stable across the Phase 0 → Phase 6 evolution):
