@@ -269,6 +269,19 @@ _DISPLAY_SRGB_LIKE = {
     "gamma_2.2",
     "gamma_22",
 }
+# Log capture spaces — nonlinear curves, can NOT be faked with a
+# 3×3 matrix the way ACEScg / ACES2065-1 are below. The only sane
+# decode path is OCIO, which is guarded so preview still works
+# (as passthrough) if OCIO is absent. Keep this list in sync with
+# `ocio_color._CANONICAL_TO_OCIO` for log entries.
+_LOG_COLORSPACES = {
+    "arri_logc3",
+    "arri_logc4",
+    "sony_slog3",
+    "sony_slog3_cine",
+    "sony_slog3_venice",
+    "sony_slog3_venice_cine",
+}
 
 # AP1 (ACEScg) → linear sRGB.
 _ACESCG_TO_SRGB = np.array(
@@ -304,6 +317,10 @@ def _preview_to_linear(pixels: np.ndarray, colorspace: str) -> np.ndarray:
     - Display-referred (sRGB / Rec.709): apply sRGB inverse EOTF.
     - ACEScg (AP1): apply AP1 → linear sRGB matrix.
     - ACES2065-1 (AP0): apply AP0 → linear sRGB matrix.
+    - ARRI LogC3/C4, Sony S-Log3: OCIO-routed decode. OCIO returns
+      ACEScg-primary linear; we then fold that through the AP1
+      matrix so the downstream sRGB-primary pipeline is consistent
+      with the ACES branches above.
     - Linear Rec.709 / linear / scene_linear: identity (already in
       the right primary set).
     - Unknown: identity + silent no-op so preview never raises.
@@ -315,9 +332,36 @@ def _preview_to_linear(pixels: np.ndarray, colorspace: str) -> np.ndarray:
         return _apply_matrix(pixels, _ACESCG_TO_SRGB)
     if key in {"aces2065_1", "aces2065", "aces"}:
         return _apply_matrix(pixels, _ACES2065_TO_SRGB)
+    if key in _LOG_COLORSPACES:
+        return _log_to_srgb_linear(pixels, key)
     if key in _LINEAR_SRGB:
         return pixels.astype(np.float32, copy=False)
     return pixels.astype(np.float32, copy=False)
+
+
+def _log_to_srgb_linear(pixels: np.ndarray, canonical_name: str) -> np.ndarray:
+    """Log → scene-linear sRGB primaries via OCIO.
+
+    OCIO does the log inverse curve + gamut hop to ACEScg (the
+    studio-config's scene_linear role). We then apply the AP1 →
+    linear-sRGB matrix so the output lands in the same primary set
+    the rest of this module speaks in (which is what the sRGB EOTF
+    later expects).
+
+    Falls back to passthrough if OCIO is missing or the name is
+    unknown to the active config — preview must never raise, since
+    the worker thread has no UI surface to report errors through
+    and a black-frame preview is the worst-possible-UX outcome.
+    """
+    try:
+        from live_action_aov.io import ocio_color
+
+        if not ocio_color.HAS_OCIO:
+            return pixels.astype(np.float32, copy=False)
+        acescg_linear = ocio_color.to_linear(pixels, canonical_name)
+        return _apply_matrix(acescg_linear, _ACESCG_TO_SRGB)
+    except Exception:
+        return pixels.astype(np.float32, copy=False)
 
 
 def _srgb_to_linear(x: np.ndarray) -> np.ndarray:
