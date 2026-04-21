@@ -191,15 +191,11 @@ class MainWindow(QMainWindow):
         # Submit iterates every queued shot with passes. The button
         # enables when there's at least one such shot AND nothing is
         # currently running.
-        queued_with_passes = [
-            s for s in self._registry.shots() if s.queued and s.enabled_passes
-        ]
+        queued_with_passes = [s for s in self._registry.shots() if s.queued and s.enabled_passes]
         any_running = any(s.status == "running" for s in self._registry.shots())
         self._submit_btn.setEnabled(bool(queued_with_passes) and not any_running)
         n = len(queued_with_passes)
-        self._submit_btn.setText(
-            "Submit local" if n <= 1 else f"Submit local  ({n} shots)"
-        )
+        self._submit_btn.setText("Submit local" if n <= 1 else f"Submit local  ({n} shots)")
         cur = self._registry.current()
         self._reveal_btn.setEnabled(cur is not None and cur.last_sidecar_dir is not None)
         del shot
@@ -239,6 +235,21 @@ class MainWindow(QMainWindow):
         if nc_summary:
             if not _confirm_nc_consent(self, nc_summary):
                 return
+
+        # Memory-budget preflight — VIDEO_CLIP passes (DepthCrafter,
+        # NormalCrafter) materialise the full clip at plate resolution
+        # before the per-window downscale, so a 4K × 180-frame plate
+        # blows past 20 GiB and OOMs. Offer one-click auto-proxy at
+        # 1920 long edge for any oversized shots; bail if the user
+        # cancels rather than silently downscale.
+        oversized = _plates_needing_proxy(queue)
+        if oversized:
+            if not _confirm_auto_proxy(self, oversized):
+                return
+            for shot, _gib in oversized:
+                shot.proxy_long_edge = _AUTO_PROXY_LONG_EDGE
+                self._registry.notify_updated(shot)
+
         # Passed validation — mark queued shots as 'queued' state, then
         # kick the first one.
         for shot in queue:
@@ -306,12 +317,8 @@ class MainWindow(QMainWindow):
         else:
             target.status = "failed"
             target.last_error = result.error or "unknown error"
-            self._log_panel.append_error(
-                f"Submit failed — {target.name}: {target.last_error}"
-            )
-            self._log_panel.append_lifecycle(
-                f"===== Submit FAILED: {target.name} ====="
-            )
+            self._log_panel.append_error(f"Submit failed — {target.name}: {target.last_error}")
+            self._log_panel.append_lifecycle(f"===== Submit FAILED: {target.name} =====")
             # In a batch, a failure on one shot shouldn't nuke the
             # whole queue — warn the user and keep going. For a single
             # shot, surface the error as a blocking dialog.
@@ -322,9 +329,7 @@ class MainWindow(QMainWindow):
                     result.error or "unknown error",
                 )
             else:
-                self.statusBar().showMessage(
-                    f"'{target.name}' failed — continuing batch", 8_000
-                )
+                self.statusBar().showMessage(f"'{target.name}' failed — continuing batch", 8_000)
         self._registry.notify_updated(target)
 
         # Pop the head of the queue (whichever shot just finished) and
@@ -352,9 +357,7 @@ def _build_cuda_banner(state: CudaState, parent: QMainWindow) -> QWidget | None:
         return None
     banner = QFrame(parent)
     banner.setFrameShape(QFrame.Shape.NoFrame)
-    banner.setStyleSheet(
-        "background: #3a2a15; border-bottom: 1px solid #6a4820;"
-    )
+    banner.setStyleSheet("background: #3a2a15; border-bottom: 1px solid #6a4820;")
     banner.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     layout = QHBoxLayout(banner)
     layout.setContentsMargins(12, 6, 12, 6)
@@ -374,12 +377,89 @@ def _build_cuda_banner(state: CudaState, parent: QMainWindow) -> QWidget | None:
 
     details_btn = QPushButton("Details / How to fix")
     details_btn.clicked.connect(
-        lambda: QMessageBox.information(
-            parent, "CUDA preflight", state.advisory
-        )
+        lambda: QMessageBox.information(parent, "CUDA preflight", state.advisory)
     )
     layout.addWidget(details_btn)
     return banner
+
+
+# VIDEO_CLIP passes stack every frame at plate resolution before the
+# per-window downscale. 8 GiB is the point where even without the later
+# stitched-output buffer the working set is shaky on a 24 GB card; the
+# stitched output + window upscales push it over on anything bigger.
+_MEMORY_BUDGET_BYTES = 8 * 1024**3
+# Matches the "1080p proxy" entry in the Output tab's dropdown. Plates
+# at this long edge max out around 2 GiB for a 200-frame clip — safely
+# inside any 16 GB host.
+_AUTO_PROXY_LONG_EDGE = 1920
+
+
+def _projected_clip_bytes(shot: ShotState) -> int:
+    """Bytes for the plate-res clip buffer a VIDEO_CLIP pass allocates:
+    `n_frames × H × W × 3 × 4`. Respects an already-set proxy."""
+    first, last = shot.frame_range
+    n_frames = max(last - first + 1, 1)
+    w, h = shot.resolution
+    if shot.proxy_long_edge is not None:
+        long_edge = max(w, h)
+        if long_edge > shot.proxy_long_edge:
+            scale = shot.proxy_long_edge / long_edge
+            w = max(int(round(w * scale)), 1)
+            h = max(int(round(h * scale)), 1)
+    return n_frames * h * w * 3 * 4
+
+
+def _plates_needing_proxy(shots: list[ShotState]) -> list[tuple[ShotState, float]]:
+    """Return `(shot, projected_gib)` for every queued shot whose
+    plate-native clip buffer exceeds `_MEMORY_BUDGET_BYTES`. Shots that
+    already have `proxy_long_edge` set are skipped — the user made an
+    explicit choice."""
+    out: list[tuple[ShotState, float]] = []
+    for shot in shots:
+        if shot.proxy_long_edge is not None:
+            continue
+        nbytes = _projected_clip_bytes(shot)
+        if nbytes > _MEMORY_BUDGET_BYTES:
+            out.append((shot, nbytes / 1024**3))
+    return out
+
+
+def _confirm_auto_proxy(parent: QMainWindow, entries: list[tuple[ShotState, float]]) -> bool:
+    """Ask the user to accept auto-proxy at 1920 long edge for oversized shots.
+
+    Shows the projected per-shot size so the decision is concrete, not
+    abstract. The sidecar writer upscales proxy output back to plate
+    resolution on write, so downstream comp stays at plate res — the
+    proxy only affects the *inference* pass, not the delivered EXR
+    dimensions.
+    """
+    lines = [
+        f"  • {shot.name} — {w}×{h} × {last - first + 1} frames  ({gib:.1f} GiB plate-native)"
+        for shot, gib in entries
+        for (w, h) in [shot.resolution]
+        for (first, last) in [shot.frame_range]
+    ]
+    msg = (
+        "The following shot(s) are too large to process at plate resolution "
+        f"(budget is {_MEMORY_BUDGET_BYTES / 1024**3:.0f} GiB; VIDEO_CLIP "
+        "passes materialise the whole clip in RAM before inference):\n\n"
+        + "\n".join(lines)
+        + f"\n\nProcessing will run at a {_AUTO_PROXY_LONG_EDGE}-pixel "
+        "long-edge proxy. Sidecar EXRs are still upscaled back to plate "
+        "resolution on write, so comp dimensions are unchanged — but the "
+        "underlying depth/normals are computed on a downsampled frame "
+        "and will be softer than plate-native inference would produce."
+        "\n\nContinue with auto-proxy, or cancel and pick a different "
+        "proxy setting in the Output tab?"
+    )
+    reply = QMessageBox.question(
+        parent,
+        "Plate too large — auto-proxy required",
+        msg,
+        QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        QMessageBox.StandardButton.Ok,
+    )
+    return reply == QMessageBox.StandardButton.Ok
 
 
 def _collect_nc_entries(shots: list[ShotState]) -> list[tuple[str, str, str]]:
@@ -393,9 +473,7 @@ def _collect_nc_entries(shots: list[ShotState]) -> list[tuple[str, str, str]]:
     return entries
 
 
-def _confirm_nc_consent(
-    parent: QMainWindow, entries: list[tuple[str, str, str]]
-) -> bool:
+def _confirm_nc_consent(parent: QMainWindow, entries: list[tuple[str, str, str]]) -> bool:
     """Single per-submit confirmation dialog for non-commercial use.
 
     We can't enforce the CC-BY-NC-4.0 terms technically — they govern
