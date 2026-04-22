@@ -7,8 +7,8 @@
 ## Quick start
 
 ```bash
-git clone https://github.com/TODO/live-action-aov
-cd live-action-aov
+git clone https://github.com/lettidude/LiveActionAOV
+cd LiveActionAOV
 ./install.sh        # or install.bat on Windows
 ```
 
