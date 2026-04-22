@@ -14,12 +14,14 @@ Responsibilities:
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from live_action_aov.core.dag import PassNode, topological_sort
 from live_action_aov.core.job import Job, PassConfig, PostConfig, Shot
+from live_action_aov.core.logging_setup import RunLoggingSession
 from live_action_aov.core.pass_base import TemporalMode, UtilityPass
 from live_action_aov.core.registry import get_registry
 from live_action_aov.executors.base import Executor
@@ -30,6 +32,8 @@ from live_action_aov.io.writers.exr import ExrSidecarWriter
 from live_action_aov.shared.optical_flow.cache import FlowCache
 
 METADATA_NAMESPACE = "liveActionAOV"
+
+_log = logging.getLogger(__name__)
 
 # Callers pass a function that receives `(fraction_done, label)` per
 # milestone; the GUI routes these to its progress bar + status bar,
@@ -53,6 +57,42 @@ class LocalExecutor(Executor):
         report = progress_callback or (lambda _f, _l: None)
         registry = get_registry()
         shot = job.shot
+        # Sidecar dir is resolved up-front so the per-run log file can be
+        # placed alongside the outputs. See `core/logging_setup.py` for why
+        # we want both a sidecar-local log and a central mirror.
+        sidecar_dir = shot.output_dir or shot.folder
+        with RunLoggingSession(shot_name=shot.name, sidecar_dir=sidecar_dir) as log_paths:
+            return self._submit_logged(job, report, registry, shot, sidecar_dir, log_paths)
+
+    def _submit_logged(
+        self,
+        job: Job,
+        report: ProgressCallback,
+        registry: Any,
+        shot: Shot,
+        sidecar_dir: Path,
+        log_paths: Any,
+    ) -> Job:
+        _log.info(
+            "passes=%s post=%s frames=%s colorspace=%s proxy=%s output=%s",
+            [pc.name for pc in job.passes],
+            [pc.name for pc in job.post],
+            shot.frame_range,
+            shot.colorspace,
+            shot.proxy_long_edge,
+            sidecar_dir,
+        )
+
+        # Tee every progress milestone into the run log so the file
+        # mirrors what the GUI bar shows — no new log lines needed at
+        # each milestone below, and the CLI (which has no progress bar
+        # in the console log) gets a readable timeline for free.
+        _original_report = report
+
+        def report(frac: float, label: str) -> None:
+            _log.info("[%3.0f%%] %s", frac * 100, label)
+            _original_report(frac, label)
+
         report(0.0, "Resolving passes…")
 
         # Resolve pass classes up-front; fail loud on unknown names before
@@ -236,9 +276,8 @@ class LocalExecutor(Executor):
                 )
 
             # --- Write sidecars ---
-            # Output dir defaults to the plate folder; Phase 5 GUI can
-            # route elsewhere (subfolder, external render root, etc.).
-            sidecar_dir = shot.output_dir or shot.folder
+            # Output dir was resolved at submit() entry so the per-run
+            # log could be placed alongside the outputs; reuse it here.
             sidecar_dir.mkdir(parents=True, exist_ok=True)
             sidecar_template = _sidecar_pattern(shot.sequence_pattern)
             attrs_base = _base_attrs(shot, job, artifacts, applied_post)
