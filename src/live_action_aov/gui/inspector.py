@@ -140,15 +140,9 @@ class InspectorPanel(QWidget):
         # Per-radio `toggled` instead of QButtonGroup.idToggled — avoids
         # the double-fire (deselect + select) pattern that was causing
         # the Choose-root button to sometimes miss its enable event.
-        self._out_inplace.toggled.connect(
-            lambda c: c and self._set_output_mode("inplace")
-        )
-        self._out_subfolder.toggled.connect(
-            lambda c: c and self._set_output_mode("subfolder")
-        )
-        self._out_external.toggled.connect(
-            lambda c: c and self._set_output_mode("external")
-        )
+        self._out_inplace.toggled.connect(lambda c: c and self._set_output_mode("inplace"))
+        self._out_subfolder.toggled.connect(lambda c: c and self._set_output_mode("subfolder"))
+        self._out_external.toggled.connect(lambda c: c and self._set_output_mode("external"))
 
         # Subfolder name field — lets the user pick a name other than
         # "utility". Only enabled in subfolder mode.
@@ -182,8 +176,7 @@ class InspectorPanel(QWidget):
         self._external_name_edit = QLineEdit()
         self._external_name_edit.setPlaceholderText("<shot name>")
         self._external_name_edit.setToolTip(
-            "Subfolder name created inside the external root. "
-            "Default: the shot's name."
+            "Subfolder name created inside the external root. Default: the shot's name."
         )
         self._external_name_edit.setEnabled(False)
         self._external_name_edit.textEdited.connect(self._on_external_name_edited)
@@ -363,12 +356,10 @@ class InspectorPanel(QWidget):
         # the rest of the inspector off-screen.
         passes_header = QLabel("PASSES")
         passes_header.setStyleSheet(
-            "font-weight: 700; color: #fff; font-size: 11pt; "
-            "padding: 4px 0; letter-spacing: 0.5px;"
+            "font-weight: 700; color: #fff; font-size: 11pt; padding: 4px 0; letter-spacing: 0.5px;"
         )
         passes_hint = QLabel(
-            "Pick one or more models per category. New models "
-            "appear here as we add them."
+            "Pick one or more models per category. New models appear here as we add them."
         )
         passes_hint.setStyleSheet("color: #999; font-size: 9pt;")
         passes_hint.setWordWrap(True)
@@ -582,9 +573,7 @@ class InspectorPanel(QWidget):
                 )
                 delta = ev - float(shot.auto_ev)
                 if abs(delta) < 0.05:
-                    self._auto_ev_label.setText(
-                        f"auto: {shot.auto_ev:+.2f} EV{luma_str}"
-                    )
+                    self._auto_ev_label.setText(f"auto: {shot.auto_ev:+.2f} EV{luma_str}")
                 else:
                     self._auto_ev_label.setText(
                         f"manual: {ev:+.2f} EV   (auto was {shot.auto_ev:+.2f}{luma_str})"
@@ -712,9 +701,7 @@ class InspectorPanel(QWidget):
         root = self._current.output_external_root
         if self._current.output_mode == "external" and root is None:
             self._out_root_label.setText("<no root chosen>")
-            self._resolved_out_label.setText(
-                "⚠ Pick an external root before submitting."
-            )
+            self._resolved_out_label.setText("⚠ Pick an external root before submitting.")
             return
         if root is not None:
             self._out_root_label.setText(str(root))
@@ -768,12 +755,8 @@ class InspectorPanel(QWidget):
         from PySide6.QtCore import QTimer
 
         original = self._apply_passes_btn.text()
-        self._apply_passes_btn.setText(
-            f"Applied to {count} shot{'s' if count != 1 else ''} ✓"
-        )
-        QTimer.singleShot(
-            1500, lambda: self._apply_passes_btn.setText(original)
-        )
+        self._apply_passes_btn.setText(f"Applied to {count} shot{'s' if count != 1 else ''} ✓")
+        QTimer.singleShot(1500, lambda: self._apply_passes_btn.setText(original))
 
     def _on_reset_clicked(self) -> None:
         """Revert both knobs to auto-detected values in one shot."""
