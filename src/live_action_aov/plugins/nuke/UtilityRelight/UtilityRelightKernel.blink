@@ -1,0 +1,505 @@
+// =====================================================================
+// UtilityRelight v1.10  -  BlinkScript kernel
+// Part of the LiveActionAOV toolkit
+// https://github.com/[TODO]/live-action-aov
+//
+// Copyright (c) 2026 Leonardo Paolini
+// Developed with Claude (Anthropic)
+// License: MIT
+//
+// v1.10:
+//   - Key Color bugfix: keyColor now ALWAYS tints the light (like a gel),
+//     regardless of Plate Mix. Previously keyColor was multiplied by
+//     plateMix so the color slider did nothing at default plateMix=0.
+//   - previewFlipX/previewFlipY params: when the 3D preview is X/Y-
+//     flipped for right-side-up display, the kernel mirrors lightPos
+//     and lightDir back to the working frame so the LightAxis gizmo
+//     lights what it visually points at.
+//
+// STANDALONE RELIGHT RENDER LAYER
+// Output is the light contribution ONLY (no plate passthrough) - merge it
+// onto the plate downstream with Plus / Screen / ColorDodge. Layer multiple
+// UtilityRelight nodes for multi-light setups.
+//
+// Math (v1.6):
+//   output = key_lit + spec_layer + rim_layer + bounce_layer + glow_layer + fog_layer
+//
+//   key_lit     = lerp(plate, keyColor, keyPlateMix) * keyMask * keyIntensity * keyAmount
+//                 (new in v1.6: Mix-to-Color slider lets the key ignore
+//                  plate luminance when pushed to 1, so deep shadows can
+//                  still be properly lit)
+//
+//   spec_layer  = specMask * specColor * specAmount
+//   rim_layer   = rim_mask * rimColor * rimAmount   (direction-aware)
+//   bounce      = bounce_mask * bounceColor * bounceAmount
+//   glow_layer  = glow_mask * glowColor * glowAmount
+//
+//   fog_layer   = fogColor * lightColor * fogDensity * depth_mask * atten_at_surface
+//                 (new in v1.6: depth-modulated atmospheric haze lit by
+//                  the active light, inscattering toward the camera)
+//
+// v1.6 changes:
+//   - Key layer gets a "Plate Mix" knob to blend between plate-colored
+//     and pure-light-colored. 0 = plate as surface (old behavior), 1 =
+//     pure light color everywhere, so shadows aren't stuck at black.
+//   - Volume/Fog layer restored as a 6th additive contribution.
+//
+// Falloff: 3D gaussian exp(-(dist/sigma)^2).
+// Softness: 7-sample disk facing the camera (no backlight artifacts).
+//
+// Inputs:
+//   0 src    - beauty plate (RGB)
+//   1 nrm    - normals (camera-space, +Z toward camera, unit length)
+//   2 pos    - position (P-space; +Z away from camera)
+//   3 depth  - scalar depth on .x (fallback when pos absent)
+//   4 ao     - ambient occlusion on .x (1=occluded)
+//   5 albedo - reserved / unused
+//
+// Output modes (updated for v1.6):
+//   0 Combined   (all layers summed, default)
+//   1 Key only
+//   2 Spec only
+//   3 Rim only
+//   4 Bounce only
+//   5 Glow only
+//   6 Fog only
+//   7 Key mask       (grayscale diagnostic)
+//   8 Normals, 9 Depth, 10 AO  (diagnostics)
+// =====================================================================
+
+kernel UtilityRelightKernel : ImageComputationKernel<ePixelWise>
+{
+  Image<eRead, eAccessPoint, eEdgeClamped> src;
+  Image<eRead, eAccessPoint, eEdgeClamped> nrm;
+  Image<eRead, eAccessPoint, eEdgeClamped> pos;
+  Image<eRead, eAccessPoint, eEdgeClamped> depth;
+  Image<eRead, eAccessPoint, eEdgeClamped> ao;
+  Image<eRead, eAccessPoint, eEdgeClamped> albedo;
+  Image<eWrite> dst;
+
+  param:
+    // --- Light ---
+    int    lightType;         // 0 Point, 1 Directional, 2 Spot
+    float3 lightPos;
+    float3 lightDir;          // forward axis of LightAxis (directional & spot)
+    float  lightRadius;       // gaussian sigma in P-space units
+
+    // --- Spot ---
+    float  spotAngle;
+    float  spotSoftness;
+
+    // --- Key (grade) layer ---
+    float3 keyColor;          // pure TINT of the added light (default white)
+    float  keyIntensity;      // scalar: how much to brighten lit areas
+    float  keyAmount;         // 0 = disable key grade
+    float  keyPlateMix;       // 0 = plate-colored (old behavior), 1 = pure keyColor
+
+    // --- Specular (Blinn-Phong highlight; new in v1.5) ---
+    float3 specColor;
+    float  specAmount;
+    float  specRoughness;     // 0 = mirror sharp, 1 = very broad
+
+    // --- Softness (area-light approximation via disk sampling) ---
+    float  softness;          // 0 = single point, 1 = 7 samples on disk of radius*0.5
+
+    // --- Rim layer ---
+    float3 rimColor;
+    float  rimAmount;
+    float  rimExp;            // Fresnel exponent (higher = tighter rim)
+    float  rimWrap;           // 0..1: how much the rim wraps TOWARDS lit side
+
+    // --- Bounce layer ---
+    float3 bounceColor;       // complementary-color fill on shadow side
+    float  bounceAmount;
+    float  bounceAODamp;      // how much AO suppresses the bounce (0..1)
+
+    // --- Atmospheric glow ---
+    float3 glowColor;
+    float  glowAmount;
+    float  glowRadius;        // gaussian sigma for glow (typically larger than lightRadius)
+
+    // --- Volume / Fog ---
+    float3 fogColor;
+    float  fogAmount;         // 0 = disable fog
+    float  fogStart;          // depth at which fog starts
+    float  fogEnd;            // depth at which fog is full density
+
+    // --- AO ---
+    int    hasAO;
+    float  aoInt;             // how strongly AO darkens the key (0 = no effect)
+
+    // --- Normals convention (v1.7) ---
+    // Different monocular-normal estimators use different conventions for
+    // N. These 3 flags let the artist realign N with P's frame in one click.
+    //   nFlipX/Y/Z: negate that component before lighting math.
+    //   nSwapYZ:    swap Y<->Z (Z-up world <-> Y-up world).
+    // Defaults match NormalCrafter: flipY=1, flipZ=1, flipX=0, swapYZ=0.
+    int    nFlipX;
+    int    nFlipY;
+    int    nFlipZ;
+    int    nSwapYZ;
+
+    // --- Preview flip compensation (v1.10) ---
+    // The 3D preview has optional X/Y flips to show the cloud right-side-up
+    // in Nuke's Y-up viewer (P data is image-space Y-down). When those
+    // flips are on, the user drags the LightAxis in the FLIPPED frame; the
+    // kernel must mirror lightPos.x/.y (and lightDir.x/.y) back into the
+    // original kernel frame so lighting computes correctly.
+    int    previewFlipX;
+    int    previewFlipY;
+
+    // --- Geometry availability ---
+    int    hasP;
+    int    hasZ;
+    float  fx, fy, cx, cy;
+
+    // --- Output ---
+    int    outputMode;        // 0..8
+    float  mixAmt;            // 0 = plate, 1 = full relight (only affects Combined mode)
+
+    // --- Depth viz range ---
+    float  zNear;
+    float  zFar;
+
+  float sat(float x) { return max(0.0f, min(1.0f, x)); }
+
+  float gaussian(float dist, float sigma) {
+    // exp(-(d/s)^2). Smooth, no hard cutoff. At d=sigma returns ~0.37,
+    // at d=2*sigma ~0.018, so `sigma` acts like a soft radius.
+    float s = max(sigma, 1e-4f);
+    float r = dist / s;
+    return exp(-r * r);
+  }
+
+  void process(int2 p) {
+    // ---- Image reads (float3 return in this Nuke version) ----
+    float3 sRGB = float3(src().x, src().y, src().z);
+    float3 n3   = float3(nrm().x, nrm().y, nrm().z);
+
+    // ---- Normals to P-aligned frame (v1.7: user-selectable convention) ----
+    // NormalCrafter default: OpenGL view-space (+Y up, +Z toward camera).
+    // LiveActionAOV sidecar P: image-space (+Y down, +Z away from camera).
+    // So we flip Y and Z by default. Artist can override via UI flags for
+    // other estimators (DSINE, Marigold, etc.).
+    float nx = nFlipX != 0 ? -n3.x : n3.x;
+    float ny = nFlipY != 0 ? -n3.y : n3.y;
+    float nz = nFlipZ != 0 ? -n3.z : n3.z;
+    if (nSwapYZ != 0) {
+      float tmp = ny; ny = nz; nz = tmp;
+    }
+    float3 N = float3(nx, ny, nz);
+    float nlen = length(N);
+    if (nlen < 0.001f) N = float3(0.0f, 0.0f, -1.0f); else N = N / nlen;
+
+    // ---- P: direct or derived ----
+    float3 P = float3(0.0f, 0.0f, 1.0f);
+    int haveGeom = 0;
+    if (hasP != 0) {
+      P = float3(pos().x, pos().y, pos().z);
+      haveGeom = 1;
+    } else if (hasZ != 0) {
+      float z = depth().x;
+      float px = (float(p.x) - cx) / max(fx, 1e-4f) * z;
+      float py = (float(p.y) - cy) / max(fy, 1e-4f) * z;
+      P = float3(px, py, z);
+      haveGeom = 1;
+    }
+
+    // ---- View vector (surface -> camera at origin) ----
+    float3 V = float3(0.0f, 0.0f, -1.0f);
+    float Plen = length(P);
+    if (haveGeom != 0 && Plen > 1e-4f) V = -P / Plen;
+
+    // ---- Preview flip compensation (v1.10) ----
+    // The 3D preview may show the point cloud X/Y-flipped (for Y-up view).
+    // When the user drags LightAxis in that flipped frame, we must mirror
+    // the axis's position and direction BACK into the kernel's native frame
+    // so lighting math stays correct.
+    float3 lightPosK = lightPos;
+    float3 lightDirK = lightDir;
+    if (previewFlipX != 0) { lightPosK.x = -lightPosK.x; lightDirK.x = -lightDirK.x; }
+    if (previewFlipY != 0) { lightPosK.y = -lightPosK.y; lightDirK.y = -lightDirK.y; }
+
+    // ---- Light direction + spatial falloff ----
+    //
+    // For softness > 0 we take 7 samples: the light center plus 6 points
+    // on a disk of radius lightRadius*softness*0.5, oriented perpendicular
+    // to the camera->light axis (so all samples stay on the viewer side of
+    // the light - no accidental back-lighting). Each sample contributes its
+    // own NdotL * atten; we average them into a single soft NdotL * atten.
+    //
+    // For softness == 0 it collapses to the single-center case (fastest).
+    //
+    // Directional lights skip all of this - L is just -lightDir.
+    //
+    float NdotL = 0.0f;
+    float atten = 0.0f;
+    float distToLight = 0.0f;
+    float3 Lcenter = float3(0.0f, 0.0f, -1.0f);
+
+    if (lightType == 1) {
+      // Directional - no sampling, no falloff
+      Lcenter = -normalize(lightDirK);
+      NdotL = max(dot(N, Lcenter), 0.0f);
+      atten = 1.0f;
+      distToLight = 0.0f;
+    }
+    else {
+      // Point or Spot - sample the light as a disk facing the camera.
+      // Build tangent frame perpendicular to (camera -> lightPos):
+      float3 lpLen = lightPosK;
+      float lpMag = length(lpLen);
+      float3 toCam = (lpMag > 1e-4f) ? (-lpLen / lpMag) : float3(0.0f, 0.0f, -1.0f);
+      // Pick an arbitrary "up" not parallel to toCam:
+      float3 upGuess = float3(0.0f, 1.0f, 0.0f);
+      if (fabs(toCam.y) > 0.95f) upGuess = float3(1.0f, 0.0f, 0.0f);
+      float3 tx = normalize(cross(upGuess, toCam));
+      float3 ty = cross(toCam, tx);
+
+      float soft = sat(softness);
+      float diskR = max(lightRadius, 1e-4f) * 0.5f * soft;
+
+      // 7-sample kernel: center + 6 disk points at 60deg intervals.
+      // Angles (deg): 0, 60, 120, 180, 240, 300.
+      // If softness is 0, diskR==0 so all 7 collapse to center.
+      float weights[7];
+      float3 offsets[7];
+
+      weights[0] = 1.0f;
+      offsets[0] = float3(0.0f, 0.0f, 0.0f);
+
+      // Precomputed cos/sin of 60, 120, 180, 240, 300 degrees.
+      // 60 -> (0.5, 0.866), 120 -> (-0.5, 0.866), 180 -> (-1, 0),
+      // 240 -> (-0.5, -0.866), 300 -> (0.5, -0.866).
+      // 0 of the ring is (1, 0).
+      float c[6]; float s[6];
+      c[0] =  1.0f;  s[0] =  0.0f;
+      c[1] =  0.5f;  s[1] =  0.866025f;
+      c[2] = -0.5f;  s[2] =  0.866025f;
+      c[3] = -1.0f;  s[3] =  0.0f;
+      c[4] = -0.5f;  s[4] = -0.866025f;
+      c[5] =  0.5f;  s[5] = -0.866025f;
+      for (int i = 0; i < 6; i++) {
+        weights[i + 1] = 1.0f;
+        offsets[i + 1] = (tx * c[i] + ty * s[i]) * diskR;
+      }
+
+      float totalW = 0.0f;
+      float sumNdotL = 0.0f;
+      float sumAtten = 0.0f;
+      float centerDist = 0.0f;
+
+      // Spot setup (cone test applied per-sample if Spot).
+      float3 spotDir = float3(0.0f, 0.0f, 1.0f);
+      float cosOuter = 0.0f, cosInner = 0.0f;
+      if (lightType == 2) {
+        spotDir = normalize(lightDirK);
+        cosOuter = cos(spotAngle * 3.14159265f / 180.0f);
+        float spSoft = sat(spotSoftness);
+        cosInner = cos(spotAngle * (1.0f - spSoft) * 3.14159265f / 180.0f);
+      }
+
+      for (int i = 0; i < 7; i++) {
+        float3 samplePos = lightPosK + offsets[i];
+        float3 toLight = samplePos - P;
+        float d = length(toLight);
+        if (d < 1e-4f) d = 1e-4f;
+        float3 Ls = toLight / d;
+
+        float sampleAtten = gaussian(d, lightRadius);
+
+        if (lightType == 2) {
+          float cosToSurface = dot(-Ls, spotDir);
+          float t;
+          if (cosInner <= cosOuter) {
+            t = (cosToSurface >= cosOuter) ? 1.0f : 0.0f;
+          } else {
+            t = sat((cosToSurface - cosOuter) / (cosInner - cosOuter));
+          }
+          sampleAtten *= t;
+        }
+
+        float sampleNdotL = max(dot(N, Ls), 0.0f);
+
+        sumNdotL += sampleNdotL * sampleAtten * weights[i];
+        sumAtten += sampleAtten * weights[i];
+        totalW   += weights[i];
+
+        if (i == 0) {
+          Lcenter = Ls;
+          centerDist = d;
+        }
+      }
+
+      // Average. Key design change in v1.5: expose avgNdotLAtten DIRECTLY
+      // as the key mask rather than dividing it out by avgAtten to recover
+      // a "clean" NdotL. The divide was flattening the NdotL gradient
+      // across the subject, because samples that miss the surface (atten
+      // low) were contributing a lot of "no light" to avgNdotL but their
+      // atten showed up in the denominator, pulling the ratio toward the
+      // few lit samples.
+      //
+      // Direct use: keyMask already has both "does this surface face the
+      // light" (NdotL) and "is this surface close enough to the light"
+      // (atten) multiplied in per sample and then averaged. Exactly what
+      // a soft-area-light integral should be.
+      float invW = (totalW > 0.0f) ? (1.0f / totalW) : 1.0f;
+      float avgNdotLAtten = sumNdotL * invW;
+      float avgAtten      = sumAtten * invW;
+      // NdotL here is the average NdotL*atten (a "lit fraction"). atten is
+      // kept separately only for the rim/glow terms that need a distance
+      // falloff without surface-orientation weighting.
+      NdotL = avgNdotLAtten;
+      atten = avgAtten;
+      distToLight = centerDist;
+    }
+
+    // Fresnel term (view-dependent, doesn't need light sampling).
+    float NdotV = sat(dot(N, V));
+    float fresnel = pow(1.0f - NdotV, max(rimExp, 0.01f));
+
+    // ---- AO factor (optional; default aoInt=0 in UI so no effect) ----
+    float aoFactor = 1.0f;
+    if (hasAO != 0) {
+      float aoVal = ao().x;
+      aoFactor = sat(1.0f - aoVal * aoInt);
+    }
+
+    // ---- LAYER 1: key lift ----
+    // v1.10 bugfix: keyColor now ALWAYS tints the light, regardless of
+    // plateMix. Previously keyColor was multiplied by plateMix, so at the
+    // default plateMix=0 the color slider did nothing.
+    //
+    // New behavior:
+    //   surface  = lerp(plate, white, plateMix)
+    //              (plateMix=0: plate as surface, preserves plate colors)
+    //              (plateMix=1: neutral white surface, plate luma ignored)
+    //   keyLit   = surface * keyColor * (keyMask * keyIntensity * keyAmount)
+    //              (keyColor always tints; acts like a gel on the lamp)
+    float keyMask = NdotL * aoFactor;
+    float pMix = sat(keyPlateMix);
+    float3 white = float3(1.0f, 1.0f, 1.0f);
+    float3 keySurface = sRGB + (white - sRGB) * pMix;
+    float3 keyLit = keySurface * keyColor * (keyMask * keyIntensity * keyAmount);
+
+    // ---- LAYER 2: specular (Blinn-Phong) ----
+    // Classic highlight that tracks the light direction. Uses the center
+    // sample's L (Lcenter) rather than the averaged NdotL; the highlight
+    // lobe is inherently view-dependent and softness is better expressed
+    // through Roughness than through spatial sampling here.
+    //
+    //   H = normalize(L + V)
+    //   NdotH = max(dot(N, H), 0)
+    //   shininess = (1/roughness^2 - 1) clamped (higher rough -> softer)
+    //   lobe = NdotH^shininess
+    //   specMask = lobe * atten
+    float3 specLayer = float3(0.0f, 0.0f, 0.0f);
+    if (specAmount > 1e-5f) {
+      float3 H = normalize(Lcenter + V);
+      float NdotH = max(dot(N, H), 0.0f);
+      float r = max(specRoughness, 0.02f);
+      float shininess = 2.0f / (r * r) - 2.0f;
+      if (shininess < 1.0f) shininess = 1.0f;
+      float lobe = pow(NdotH, shininess);
+      float specMask = lobe * atten;
+      specLayer = specColor * specMask * specAmount;
+    }
+
+    // ---- LAYER 3: rim light (direction-aware) ----
+    // v1.5: the rim is gated by (1 - NdotL_soft)^wrap so the bright edge
+    // appears on the side of the silhouette FACING AWAY from the light
+    // (classic back-rim). Move the light and the rim rotates with it.
+    //
+    // "Wrap" controls how much the rim extends from the dark side toward
+    // the lit side: 0 = only on the darkest side, 1 = wraps around to
+    // the lit rim as well.
+    float awayFromLight = sat(1.0f - NdotL);
+    float rimAngular = pow(awayFromLight, max(1.0f - sat(rimWrap), 0.05f) * 4.0f);
+    float rimLight = fresnel * atten * rimAngular;
+    float3 rimLayer = rimColor * rimLight * rimAmount;
+
+    // ---- LAYER 4: bounce fill (additive, complementary) ----
+    // Fires where NdotL is low but the light is near enough to matter.
+    // AO damps it optionally so cavities stay dark.
+    float bounceMask = (1.0f - NdotL) * atten;
+    float aoDamp = (hasAO != 0) ? sat(1.0f - ao().x * bounceAODamp) : 1.0f;
+    float3 bounceLayer = bounceColor * bounceMask * bounceAmount * aoDamp;
+
+    // ---- LAYER 5: atmospheric glow ----
+    // Gaussian halo around the light, independent of surface orientation.
+    // Gives the "light has volume in the air" feel even on dark surfaces.
+    float glowMask = gaussian(distToLight, glowRadius);
+    float3 glowLayer = glowColor * glowMask * glowAmount;
+
+    // ---- LAYER 6: volume / fog ----
+    // Depth-modulated atmospheric haze lit by the active light. Per-pixel:
+    //   - depth_t  = normalize(P.z in [fogStart..fogEnd])     scene-wide mask
+    //   - atten_at_surface = gaussian(distToLight, glowRadius)
+    //                                                         proximity mask
+    //   - fog_layer = fogColor * lightColor * fogAmount * depth_t * atten_at_surface
+    // Combined with glow, this gives the cinematic "beam of light in the air"
+    // feel: closer to the light = more scatter, deeper in scene = more haze.
+    float3 fogLayer = float3(0.0f, 0.0f, 0.0f);
+    if (fogAmount > 1e-5f) {
+      float zForFog = (hasZ != 0) ? depth().x : ((hasP != 0) ? P.z : 0.0f);
+      float fogRange = max(fogEnd - fogStart, 1e-4f);
+      float depthT = sat((zForFog - fogStart) / fogRange);
+      // Proximity to light in 3D: reuses the glow gaussian so fog brightens
+      // where the light is and fades toward dark corners of the frame.
+      float fogProx = gaussian(distToLight, glowRadius);
+      fogLayer = fogColor * keyColor * (fogAmount * depthT * fogProx);
+    }
+
+    // ---- Combined output: sum of all six layers ----
+    float3 combined = keyLit + specLayer + rimLayer + bounceLayer + glowLayer + fogLayer;
+
+    // Mix: 0 = plate (for A/B), 1 = pure light layer (render export mode).
+    float mx = sat(mixAmt);
+    float3 mixed = sRGB + (combined - sRGB) * mx;
+
+    // ---- Output mode ----
+    float3 outRGB;
+    if (outputMode == 0) {
+      outRGB = mixed;
+    }
+    else if (outputMode == 1) {
+      outRGB = keyLit;
+    }
+    else if (outputMode == 2) {
+      outRGB = specLayer;
+    }
+    else if (outputMode == 3) {
+      outRGB = rimLayer;
+    }
+    else if (outputMode == 4) {
+      outRGB = bounceLayer;
+    }
+    else if (outputMode == 5) {
+      outRGB = glowLayer;
+    }
+    else if (outputMode == 6) {
+      outRGB = fogLayer;
+    }
+    else if (outputMode == 7) {
+      // Key mask (grayscale)
+      outRGB = float3(keyMask, keyMask, keyMask);
+    }
+    else if (outputMode == 8) {
+      // Normals
+      outRGB = float3(n3.x * 0.5f + 0.5f, n3.y * 0.5f + 0.5f, n3.z * 0.5f + 0.5f);
+    }
+    else if (outputMode == 9) {
+      // Depth
+      float z = (hasZ != 0) ? depth().x : ((hasP != 0) ? P.z : 0.0f);
+      float range = max(zFar - zNear, 1e-4f);
+      float zn = sat((z - zNear) / range);
+      outRGB = float3(zn, zn, zn);
+    }
+    else {
+      // AO factor
+      outRGB = float3(aoFactor, aoFactor, aoFactor);
+    }
+
+    dst() = float4(outRGB.x, outRGB.y, outRGB.z, 1.0f);
+  }
+};

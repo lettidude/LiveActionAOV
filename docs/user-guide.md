@@ -74,3 +74,45 @@ liveaov-gui
 ```
 
 Lands in Phase 5.
+
+## Nuke plugin — UtilityRelight
+
+A companion Nuke node ships with this repo at
+`src/live_action_aov/plugins/nuke/UtilityRelight/`. It consumes a
+sidecar EXR and a beauty plate and gives the comp artist live 3D
+light placement on the subject — six layered light contributions
+(key, spec, rim, bounce, glow, fog) computed on the GPU via
+BlinkScript.
+
+### Install
+
+1. Copy these two files into your `~/.nuke/` directory (directly,
+   NOT in subfolders — Nuke loads `~/.nuke/*.py` at startup):
+   - `src/live_action_aov/plugins/nuke/UtilityRelight/utility_relight.py`
+   - `src/live_action_aov/plugins/nuke/UtilityRelight/UtilityRelightKernel.blink`
+
+2. Add to your `~/.nuke/menu.py` (create the file if it doesn't
+   exist):
+   ```python
+   import utility_relight
+   utility_relight.register()
+   ```
+
+3. Restart Nuke. The node appears at
+   **Nodes → UtilityPasses → UtilityRelight**.
+
+### Quick test
+
+1. Create the node. Connect plate to input `src`, sidecar EXR to
+   input `aov`.
+2. Output tab → set **View Mode → 3D Scene Preview**.
+3. Press `Tab` in the viewer to enter 3D mode.
+4. Drag the **LightAxis** gizmo arrows — the point cloud relights
+   in real time.
+5. Output tab → switch back to **2D Relight** for the final
+   render-layer output. Merge (`plus`) it onto your plate.
+
+Tested on Nuke 16.0. Likely works on 14–15. See the plugin's own
+[README](../src/live_action_aov/plugins/nuke/UtilityRelight/README.md)
+for the full feature reference, conventions, and Nuke-version
+compatibility notes.
