@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/img/LogoImage.png" alt="LiveActionAOV — Multi Utility Pass Generator" width="720">
+  <img src="docs/img/LogoImage.png" alt="LiveActionAOV logo" width="360">
 </p>
 
 # LiveActionAOV
