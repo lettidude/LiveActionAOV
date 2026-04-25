@@ -77,7 +77,9 @@ Original plate is never modified. See [design notes](docs/architecture.md) for a
 
 - Email: [LeonardoVFX@gmail.com](mailto:LeonardoVFX@gmail.com)
 - GitHub: [@lettidude](https://github.com/lettidude)
-<!-- TODO: add socials/portfolio when ready (Twitter/X, LinkedIn, ArtStation, personal site) -->
+- LinkedIn: [leonardopaolinivfx](https://www.linkedin.com/in/leonardopaolinivfx/)
+- IMDb: [Leonardo Paolini](https://www.imdb.com/name/nm5886055/)
+- YouTube: [@LeonardoVFX](https://www.youtube.com/channel/UCZDR5tThQwo9OVVu-NmODbA) — pipeline & VFX-tooling videos
 
 Developed with [Claude](https://claude.com/) (Anthropic).
 
