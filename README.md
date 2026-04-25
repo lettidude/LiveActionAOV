@@ -15,11 +15,21 @@
 
 ## Quick start
 
-```bash
+```powershell
+# Windows (PowerShell or cmd.exe):
 git clone https://github.com/lettidude/LiveActionAOV
 cd LiveActionAOV
-./install.sh        # or install.bat on Windows
+.\install.bat
 ```
+
+```bash
+# Linux / macOS:
+git clone https://github.com/lettidude/LiveActionAOV
+cd LiveActionAOV
+./install.sh
+```
+
+> **PowerShell users:** the `.\` prefix is required — PowerShell doesn't run scripts from the current directory by default. `cmd.exe` accepts both `install.bat` and `.\install.bat`.
 
 Then:
 ```bash
@@ -29,11 +39,13 @@ uv run liveaov --help        # CLI reference
 
 > **First run downloads model checkpoints from Hugging Face.** Expect
 > **~1.5 GB** for a minimal stack (Depth Anything V2 + DSINE + RAFT +
-> SAM 3 + RVM) up to **~11 GB** for the full video-aware stack
+> SAM 3 + RVM) up to **~12 GB** for the full video-aware stack
 > (DepthCrafter + NormalCrafter + MatAnyone 2). Cached at
 > `~/.cache/huggingface/hub` (Linux/macOS) or
 > `%USERPROFILE%\.cache\huggingface\hub` (Windows). Subsequent runs are
 > offline-capable for any pass whose weights you've already pulled.
+>
+> **Updating to latest:** from the project root, run `.\update.bat` (Windows) or `./update.sh` (Linux/macOS). Pulls the latest code and re-syncs deps. Idempotent if there's nothing new.
 >
 > **What is `uv`?** A fast Python package manager from Astral —
 > drop-in replacement for `pip` + `venv`. The installer scripts grab
@@ -97,6 +109,21 @@ Tested on Nuke 16.0.
 - [User guide](docs/user-guide.md)
 - [Developing plugins](docs/developing-plugins.md)
 - [Architecture](docs/architecture.md)
+- [Install reference](docs/install.md) — alternate GPU configurations (Pascal/Volta, Apple Silicon, ROCm), troubleshooting, slim install with per-pass extras
+
+---
+
+## Compatibility
+
+| Platform | GPU | Status |
+|---|---|---|
+| Windows 11 | NVIDIA RTX 20 / 30 / 40 / 50 series | ✅ **Tested at v0.1.0** |
+| Linux (Ubuntu 22.04+) | NVIDIA RTX 20 / 30 / 40 / 50 series | ⚠️ Expected to work via `install.sh` (CUDA + uv path identical to Windows) but **untested at v0.1.0**. Bug reports welcome. |
+| macOS (Apple Silicon) | M1 / M2 / M3 / M4 (MPS) | ⚠️ **Best-effort.** Some passes work via MPS; fp16 models (DepthCrafter, NormalCrafter, MatAnyone2) are CUDA-only. The GUI refuses Submit and explains when a pass isn't available. |
+| Any platform | AMD GPU (ROCm) | ❌ Untested — wheels exist, none of our passes have been validated against them. |
+| Any platform | CPU-only | ❌ Not a supported configuration — fp16 kernels don't exist on CPU. |
+
+See [docs/install.md](docs/install.md#alternate-gpu-configurations) for manual overrides on older NVIDIA hardware (Pascal / Volta cu121 wheel) and Apple Silicon notes.
 
 ---
 
