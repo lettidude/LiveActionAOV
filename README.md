@@ -68,11 +68,13 @@ Drop a plate folder onto the shot list, pick the passes you want, hit **Submit l
   <img src="docs/img/gui-passes-tab.jpg" alt="LiveActionAOV GUI — Passes tab" width="900">
 </p>
 
-<!--
-TODO: add a second screenshot of a loaded shot (with viewport rendering
-and a real plate) once the example plate is non-confidential. Suggested
-filename: docs/img/gui-loaded-shot.jpg
--->
+A loaded shot with the Output tab open — multi-shot batch queueing, proxy resolution, and the "what the model sees" Transformed view in the centre viewport.
+
+<p align="center">
+  <img src="docs/img/gui-loaded-shot.jpg" alt="LiveActionAOV GUI — loaded shot, Output tab" width="900">
+</p>
+
+> Test plate above is from the [ActionVFX practice footage library](https://www.actionvfx.com/collections/free-vfx/category) — used here under their license, which permits incorporation into derivative work like this tool demo.
 
 ---
 
