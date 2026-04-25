@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/img/LogoImage.png" alt="LiveActionAOV — Multi Utility Pass Generator" width="720">
+</p>
+
 # LiveActionAOV
 
 **AI-driven AOV pass generator for VFX plates.** Reads EXR image sequences, runs depth / normals / motion / matte passes, writes sidecar EXRs with Nuke-ready channel conventions.
@@ -6,13 +10,6 @@
 
 [![Watch the demo](https://img.shields.io/badge/Demo-YouTube-red?style=flat-square&logo=youtube)](https://youtu.be/TODO_REPLACE_AFTER_UPLOAD)
 *Demo video — coming soon.*
-
-<!--
-TODO: paste a screenshot or GIF here. The most striking image for a VFX
-audience is a Nuke Read node showing the channel list of a generated
-sidecar (`Z, N.x, N.y, N.z, motion.x, motion.y, matte.r/g/b/a, mask.*`).
-Recommended size: 1280×720 PNG, committed to docs/images/hero.png.
--->
 
 ---
 
@@ -60,6 +57,22 @@ Given a plate like `/shots/sh020/plate/v003/sh020_plt.####.exr`, the tool produc
   - `ao.a` ambient occlusion (when depth + normals are present)
 
 Original plate is never modified. See [design notes](docs/architecture.md) for architectural details.
+
+---
+
+## The GUI
+
+Drop a plate folder onto the shot list, pick the passes you want, hit **Submit local**. Each model surfaces its license badge inline so you know up-front which combinations are commercial-safe and which require non-commercial confirmation.
+
+<p align="center">
+  <img src="docs/img/gui-passes-tab.jpg" alt="LiveActionAOV GUI — Passes tab" width="900">
+</p>
+
+<!--
+TODO: add a second screenshot of a loaded shot (with viewport rendering
+and a real plate) once the example plate is non-confidential. Suggested
+filename: docs/img/gui-loaded-shot.jpg
+-->
 
 ---
 
