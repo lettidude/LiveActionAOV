@@ -76,6 +76,20 @@ filename: docs/img/gui-loaded-shot.jpg
 
 ---
 
+## Nuke plugin — UtilityRelight
+
+A companion Nuke node ships in this repo at
+[`src/live_action_aov/plugins/nuke/UtilityRelight/`](src/live_action_aov/plugins/nuke/UtilityRelight/).
+It consumes a sidecar EXR + a beauty plate and gives Nuke comp artists
+live 3D light placement on the subject — six layered light contributions
+(key, spec, rim, bounce, glow, fog) computed on the GPU via BlinkScript.
+
+**Install (3 steps):** copy `utility_relight.py` + `UtilityRelightKernel.blink` into `~/.nuke/`, register in `~/.nuke/menu.py`, restart Nuke. Full instructions and quick-test recipe in the [user guide](docs/user-guide.md#nuke-plugin--utilityrelight).
+
+Tested on Nuke 16.0.
+
+---
+
 ## Documentation
 
 - [User guide](docs/user-guide.md)
