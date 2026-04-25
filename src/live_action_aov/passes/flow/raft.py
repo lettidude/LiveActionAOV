@@ -50,6 +50,7 @@ from live_action_aov.io.channels import (
     CH_BACKWARD_U,
     CH_BACKWARD_V,
     CH_FLOW_CONFIDENCE,
+    CH_FLOW_OCCLUSION,
     CH_FORWARD_U,
     CH_FORWARD_V,
     CH_MOTION_X,
@@ -77,6 +78,10 @@ class RAFTPass(UtilityPass):
         ChannelSpec(name=CH_BACK_X, description="Backward flow x"),
         ChannelSpec(name=CH_BACK_Y, description="Backward flow y"),
         ChannelSpec(name=CH_FLOW_CONFIDENCE, description="F-B consistency [0,1]"),
+        ChannelSpec(
+            name=CH_FLOW_OCCLUSION,
+            description="Occlusion mask (1 - flow.confidence), [0,1] — 1 = occluded",
+        ),
         # Nuke-native aliases (same data, VectorBlur-friendly naming).
         ChannelSpec(name=CH_FORWARD_U, description="Alias of motion.x for Nuke VectorBlur"),
         ChannelSpec(name=CH_FORWARD_V, description="Alias of motion.y for Nuke VectorBlur"),
@@ -238,6 +243,10 @@ class RAFTPass(UtilityPass):
             CH_BACK_X: back_x,
             CH_BACK_Y: back_y,
             CH_FLOW_CONFIDENCE: conf_np,
+            # Explicit occlusion = inverse of confidence. Same data, but
+            # compers who want "mask where the vectors are unreliable"
+            # shouldn't have to invert in Nuke.
+            CH_FLOW_OCCLUSION: (1.0 - conf_np).astype(np.float32),
             # Nuke-native aliases (same arrays — EXR zip compresses the
             # duplication to near-zero disk overhead).
             CH_FORWARD_U: motion_x,
@@ -285,6 +294,7 @@ class RAFTPass(UtilityPass):
             CH_BACK_X,
             CH_BACK_Y,
             CH_FLOW_CONFIDENCE,
+            CH_FLOW_OCCLUSION,
             CH_FORWARD_U,
             CH_FORWARD_V,
             CH_BACKWARD_U,
@@ -310,6 +320,7 @@ class RAFTPass(UtilityPass):
                 CH_BACK_X: bwd[0],
                 CH_BACK_Y: bwd[1],
                 CH_FLOW_CONFIDENCE: conf,
+                CH_FLOW_OCCLUSION: (1.0 - conf).astype(np.float32),
                 # Nuke-native aliases (same arrays)
                 CH_FORWARD_U: fwd[0],
                 CH_FORWARD_V: fwd[1],

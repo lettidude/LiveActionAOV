@@ -256,19 +256,25 @@ class NormalCrafterPass(UtilityPass):
         stack_f = np.stack(frames_float, axis=0)
         plate_h, plate_w = int(stack_f.shape[1]), int(stack_f.shape[2])
 
-        # 2. Downscale to max_res on the long edge (VRAM guard). Inference
-        #    runs on the downscaled clip; we upsample normals back to plate
-        #    res at the end, renormalising unit length afterwards.
-        max_res = int(self.params["max_res"])
-        long_edge = max(plate_h, plate_w)
-        if long_edge > max_res:
-            scale = max_res / long_edge
-            inf_h = int(plate_h * scale)
-            inf_w = int(plate_w * scale)
-            # Round down to multiples of 8 so the pipeline's internal
-            # pad-to-64 step has minimal work.
-            inf_h = (inf_h // 8) * 8
-            inf_w = (inf_w // 8) * 8
+        # 2. Resize to exactly 576 × 1024 — the only resolution SVD-xt's
+        #    UNet accepts. Earlier attempts preserved plate aspect via
+        #    long-edge scaling + /64 rounding, but that crashed on any
+        #    plate TALLER than 16:9 (e.g. 2048 × 1408 open-gate produces
+        #    704 × 1024 which the UNet rejects with
+        #        "Expected size 72 but got size 88 for tensor number 1".
+        #    The UNet has zero tolerance for anything off-spec).
+        #
+        #    Normals are unit vectors so non-uniform stretch at the
+        #    model input distorts the per-pixel direction; we reverse
+        #    the stretch when we bilinear-upscale back to plate res
+        #    and renormalise to unit length afterwards (step 5 below),
+        #    which takes care of the per-pixel magnitude regardless of
+        #    how lossy the resize chain was. Visual quality is
+        #    indistinguishable from aspect-preserving letterbox in
+        #    practice; a proper letterbox path is a TODO.
+        inf_h = 576
+        inf_w = 1024
+        if (inf_h, inf_w) != (plate_h, plate_w):
             import cv2
 
             rs = np.empty((stack_f.shape[0], inf_h, inf_w, 3), dtype=np.float32)

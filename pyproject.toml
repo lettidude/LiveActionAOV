@@ -91,6 +91,23 @@ matanyone2 = []
 # `matte` meta-extra — installs both the detector (sam3) and the default
 # commercial-safe refiner (rvm) in one shot.
 matte = ["live-action-aov[sam3]", "live-action-aov[rvm]"]
+# `all` meta-extra — every optional pass's dependencies. This is what
+# install.bat / install.sh default to; without it, users pick a
+# non-default backend in the GUI's Passes tab and hit "module not
+# found" at submit time. Commercial-safe defaults (DA-V2, DSINE,
+# RAFT, sam3+rvm) actually work without it, but a polished install
+# that never surprises is worth the extra download bandwidth.
+all = [
+    "live-action-aov[depthcrafter]",
+    "live-action-aov[normalcrafter]",
+    "live-action-aov[video_depth_anything]",
+    "live-action-aov[depthpro]",
+    "live-action-aov[matte]",
+    "live-action-aov[matanyone2]",
+    "live-action-aov[dsine]",
+    "live-action-aov[sam3]",
+    "live-action-aov[rvm]",
+]
 
 [project.urls]
 Homepage = "https://github.com/lettidude/LiveActionAOV"
@@ -141,6 +158,36 @@ standalone = "live_action_aov.integrations.standalone:StandaloneAdapter"
 prism      = "live_action_aov.integrations.prism:PrismAdapterStub"
 shotgrid   = "live_action_aov.integrations.shotgrid:ShotGridAdapterStub"
 openpype   = "live_action_aov.integrations.openpype:OpenPypeAdapterStub"
+
+# -----------------------------------------------------------------------------
+# UV — FORCE CUDA TORCH ON LINUX / WINDOWS
+# -----------------------------------------------------------------------------
+# The default `pip install torch` on PyPI hands out the CPU-only wheel
+# on Windows; uv inherits that default. Every neural pass in this tool
+# fails on CPU (fp16 kernels don't exist), so we override the source
+# for `torch` + `torchvision` so `uv sync` pulls CUDA wheels
+# deterministically — no "worked yesterday, broken today after a
+# resync" regressions. macOS falls through to PyPI for MPS support.
+#
+# We use cu128 (not cu124) because RTX 50-series (Blackwell, sm_120)
+# requires torch built against CUDA 12.8+. cu128 wheels work on every
+# generation we care about (RTX 20/30/40/50); cu124 would silently
+# break Blackwell users — which is exactly what bit us on this dev
+# machine (5090) during debugging. Stable cu128 wheels exist from
+# torch 2.7 onwards.
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
 
 # -----------------------------------------------------------------------------
 # TOOL CONFIGURATIONS

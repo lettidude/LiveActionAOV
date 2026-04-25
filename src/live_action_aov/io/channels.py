@@ -52,6 +52,10 @@ CH_MOTION_Y = "motion.y"
 CH_BACK_X = "back.x"
 CH_BACK_Y = "back.y"
 CH_FLOW_CONFIDENCE = "flow.confidence"
+# Explicit occlusion is `1 - flow.confidence`. `flow.confidence` alone
+# works as a mask but compers kept asking "which one is occlusion?" —
+# this gives them the obvious answer without an invert step.
+CH_FLOW_OCCLUSION = "flow.occlusion"
 CH_FORWARD_U = "forward.u"
 CH_FORWARD_V = "forward.v"
 CH_BACKWARD_U = "backward.u"
@@ -62,6 +66,7 @@ FLOW_CHANNELS = (
     CH_BACK_X,
     CH_BACK_Y,
     CH_FLOW_CONFIDENCE,
+    CH_FLOW_OCCLUSION,
     CH_FORWARD_U,
     CH_FORWARD_V,
     CH_BACKWARD_U,
@@ -74,6 +79,14 @@ CH_MATTE_G = "matte.g"
 CH_MATTE_B = "matte.b"
 CH_MATTE_A = "matte.a"
 MATTE_CHANNELS = (CH_MATTE_R, CH_MATTE_G, CH_MATTE_B, CH_MATTE_A)
+
+# --- Ambient occlusion (derived, SSAO post-processor) ---
+# Named under the `ao.` layer so Nuke groups it with its future
+# siblings (ao.bent_normal when we add it, etc.) instead of landing
+# in the "other" catch-all bucket next to un-layered channels.
+CH_AO = "ao.a"
+AO_CHANNELS = (CH_AO,)
+
 
 # --- Semantic masks (dynamic — one per detected concept) ---
 MASK_PREFIX = "mask."
@@ -94,19 +107,23 @@ CANONICAL_CHANNEL_ORDER: tuple[str, ...] = (
     *DEPTH_CHANNELS,
     *POSITION_CHANNELS,
     *NORMAL_CHANNELS,
+    *AO_CHANNELS,
     *FLOW_CHANNELS,
     *MATTE_CHANNELS,
 )
 
 
 __all__ = [
+    "AO_CHANNELS",
     "CANONICAL_CHANNEL_ORDER",
+    "CH_AO",
     "CH_BACKWARD_U",
     "CH_BACKWARD_V",
     "CH_BACK_X",
     "CH_BACK_Y",
     "CH_DEPTH_CONFIDENCE",
     "CH_FLOW_CONFIDENCE",
+    "CH_FLOW_OCCLUSION",
     "CH_FORWARD_U",
     "CH_FORWARD_V",
     "CH_MATTE_A",

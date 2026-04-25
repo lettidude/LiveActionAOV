@@ -37,16 +37,36 @@ if errorlevel 1 (
 )
 call :log "[OK] Python 3.11 provisioned"
 
-REM 4. Sync dependencies
+REM 4. Sync dependencies. `[tool.uv.sources]` in pyproject pins torch
+REM    + torchvision to the pytorch-cu124 index on Windows/Linux, so
+REM    this call pulls the CUDA build deterministically — no separate
+REM    reinstall step needed, no risk of a future `uv sync` silently
+REM    downgrading to the CPU wheel.
 call :log "Installing dependencies (this may take several minutes)..."
-uv sync --extra dev >> %LOG_FILE% 2>&1
+uv sync --extra dev --extra all >> %LOG_FILE% 2>&1
 if errorlevel 1 (
     call :fail "uv sync failed" "See %LOG_FILE% for details. Common causes: network issues, incompatible torch wheel"
     exit /b 1
 )
 call :log "[OK] Dependencies installed"
 
-REM 5. Smoke test
+REM 5. Verify CUDA is actually available. Missing driver or a
+REM    mismatched wheel surface here as a loud warning rather than
+REM    silently breaking the first submit.
+if defined DRIVER_VER (
+    uv run python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" >> %LOG_FILE% 2>&1
+    if errorlevel 1 (
+        call :log "[WARN] torch.cuda.is_available() is False despite NVIDIA driver present."
+        call :log "       Check nvidia-smi output; try re-running after a reboot."
+    ) else (
+        call :log "[OK] torch.cuda.is_available() confirmed"
+    )
+) else (
+    call :log "[WARN] No NVIDIA driver detected — neural passes will refuse to run."
+    call :log "       Install drivers then re-run this script."
+)
+
+REM 6. Smoke test
 uv run liveaov --version >> %LOG_FILE% 2>&1
 if errorlevel 1 (
     call :fail "Smoke test failed" "See %LOG_FILE%"

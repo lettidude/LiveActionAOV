@@ -77,9 +77,30 @@ class DepthCrafterPass(UtilityPass):
         "overlap": 25,
         "num_inference_steps": 5,
         "guidance_scale": 1.0,
-        "inference_short_edge": 640,
+        # DepthCrafter's own preprocessing (see vendored utils.py
+        # `read_video_frames`) scales based on the LONG edge:
+        #   scale = max_res / max(H, W)
+        #   (H, W) = round(H*scale/64)*64, round(W*scale/64)*64
+        # This is NOT the same as short-edge scaling — on wide plates
+        # (2048×1080, 3840×2160, etc.) the two produce very different
+        # inference shapes, only one of which matches the SVD UNet's
+        # trained skip-connection sizes. `max_res=1024` is DepthCrafter's
+        # documented default. Kept the legacy `inference_short_edge`
+        # alias so existing YAML configs keep working.
+        "max_res": 1024,
+        "inference_short_edge": 1024,  # legacy alias, now means max_res
         "precision": "fp16",  # fp16 default — SVD is VRAM-heavy on fp32
+        # DepthCrafter is distributed as a UNet *swap* for Stable Video
+        # Diffusion. Two HF repos are involved: the UNet weights (at
+        # `tencent/DepthCrafter` — `config.json` + `.safetensors` only)
+        # and the rest of the SVD pipeline (text/image encoders, VAE,
+        # scheduler) from `stabilityai/stable-video-diffusion-img2vid-xt`.
+        "unet_model_id": "tencent/DepthCrafter",
+        "svd_base_model_id": "stabilityai/stable-video-diffusion-img2vid-xt",
+        # Legacy alias preserved so existing YAMLs using `model_id` keep
+        # working — `_load_model` reads `unet_model_id` first.
         "model_id": "tencent/DepthCrafter",
+        "cpu_offload": None,  # None | "model" | "sequential"
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -113,21 +134,58 @@ class DepthCrafterPass(UtilityPass):
                 "Install via: pip install live-action-aov[depthcrafter]"
             ) from e
         import torch
-        from diffusers import DiffusionPipeline
 
-        pipe = DiffusionPipeline.from_pretrained(
-            str(self.params["model_id"]),
-            custom_pipeline=str(self.params["model_id"]),
-            torch_dtype=torch.float16 if self.params["precision"] == "fp16" else torch.float32,
-            trust_remote_code=True,
+        from live_action_aov.vendored.depthcrafter.depth_crafter_ppl import (
+            DepthCrafterPipeline,
         )
+        from live_action_aov.vendored.depthcrafter.unet import (
+            DiffusersUNetSpatioTemporalConditionModelDepthCrafter,
+        )
+
+        unet_id = str(self.params.get("unet_model_id") or self.params["model_id"])
+        svd_base = str(self.params["svd_base_model_id"])
+        use_fp16 = str(self.params["precision"]).lower() == "fp16"
+        weight_dtype = torch.float16 if use_fp16 else torch.float32
+
+        # Step 1: DepthCrafter's custom UNet swaps into an SVD base. The
+        # repo at `tencent/DepthCrafter` holds ONLY the UNet weights
+        # (config.json + .safetensors at root), not a full diffusers
+        # pipeline — that's why DiffusionPipeline.from_pretrained was
+        # hitting a 404 looking for model_index.json. Load the UNet
+        # directly with no subfolder.
+        unet = DiffusersUNetSpatioTemporalConditionModelDepthCrafter.from_pretrained(
+            unet_id,
+            low_cpu_mem_usage=True,
+            torch_dtype=weight_dtype,
+        )
+
+        # Step 2: the rest of the pipeline (VAE, scheduler, image encoder)
+        # comes from the SVD-xt base, with DepthCrafter's UNet plugged in.
+        pipe = DepthCrafterPipeline.from_pretrained(
+            svd_base,
+            unet=unet,
+            torch_dtype=weight_dtype,
+            variant="fp16" if use_fp16 else None,
+        )
+
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._dtype = (
-            torch.float16
-            if self.params["precision"] == "fp16" and self._device.type == "cuda"
-            else torch.float32
-        )
-        pipe = pipe.to(self._device)
+        self._dtype = weight_dtype
+
+        # SVD pipelines eat VRAM; expose the standard offload hooks so a
+        # 5090/4090 user can run fp16 inline but a smaller GPU can still
+        # drive the pass via sequential offload.
+        offload = self.params.get("cpu_offload")
+        if offload == "sequential":
+            pipe.enable_sequential_cpu_offload()
+        elif offload == "model":
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe.to(self._device)
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+        except Exception:
+            # xFormers optional — attention runs in PyTorch native if absent.
+            pass
         self._pipeline = pipe
 
     # ------------------------------------------------------------------
@@ -146,10 +204,32 @@ class DepthCrafterPass(UtilityPass):
             raise ValueError(f"DepthCrafter preprocess expects (W, H, W_px, 3), got {frames.shape}")
         self._load_model()
         n, plate_h, plate_w, _ = frames.shape
-        short = int(self.params["inference_short_edge"])
-        scale = short / max(min(plate_h, plate_w), 1)
-        inf_h = max(64, int(round(plate_h * scale / 8)) * 8)
-        inf_w = max(64, int(round(plate_w * scale / 8)) * 8)
+        # SVD-xt's UNet is hard-tied to exactly 576 × 1024. Earlier
+        # attempts to preserve plate aspect (long-edge scaling with
+        # /64 ceiling) worked for 16:9-ish plates but crashed on
+        # anything TALLER than 16:9 — a 2048 × 1408 open-gate plate
+        # rounds to 704 × 1024 and the UNet rejects it:
+        #   "Expected size 72 but got size 88 for tensor number 1"
+        # (72 = 576/8, 88 = 704/8 in latent space.) The same class of
+        # crash hit 16:9 plates at 640-short-edge and 2048×1080 plates
+        # at 512-short-edge earlier in today's debugging. SVD UNet
+        # skip connections have zero tolerance for anything off-spec.
+        #
+        # Fix: force exactly 576 × 1024 regardless of plate aspect.
+        # Depth is a relative scalar field, so non-uniform stretching
+        # at the model input is reversed when we bilinear-upscale the
+        # depth output back to plate dimensions. The per-pixel depth
+        # values remain correct; only the model's intermediate "view"
+        # of the frame is aspect-distorted, which it tolerates well
+        # (tested on 2048×1080, 2048×1152, 2048×1408 plates — all
+        # produce usable depth).
+        #
+        # A letterbox path (preserve aspect, pad to 576×1024, crop
+        # output) is strictly better for model quality but needs the
+        # postprocess pipeline to track unpadded regions. TODO: add
+        # as `input_fit: stretch | letterbox` param in a follow-up.
+        inf_h = 576
+        inf_w = 1024
 
         img = np.clip(frames, 0.0, 1.0).astype(np.float32, copy=False)
         t = torch.from_numpy(img).permute(0, 3, 1, 2)  # (N, 3, H, W)
@@ -174,23 +254,54 @@ class DepthCrafterPass(UtilityPass):
 
     def _infer_window(self, tensor: Any) -> Any:
         """Run the diffusers pipeline on a window. Overridden in tests."""
+        import numpy as np
         import torch
 
         assert self._pipeline is not None
         with torch.no_grad():
+            # `output_type="np"` skips the default PIL conversion in
+            # `video_processor.postprocess_video` — that conversion
+            # gives us `List[List[PIL.Image]]` which crashed the
+            # downstream `.ndim` checks. We want raw floats.
             result = self._pipeline(
                 video=tensor["video"],
                 num_inference_steps=int(self.params["num_inference_steps"]),
                 guidance_scale=float(self.params["guidance_scale"]),
+                output_type="np",
             )
-        # DepthCrafter pipelines typically return a dict with `.depth` or
-        # `.frames`; normalize to a torch.Tensor of shape (N, H, W).
         depth = getattr(result, "depth", None)
         if depth is None and hasattr(result, "frames"):
             depth = result.frames
         if depth is None:
             raise RuntimeError("DepthCrafter pipeline returned no `.depth`/`.frames` attribute")
-        return depth
+        # Normalise the pipeline's output to a 3D (N, H, W) tensor.
+        # `postprocess_video(output_type="np")` can return:
+        #   - an ndarray of shape (batch, N, H, W, 3)          — 5D
+        #   - an ndarray of shape (N, H, W, 3)                 — 4D
+        #   - a list of (N, H, W, 3) arrays (one per batch)    — list of 4D
+        # plus older variants with 3D inner arrays if channels got
+        # squeezed upstream. We peel batch / list wrappers, collapse
+        # the replicated RGB channel, and raise loud if something
+        # exotic comes back — better than passing a 5D tensor into
+        # `F.interpolate` and getting a cryptic spatial-dim error
+        # downstream.
+        if isinstance(depth, list):
+            if not depth:
+                raise RuntimeError("DepthCrafter pipeline returned an empty frames list")
+            depth = depth[0]
+        depth = np.asarray(depth)
+        if depth.ndim == 5:
+            # (batch, N, H, W, C) — take first batch item.
+            depth = depth[0]
+        if depth.ndim == 4 and depth.shape[-1] == 3:
+            # Depth is replicated across RGB channels; collapse to 1.
+            depth = depth.mean(axis=-1)
+        if depth.ndim != 3:
+            raise RuntimeError(
+                f"DepthCrafter pipeline returned unexpected depth shape {depth.shape}; "
+                "expected (N, H, W) or (N, H, W, 3) after peeling batch."
+            )
+        return torch.from_numpy(depth.astype(np.float32))
 
     def postprocess(self, tensor: Any) -> dict[str, np.ndarray]:
         """Upscale window depth to plate res. Returns Z_raw + Z_raw (same

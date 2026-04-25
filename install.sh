@@ -61,14 +61,33 @@ if ! uv python install 3.11 >>"$LOG_FILE" 2>&1; then
 fi
 ok "Python 3.11 provisioned"
 
-# 4. Sync dependencies
+# 4. Sync dependencies. `[tool.uv.sources]` in pyproject pins torch +
+#    torchvision to the pytorch-cu124 index on Windows/Linux; macOS
+#    falls through to PyPI for MPS support. `uv sync` is therefore
+#    authoritative — no separate reinstall step, no risk of a future
+#    resync silently downgrading to the CPU wheel.
 log "Installing dependencies (this may take several minutes)..."
-if ! uv sync --extra dev >>"$LOG_FILE" 2>&1; then
+if ! uv sync --extra dev --extra all >>"$LOG_FILE" 2>&1; then
     fail "uv sync failed" "See $LOG_FILE for details. Common causes: network issues, incompatible torch wheel for platform"
 fi
 ok "Dependencies installed"
 
-# 5. Smoke test
+# 5. Verify CUDA is actually available on Linux (macOS uses MPS so
+#    cuda.is_available() is always False and that's fine).
+if [[ "$(uname)" == "Linux" ]] && [[ -n "${DRIVER_VER:-}" ]]; then
+    if uv run python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" \
+            >>"$LOG_FILE" 2>&1; then
+        ok "torch.cuda.is_available() confirmed"
+    else
+        log "⚠ WARNING: torch.cuda.is_available() is False despite NVIDIA driver present."
+        log "           Check nvidia-smi output; try re-running after a reboot."
+    fi
+elif [[ "$(uname)" == "Linux" ]]; then
+    log "⚠ No NVIDIA driver detected — neural passes will refuse to run."
+    log "  Install drivers then re-run this script."
+fi
+
+# 6. Smoke test
 if ! uv run liveaov --version >>"$LOG_FILE" 2>&1; then
     fail "Smoke test failed — liveaov --version did not succeed" "See $LOG_FILE"
 fi

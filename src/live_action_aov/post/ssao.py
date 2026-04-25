@@ -49,9 +49,12 @@ from typing import Any
 
 import numpy as np
 
-from live_action_aov.io.channels import CH_N_X, CH_N_Y, CH_N_Z, CH_Z
+from live_action_aov.io.channels import CH_AO, CH_N_X, CH_N_Y, CH_N_Z, CH_Z
 
-_AO_CHANNEL = "ao"
+# Use the `ao.a` layered name so Nuke groups this channel into an
+# `ao` layer. Un-prefixed channels fall into the "other" catch-all,
+# which is confusing.
+_AO_CHANNEL = CH_AO
 
 
 class SSAOPost:

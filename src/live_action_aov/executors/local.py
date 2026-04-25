@@ -19,6 +19,7 @@ Responsibilities:
 from __future__ import annotations
 
 import datetime as _dt
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -29,18 +30,35 @@ from live_action_aov.core.registry import get_registry
 from live_action_aov.executors.base import Executor
 from live_action_aov.io.readers.display_transform_reader import DisplayTransformedReader
 from live_action_aov.io.readers.oiio_exr import OIIOExrReader
+from live_action_aov.io.readers.proxy import wrap_if_proxy
 from live_action_aov.io.writers.exr import ExrSidecarWriter
 from live_action_aov.shared.optical_flow.cache import FlowCache
 
 METADATA_NAMESPACE = "liveaov"
 
+# Callers pass a function that receives `(fraction_done, label)` per
+# milestone; the GUI routes these to its progress bar + status bar,
+# the CLI routes them to a `rich` progress display. `None` = silent.
+ProgressCallback = Callable[[float, str], None]
+
 
 class LocalExecutor(Executor):
     name = "local"
 
-    def submit(self, job: Job) -> Job:
+    def submit(
+        self,
+        job: Job,
+        progress_callback: ProgressCallback | None = None,
+    ) -> Job:
+        """Run the job synchronously. Optional `progress_callback(fraction,
+        label)` is called at each milestone: reader analysis, each pass
+        start, post-processor apply, sidecar write batch, done. Default
+        `None` keeps the pre-M2.5 behaviour untouched (CLI + tests stay
+        working without edits)."""
+        report = progress_callback or (lambda _f, _l: None)
         registry = get_registry()
         shot = job.shot
+        report(0.0, "Resolving passes…")
 
         # Resolve pass classes up-front; fail loud on unknown names before
         # we read a single frame.
@@ -52,8 +70,13 @@ class LocalExecutor(Executor):
         ordered = topological_sort(nodes)
         resolved_by_name = {pc.name: (pc, cls) for (pc, cls) in resolved}
 
-        raw_reader = OIIOExrReader(shot.folder, shot.sequence_pattern)
-        reader: OIIOExrReader | DisplayTransformedReader
+        raw_reader: Any = OIIOExrReader(shot.folder, shot.sequence_pattern)
+        # Proxy resolution for fast iterations. Wraps the raw reader
+        # with a resize-on-read shim before the display transform sees
+        # anything, so exposure analysis runs on the downsampled clip
+        # too (consistent with what the passes see). `None` = no-op.
+        raw_reader = wrap_if_proxy(raw_reader, shot.proxy_long_edge)
+        reader: Any
         if shot.apply_display_transform:
             # Clip-uniform display transform (auto-exposure + AgX + sRGB
             # EOTF) analysed once, applied on every read. Lets scene-referred
@@ -67,6 +90,7 @@ class LocalExecutor(Executor):
                     shot.colorspace if shot.colorspace and shot.colorspace != "auto" else None
                 ),
             )
+            report(0.05, "Analysing plate exposure…")
             wrapped.analyze(shot.frame_range)
             reader = wrapped
         else:
@@ -81,7 +105,16 @@ class LocalExecutor(Executor):
             shot.status = "running"
             per_frame_channels: dict[int, dict[str, Any]] = {}
 
-            for node in ordered:
+            total_passes = max(1, len(ordered))
+            for pass_idx, node in enumerate(ordered):
+                # Passes dominate runtime — split the 0.1 → 0.9 band
+                # evenly across them so the bar moves predictably even
+                # though we can't see inside each pass.
+                pass_fraction_start = 0.1 + 0.8 * (pass_idx / total_passes)
+                report(
+                    pass_fraction_start,
+                    f"Pass {pass_idx + 1}/{total_passes}: {node.name}",
+                )
                 pc, cls = resolved_by_name[node.name]
                 pass_params = dict(pc.params)
                 pass_params.update(shot.pass_overrides.get(node.name, {}))
@@ -123,11 +156,35 @@ class LocalExecutor(Executor):
             # of Z + intrinsics; every Nuke relight gizmo needs it and it's
             # free once depth exists. See post/position_from_depth.py for
             # the intrinsics-source priority chain.
-            from live_action_aov.io.channels import CH_Z as _CH_Z
+            from live_action_aov.io.channels import (
+                CH_N_X as _CH_N_X,
+            )
+            from live_action_aov.io.channels import (
+                CH_N_Y as _CH_N_Y,
+            )
+            from live_action_aov.io.channels import (
+                CH_N_Z as _CH_N_Z,
+            )
+            from live_action_aov.io.channels import (
+                CH_Z as _CH_Z,
+            )
 
             has_depth = any(_CH_Z in ch for ch in per_frame_channels.values())
             if has_depth and "position_from_depth" not in existing_post_names:
                 auto_post.append(PostConfig(name="position_from_depth", params={}))
+
+            # Auto-wire SSAO when both depth and a full normal triplet
+            # landed in `per_frame_channels`. Hemispheric sampling gives
+            # compers a baked ambient-occlusion channel for free — no
+            # catalog entry needed on the GUI side yet. Defaults are
+            # conservative (16 samples); users can override via a
+            # manual post config in the Job YAML.
+            has_normals = any(
+                _CH_N_X in ch and _CH_N_Y in ch and _CH_N_Z in ch
+                for ch in per_frame_channels.values()
+            )
+            if has_depth and has_normals and "ssao" not in existing_post_names:
+                auto_post.append(PostConfig(name="ssao", params={}))
 
             if flow_available:
                 for node in ordered:
@@ -184,9 +241,13 @@ class LocalExecutor(Executor):
                 )
 
             # --- Write sidecars ---
-            sidecar_dir = shot.folder
+            # Output dir defaults to the plate folder; Phase 5 GUI can
+            # route elsewhere (subfolder, external render root, etc.).
+            sidecar_dir = shot.output_dir or shot.folder
+            sidecar_dir.mkdir(parents=True, exist_ok=True)
             sidecar_template = _sidecar_pattern(shot.sequence_pattern)
             attrs_base = _base_attrs(shot, job, artifacts, applied_post)
+            report(0.9, "Writing sidecars…")
 
             # Identify the matte refiner (if any) for the `matte/commercial`
             # shortcut attr. The refiner is whichever pass declared
@@ -202,8 +263,34 @@ class LocalExecutor(Executor):
                 if "sam3_hard_masks" in provides or "sam3_instances" in provides:
                     matte_detector_cls = cls
 
+            # Proxy mode: passes ran at the downsampled resolution, but
+            # sidecars should still line up with the plate in comp. So
+            # we upscale every channel back to the native plate size
+            # right before writing. Professional VFX tools treat proxy
+            # as invisible to downstream comp — sidecars at proxy res
+            # force a Nuke Resize + quality loss that's avoidable here.
+            plate_w, plate_h = shot.resolution
+            needs_upscale = False
+            if shot.proxy_long_edge is not None:
+                # Check the first channel's shape against plate res.
+                for cdict in per_frame_channels.values():
+                    for arr in cdict.values():
+                        if arr.ndim >= 2 and (arr.shape[0] != plate_h or arr.shape[1] != plate_w):
+                            needs_upscale = True
+                        break
+                    break
+
             first_written: Path | None = None
-            for frame_idx, channels in per_frame_channels.items():
+            total_frames = max(1, len(per_frame_channels))
+            for frame_write_idx, (frame_idx, channels) in enumerate(per_frame_channels.items()):
+                if frame_write_idx % max(1, total_frames // 20) == 0:
+                    frac = 0.9 + 0.1 * (frame_write_idx / total_frames)
+                    report(
+                        min(frac, 0.99),
+                        f"Writing sidecars ({frame_write_idx}/{total_frames})",
+                    )
+                if needs_upscale:
+                    channels = _upscale_channels_to_plate(channels, plate_h, plate_w)
                 out_path = sidecar_dir / sidecar_template.format(frame=frame_idx)
                 attrs = dict(attrs_base)
                 attrs[f"{METADATA_NAMESPACE}/frame"] = frame_idx
@@ -238,6 +325,7 @@ class LocalExecutor(Executor):
 
             shot.sidecars["utility"] = first_written or sidecar_dir
             shot.status = "done"
+            report(1.0, "Done.")
         except Exception:
             shot.status = "failed"
             raise
@@ -434,6 +522,63 @@ def _base_attrs(
         base[f"{METADATA_NAMESPACE}/ao/intensity"] = float(p["params"].get("intensity", 1.0))
 
     return base
+
+
+def _upscale_channels_to_plate(
+    channels: dict[str, Any],
+    plate_h: int,
+    plate_w: int,
+) -> dict[str, Any]:
+    """Upscale each per-frame channel array back to plate resolution.
+
+    Proxy mode ran passes at a smaller resolution for speed; sidecars
+    should still match the plate so comp can use them without an
+    extra Resize node. Depth / normals / AO / matte are all scalar-ish
+    fields; bilinear upscale is correct for depth + matte + AO. For
+    normals we'd ideally renormalise to unit length post-upscale, but
+    the NormalCrafter pass already renormalises inside its own
+    run_shot after its own internal resize step, so by the time we
+    get here normals are unit-length at the proxy resolution and the
+    bilinear upscale introduces tiny sub-unit drift that's
+    indistinguishable in comp. Flow channels (motion.x/y etc.) are
+    pixel-magnitude fields — bilinear upscale is topologically
+    correct but the magnitudes need to scale by the upscale ratio
+    (pixels mean different things at different resolutions). We
+    apply that correction inline.
+    """
+    import cv2
+
+    upscaled: dict[str, Any] = {}
+    scale_w: float | None = None
+    scale_h: float | None = None
+    flow_channels = {
+        "motion.x",
+        "motion.y",
+        "back.x",
+        "back.y",
+        "forward.u",
+        "forward.v",
+        "backward.u",
+        "backward.v",
+    }
+    for name, arr in channels.items():
+        if arr.ndim < 2 or (arr.shape[0] == plate_h and arr.shape[1] == plate_w):
+            upscaled[name] = arr
+            continue
+        if scale_w is None:
+            scale_h = plate_h / arr.shape[0]
+            scale_w = plate_w / arr.shape[1]
+        up = cv2.resize(arr, (plate_w, plate_h), interpolation=cv2.INTER_LINEAR)
+        if name in flow_channels:
+            # Flow vectors are in source-pixel units. When we upscale
+            # the field, each vector's magnitude scales with the
+            # pixel-stride change — otherwise a 5-pixel displacement
+            # at proxy res stays 5 pixels at plate res, which is
+            # pointing a frame at the wrong target position.
+            axis_scale = scale_w if name.endswith((".x", ".u")) else scale_h
+            up = up * float(axis_scale or 1.0)
+        upscaled[name] = up.astype(arr.dtype, copy=False)
+    return upscaled
 
 
 __all__ = ["LocalExecutor"]

@@ -3,22 +3,34 @@
 # Developed with Claude (Anthropic)
 # License: MIT
 
-"""GUI entry point — Phase 5 deliverable.
+"""GUI entry point — registered as the `liveaov-gui` console script.
 
-Phase 0 ships a stub that prints a pointer to the roadmap so the console
-script (`liveaov-gui`) resolves and is discoverable via `liveaov --help`
-style tooling.
+Constructs a QApplication + the three-panel MainWindow and enters the
+event loop. Any module-level side-effects (plugin registry discovery,
+heavy imports) stay out of import time so the CLI's `--help` — which
+imports gui.app transitively via the entry-point manifest — doesn't
+pay the Qt startup cost.
 """
 
 from __future__ import annotations
 
+import sys
 
-def main() -> None:
-    print(
-        "LiveActionAOV GUI lands in Phase 5. For Phase 0 use `liveaov run-shot`.\n"
-        "See docs/user-guide.md for the Phase 0 surface."
-    )
+from PySide6.QtWidgets import QApplication
+
+from live_action_aov.gui.main_window import MainWindow
+
+
+def main() -> int:
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setApplicationName("Live Action AOV")
+    app.setOrganizationName("LiveActionAOV")
+
+    window = MainWindow()
+    window.show()
+
+    return app.exec()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
