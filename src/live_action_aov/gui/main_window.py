@@ -177,13 +177,22 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about)
 
     def _show_about(self) -> None:
-        QMessageBox.about(
-            self,
-            "About Live Action AOV",
-            "Live Action AOV — Shot Prep GUI (Phase 5, Milestone 2).\n\n"
-            "Submit runs the pipeline locally via LocalExecutor.\n"
-            "Deadline submit and session autosave land in later milestones.",
+        from live_action_aov import __version__
+
+        repo_url = "https://github.com/lettidude/LiveActionAOV"
+        contact = "LeonardoVFX@gmail.com"
+        body = (
+            f"<h3 style='margin-bottom:2px;'>Live Action AOV</h3>"
+            f"<p style='margin-top:0; color:#888;'>"
+            f"v{__version__} &nbsp;·&nbsp; MIT License</p>"
+            f"<p>AI-driven VFX plate preprocessor — depth, normals, motion "
+            f"and mattes as sidecar EXRs.</p>"
+            f"<p><b>Author:</b> Leonardo Paolini<br>"
+            f"<b>Contact:</b> <a href='mailto:{contact}'>{contact}</a><br>"
+            f"<b>Repository:</b> <a href='{repo_url}'>{repo_url}</a></p>"
+            f"<p style='color:#888;'><i>Powered by Claude (Anthropic).</i></p>"
         )
+        QMessageBox.about(self, "About Live Action AOV", body)
 
     # --- Submit lifecycle ---
 
@@ -191,15 +200,11 @@ class MainWindow(QMainWindow):
         # Submit iterates every queued shot with passes. The button
         # enables when there's at least one such shot AND nothing is
         # currently running.
-        queued_with_passes = [
-            s for s in self._registry.shots() if s.queued and s.enabled_passes
-        ]
+        queued_with_passes = [s for s in self._registry.shots() if s.queued and s.enabled_passes]
         any_running = any(s.status == "running" for s in self._registry.shots())
         self._submit_btn.setEnabled(bool(queued_with_passes) and not any_running)
         n = len(queued_with_passes)
-        self._submit_btn.setText(
-            "Submit local" if n <= 1 else f"Submit local  ({n} shots)"
-        )
+        self._submit_btn.setText("Submit local" if n <= 1 else f"Submit local  ({n} shots)")
         cur = self._registry.current()
         self._reveal_btn.setEnabled(cur is not None and cur.last_sidecar_dir is not None)
         del shot
@@ -306,12 +311,8 @@ class MainWindow(QMainWindow):
         else:
             target.status = "failed"
             target.last_error = result.error or "unknown error"
-            self._log_panel.append_error(
-                f"Submit failed — {target.name}: {target.last_error}"
-            )
-            self._log_panel.append_lifecycle(
-                f"===== Submit FAILED: {target.name} ====="
-            )
+            self._log_panel.append_error(f"Submit failed — {target.name}: {target.last_error}")
+            self._log_panel.append_lifecycle(f"===== Submit FAILED: {target.name} =====")
             # In a batch, a failure on one shot shouldn't nuke the
             # whole queue — warn the user and keep going. For a single
             # shot, surface the error as a blocking dialog.
@@ -322,9 +323,7 @@ class MainWindow(QMainWindow):
                     result.error or "unknown error",
                 )
             else:
-                self.statusBar().showMessage(
-                    f"'{target.name}' failed — continuing batch", 8_000
-                )
+                self.statusBar().showMessage(f"'{target.name}' failed — continuing batch", 8_000)
         self._registry.notify_updated(target)
 
         # Pop the head of the queue (whichever shot just finished) and
@@ -352,9 +351,7 @@ def _build_cuda_banner(state: CudaState, parent: QMainWindow) -> QWidget | None:
         return None
     banner = QFrame(parent)
     banner.setFrameShape(QFrame.Shape.NoFrame)
-    banner.setStyleSheet(
-        "background: #3a2a15; border-bottom: 1px solid #6a4820;"
-    )
+    banner.setStyleSheet("background: #3a2a15; border-bottom: 1px solid #6a4820;")
     banner.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     layout = QHBoxLayout(banner)
     layout.setContentsMargins(12, 6, 12, 6)
@@ -374,9 +371,7 @@ def _build_cuda_banner(state: CudaState, parent: QMainWindow) -> QWidget | None:
 
     details_btn = QPushButton("Details / How to fix")
     details_btn.clicked.connect(
-        lambda: QMessageBox.information(
-            parent, "CUDA preflight", state.advisory
-        )
+        lambda: QMessageBox.information(parent, "CUDA preflight", state.advisory)
     )
     layout.addWidget(details_btn)
     return banner
@@ -393,9 +388,7 @@ def _collect_nc_entries(shots: list[ShotState]) -> list[tuple[str, str, str]]:
     return entries
 
 
-def _confirm_nc_consent(
-    parent: QMainWindow, entries: list[tuple[str, str, str]]
-) -> bool:
+def _confirm_nc_consent(parent: QMainWindow, entries: list[tuple[str, str, str]]) -> bool:
     """Single per-submit confirmation dialog for non-commercial use.
 
     We can't enforce the CC-BY-NC-4.0 terms technically — they govern
