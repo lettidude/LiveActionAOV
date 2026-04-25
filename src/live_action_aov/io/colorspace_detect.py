@@ -36,6 +36,8 @@ from typing import Any
 import numpy as np
 
 # Supported colorspace names. The UI dropdown renders these plus `auto`.
+# Log spaces are grouped after the linear/display set so the dropdown
+# reads "scene-linear / display / log" in that order.
 SUPPORTED_COLORSPACES: tuple[str, ...] = (
     "auto",
     "lin_rec709",
@@ -44,6 +46,12 @@ SUPPORTED_COLORSPACES: tuple[str, ...] = (
     "srgb_display",
     "rec709_display",
     "linear",
+    "arri_logc3",  # Alexa Classic / Mini / LF / Mini LF, EI800
+    "arri_logc4",  # Alexa 35 (2022+)
+    "sony_slog3",  # FX-series, FS-series, original Venice
+    "sony_slog3_cine",  # S-Gamut3.Cine variant
+    "sony_slog3_venice",  # Venice with S-Gamut3
+    "sony_slog3_venice_cine",  # Venice with S-Gamut3.Cine
 )
 
 # Primaries used for chromaticity-based inference. Values are
@@ -82,6 +90,19 @@ def detect_colorspace(
     pixel sample. Returns a structured result with the detected value,
     a human-readable reason for the UI, and a confidence flag.
     """
+    # Ladder step 0: camera metadata wins over `oiio:ColorSpace`.
+    # ARRI Raw / Sony X-OCN exports routinely ship with a LYING
+    # `oiio:ColorSpace = 'lin_rec709'` header (OIIO's default stamp)
+    # on footage that is actually Log-encoded. The camera metadata
+    # attrs (`Arri Raw.Gamma Value`, `uniColor.gamma`,
+    # `tech_details_color_space`, Sony equivalents…) are written by
+    # the camera / DIT software and do NOT lie. Run this first so a
+    # LogC4 AWG4 plate gets decoded correctly even when the header
+    # says otherwise.
+    camera_hit = _detect_from_camera_metadata(attrs)
+    if camera_hit is not None:
+        return camera_hit
+
     # Ladder step 1-2: explicit colorspace attributes (several spellings).
     for key in ("colorspace", "OCIO/colorspace", "ocio:colorspace", "oiio:ColorSpace"):
         v = attrs.get(key)
@@ -129,13 +150,13 @@ def _normalize_colorspace_name(raw: str) -> str:
     set to render. Anything we don't recognise passes through verbatim;
     the dropdown renders it as-is and the user picks an override.
     """
-    norm = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    norm = raw.strip().lower().replace(" ", "_").replace("-", "_").replace(".", "_")
     table = {
         "linear": "linear",
         "scene_linear": "linear",
         "lin_rec709": "lin_rec709",
         "linear_rec709": "lin_rec709",
-        "linear_rec.709": "lin_rec709",
+        "linear_rec_709": "lin_rec709",
         "rec709_linear": "lin_rec709",
         "acescg": "acescg",
         "aces___acescg": "acescg",
@@ -148,11 +169,77 @@ def _normalize_colorspace_name(raw: str) -> str:
         "srgb_encoded": "srgb_display",
         "rec709": "rec709_display",
         "rec709_display": "rec709_display",
-        "rec.709": "rec709_display",
-        "gamma_2.2": "srgb_display",
+        "gamma_2_2": "srgb_display",
         "gamma_22": "srgb_display",
+        # Log encodings — many spellings in the wild.
+        "arri_logc3": "arri_logc3",
+        "arri_logc3_ei800": "arri_logc3",
+        "logc3": "arri_logc3",
+        "arri_logc": "arri_logc3",  # "LogC" with no version = LogC3 historically
+        "arri_logc4": "arri_logc4",
+        "logc4": "arri_logc4",
+        "sony_slog3": "sony_slog3",
+        "slog3": "sony_slog3",
+        "s_log3": "sony_slog3",
+        "sony_slog3_cine": "sony_slog3_cine",
+        "slog3_cine": "sony_slog3_cine",
+        "s_log3_s_gamut3": "sony_slog3",
+        "s_log3_s_gamut3_cine": "sony_slog3_cine",
     }
     return table.get(norm, raw)
+
+
+# Markers we look for in camera-metadata attr values to infer the
+# capture-space. Each entry: (substring to match case-insensitively,
+# canonical colorspace, short label for the reason string).
+_CAMERA_METADATA_MARKERS: tuple[tuple[str, str, str], ...] = (
+    # ARRI — LogC4 is the default on Alexa 35 (2022+). LogC3 order
+    # matters: match LogC4 *before* the generic LogC fallback so a
+    # "LogC4 AWG4" string doesn't get mis-bucketed as LogC3.
+    ("logc4", "arri_logc4", "ARRI LogC4"),
+    ("logc3", "arri_logc3", "ARRI LogC3 EI800"),
+    ("arri logc", "arri_logc3", "ARRI LogC (legacy, defaulting to LogC3)"),
+    ("alexa wide gamut 4", "arri_logc4", "ARRI LogC4 (AWG4 gamut)"),
+    ("awg4", "arri_logc4", "ARRI LogC4 (AWG4 gamut)"),
+    # Sony — S-Log3 is what modern cameras ship (FX3/FX6/FX9/Venice).
+    # S-Log2 is legacy and not supported yet; if we detect it, fall
+    # through to the existing ladder rather than lie.
+    ("s-log3 s-gamut3.cine", "sony_slog3_cine", "Sony S-Log3 S-Gamut3.Cine"),
+    ("slog3 sgamut3.cine", "sony_slog3_cine", "Sony S-Log3 S-Gamut3.Cine"),
+    ("s-log3", "sony_slog3", "Sony S-Log3"),
+    ("slog3", "sony_slog3", "Sony S-Log3"),
+)
+
+
+def _detect_from_camera_metadata(attrs: dict[str, Any]) -> DetectedColorspace | None:
+    """Scan every string-valued attribute for camera-metadata markers.
+
+    This is the single most important detection step for ARRI / Sony
+    footage: the `oiio:ColorSpace` header is written by OIIO with no
+    domain knowledge, and is routinely wrong on Log-encoded EXRs
+    (the ARRI Reference Tool default-exports LogC4 AWG4 with a
+    `lin_rec709` tag). The camera manufacturer's own metadata —
+    `Arri Raw.Gamma Value`, `uniColor.gamma`, `uniColor.gamut`,
+    `tech_details_color_space`, Sony's `CameraColorSpace` / similar
+    — is written by the DIT / camera and does not lie.
+
+    Returns None if no marker was found, letting the caller fall
+    through to the rest of the detection ladder.
+    """
+    # Scan key + value together so e.g. a key like `uniColor.gamut`
+    # holding "Arri AlexaWideGamut4" still hits the "awg4" marker.
+    for key, value in attrs.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        haystack = f"{key} {value}".lower()
+        for needle, canonical, label in _CAMERA_METADATA_MARKERS:
+            if needle in haystack:
+                return DetectedColorspace(
+                    detected=canonical,
+                    reason=f"camera metadata: `{key}` = {value!r} -> {label}",
+                    confident=True,
+                )
+    return None
 
 
 def _match_chromaticities(

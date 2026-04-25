@@ -12,6 +12,7 @@ it can't find one, it falls back to the Shot's configured colorspace.
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any
 
 import numpy as np
@@ -25,17 +26,88 @@ except ImportError:  # pragma: no cover
     HAS_OCIO = False
 
 
+# Config + processor caches. OCIO's `CreateFromBuiltinConfig` and
+# `getProcessor` are NOT safe to call concurrently — the preview loader
+# drives rapid colorspace/exposure changes from the Qt thread pool and
+# racing these calls segfaults the process (observed: slider drag →
+# exit code 139). Single lock guards both caches; building an OCIO
+# processor is cheap once the config is built, so a global mutex is
+# fine even under heavy preview scrubbing.
+_ocio_lock = threading.Lock()
+_ocio_config_cache: Any = None
+_ocio_processor_cache: dict[tuple[str, str], Any] = {}
+
+
+# Map our canonical short names to the colorspace names the OCIO studio-
+# config uses. Keeps the GUI / CLI vocabulary stable even as upstream
+# renames the config entries; any alias the user types (e.g. directly
+# `"ARRI LogC4"` from a Nuke OCIO node) still passes through unchanged
+# because we fall back to the literal string below.
+_CANONICAL_TO_OCIO: dict[str, str] = {
+    "acescg": "ACEScg",
+    "aces2065_1": "ACES2065-1",
+    "lin_rec709": "Linear Rec.709 (sRGB)",
+    "linear": "Linear Rec.709 (sRGB)",
+    "srgb_display": "sRGB - Display",
+    "rec709_display": "Rec.1886 Rec.709 - Display",
+    # Log sources — OCIO studio-config ships inverse curves + gamut
+    # conversion in a single named transform so a single getProcessor
+    # call takes us from LogC-encoded AWG4 pixels to ACEScg linear.
+    "arri_logc3": "ARRI LogC3 (EI800)",
+    "arri_logc4": "ARRI LogC4",
+    "sony_slog3": "S-Log3 S-Gamut3",
+    "sony_slog3_cine": "S-Log3 S-Gamut3.Cine",
+    "sony_slog3_venice": "S-Log3 Venice S-Gamut3",
+    "sony_slog3_venice_cine": "S-Log3 Venice S-Gamut3.Cine",
+}
+
+
+def _resolve_ocio_name(name: str) -> str:
+    """Translate a canonical-short name to its studio-config name. If the
+    input isn't in the table it's passed through verbatim — OCIO will
+    raise a clear `ColorSpace not found` error if it's also not a valid
+    studio-config entry."""
+    return _CANONICAL_TO_OCIO.get(name, name)
+
+
 def get_config() -> Any:
-    """Return the active OCIO config (from $OCIO or built-in default)."""
+    """Return the active OCIO config (from $OCIO or built-in default).
+
+    Result is cached under a thread lock. Preview workers can call
+    this concurrently during a scrub or slider drag, and OCIO's
+    `CreateFromBuiltinConfig` is not safe under concurrent entry
+    (observed segfault in 2.4.0). Building the studio config is
+    also ~100ms, so caching removes a chunk of latency even in the
+    single-threaded case.
+    """
+    global _ocio_config_cache
     if not HAS_OCIO:
         raise RuntimeError("PyOpenColorIO not available")
-    if "OCIO" in os.environ:
-        return ocio.Config.CreateFromEnv()
-    # Fall back to the studio-default built-in if no $OCIO is set.
-    try:
-        return ocio.Config.CreateFromBuiltinConfig("studio-config-latest")
-    except AttributeError:
-        return ocio.Config.CreateFromFile(ocio.GetDefaultConfig().getName())
+    with _ocio_lock:
+        if _ocio_config_cache is not None:
+            return _ocio_config_cache
+        if "OCIO" in os.environ:
+            cfg = ocio.Config.CreateFromEnv()
+        else:
+            try:
+                cfg = ocio.Config.CreateFromBuiltinConfig("studio-config-latest")
+            except AttributeError:
+                cfg = ocio.Config.CreateFromFile(ocio.GetDefaultConfig().getName())
+        _ocio_config_cache = cfg
+        return cfg
+
+
+def _get_cpu_processor(cfg: Any, from_space: str, to_space: str) -> Any:
+    """Look up (or build-and-cache) a default CPU processor for the
+    given src → dst pair. Sharing the lock with `get_config` so config
+    build + processor build are serialised against each other."""
+    key = (from_space, to_space)
+    with _ocio_lock:
+        proc = _ocio_processor_cache.get(key)
+        if proc is None:
+            proc = cfg.getProcessor(from_space, to_space).getDefaultCPUProcessor()
+            _ocio_processor_cache[key] = proc
+    return proc
 
 
 def to_linear(frames: np.ndarray, from_space: str, config: Any | None = None) -> np.ndarray:
@@ -54,8 +126,12 @@ def to_linear(frames: np.ndarray, from_space: str, config: Any | None = None) ->
             cfg.getCanonicalName("scene_linear")
             or cfg.getRoleColorSpace(ocio.ROLE_SCENE_LINEAR).getName()
         )
-        proc = cfg.getProcessor(from_space, dst).getDefaultCPUProcessor()
-        arr = np.ascontiguousarray(frames.astype(np.float32, copy=False))
+        proc = _get_cpu_processor(cfg, _resolve_ocio_name(from_space), dst)
+        # `applyRGB` mutates its input in place. Force a copy here so
+        # callers that reuse the source array (e.g. preview loop
+        # iterating colorspaces on the same tile) don't get their
+        # pixels silently overwritten.
+        arr = np.ascontiguousarray(frames, dtype=np.float32).copy()
         flat = arr.reshape(-1, arr.shape[-1])
         proc.applyRGB(flat) if arr.shape[-1] == 3 else proc.applyRGBA(flat)
         return flat.reshape(arr.shape)
@@ -70,8 +146,10 @@ def from_linear(frames: np.ndarray, to_space: str, config: Any | None = None) ->
             cfg.getCanonicalName("scene_linear")
             or cfg.getRoleColorSpace(ocio.ROLE_SCENE_LINEAR).getName()
         )
-        proc = cfg.getProcessor(src, to_space).getDefaultCPUProcessor()
-        arr = np.ascontiguousarray(frames.astype(np.float32, copy=False))
+        proc = _get_cpu_processor(cfg, src, _resolve_ocio_name(to_space))
+        # See `to_linear`: defensive copy so callers don't suffer
+        # silent in-place mutation of their source array.
+        arr = np.ascontiguousarray(frames, dtype=np.float32).copy()
         flat = arr.reshape(-1, arr.shape[-1])
         proc.applyRGB(flat) if arr.shape[-1] == 3 else proc.applyRGBA(flat)
         return flat.reshape(arr.shape)
