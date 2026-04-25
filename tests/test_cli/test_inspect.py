@@ -45,7 +45,7 @@ runner = CliRunner()
 def _write_fake_sidecar(path: Path) -> None:
     """Write a sidecar whose shape mirrors a real `flow,matte` run: one
     dynamic `mask.person` channel, all four matte slots (r populated, b/g/a
-    zero), plus the full `liveActionAOV/matte/*` metadata block."""
+    zero), plus the full `liveaov/matte/*` metadata block."""
     h, w = 8, 12
     # matte.r has real content; the other three slots are zero (mirrors
     # what RVM emits when there's one hero in slot r).
@@ -61,13 +61,13 @@ def _write_fake_sidecar(path: Path) -> None:
         CH_MATTE_A: zeros,
     }
     attrs = {
-        "liveActionAOV/matte/commercial": "true",
-        "liveActionAOV/matte/detector": "sam3_matte",
-        "liveActionAOV/matte/refiner": "rvm_refiner",
-        "liveActionAOV/matte/concepts": "person",
-        "liveActionAOV/matte/hero_r/label": "person",
-        "liveActionAOV/matte/hero_r/track_id": 3,
-        "liveActionAOV/matte/hero_r/score": 0.91,
+        "liveaov/matte/commercial": "true",
+        "liveaov/matte/detector": "sam3_matte",
+        "liveaov/matte/refiner": "rvm_refiner",
+        "liveaov/matte/concepts": "person",
+        "liveaov/matte/hero_r/label": "person",
+        "liveaov/matte/hero_r/track_id": 3,
+        "liveaov/matte/hero_r/score": 0.91,
     }
     ExrSidecarWriter().write_frame(path, channels, attrs=attrs)
 
@@ -150,9 +150,9 @@ def test_inspect_json_has_pinned_top_level_schema(tmp_path: Path) -> None:
     buckets = {c["bucket"] for c in doc["channels"]}
     assert buckets <= {"canonical", "matte", "mask", "other"}
 
-    # metadata: the full liveActionAOV/* slice, flat dict keyed by attr name.
-    assert doc["metadata"]["liveActionAOV/matte/commercial"] == "true"
-    assert int(doc["metadata"]["liveActionAOV/matte/hero_r/track_id"]) == 3
+    # metadata: the full liveaov/* slice, flat dict keyed by attr name.
+    assert doc["metadata"]["liveaov/matte/commercial"] == "true"
+    assert int(doc["metadata"]["liveaov/matte/hero_r/track_id"]) == 3
 
     # heroes: four-slot list, r populated and the others empty.
     heroes_by_slot = {h["slot"]: h for h in doc["heroes"]}

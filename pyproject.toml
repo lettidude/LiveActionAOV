@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [
-    { name = "TODO", email = "TODO@TODO" }
+    { name = "Leonardo Paolini", email = "LeonardoVFX@gmail.com" }
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -110,10 +110,10 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/TODO/live-action-aov"
-Documentation = "https://github.com/TODO/live-action-aov/blob/main/docs/user-guide.md"
-Repository = "https://github.com/TODO/live-action-aov"
-Issues = "https://github.com/TODO/live-action-aov/issues"
+Homepage = "https://github.com/lettidude/LiveActionAOV"
+Documentation = "https://github.com/lettidude/LiveActionAOV/blob/main/docs/user-guide.md"
+Repository = "https://github.com/lettidude/LiveActionAOV"
+Issues = "https://github.com/lettidude/LiveActionAOV/issues"
 
 [project.scripts]
 liveaov = "live_action_aov.cli.app:main"

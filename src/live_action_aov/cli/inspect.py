@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Sidecar EXR inspector — rendering logic for `liveaov inspect`.
 
 Separated from the Typer command so the pure render path is unit-testable
@@ -18,7 +23,7 @@ Design notes:
   tolerance — the integration test asserts the same envelope, so any
   sidecar that trips the warning here would also trip CI.
 - **Hero summary** is a one-line-per-slot read from the
-  `liveActionAOV/matte/hero_{r,g,b,a}/{label,track_id,score}` attrs.
+  `liveaov/matte/hero_{r,g,b,a}/{label,track_id,score}` attrs.
   Empty slots are labeled `(empty)`; a sidecar with no heroes at all
   (no `matte/detector` attr) skips the block entirely.
 - **JSON output** pins a stable top-level key set —
@@ -80,9 +85,9 @@ class SidecarReport:
     width: int
     height: int
     channels: list[ChannelStat]
-    metadata: dict[str, Any]  # flat `liveActionAOV/*` subset
+    metadata: dict[str, Any]  # flat `liveaov/*` subset
     heroes: list[HeroSlot] = field(default_factory=list)
-    has_matte_metadata: bool = False  # True iff any liveActionAOV/matte/*
+    has_matte_metadata: bool = False  # True iff any liveaov/matte/*
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +105,7 @@ def build_report(path: Path | str) -> SidecarReport:
     channels = [_channel_stat(name, pixels, names) for name in names]
     metadata = _filter_liveaov_attrs(attrs)
     heroes = _build_hero_summary(metadata)
-    has_matte_metadata = any(k.startswith("liveActionAOV/matte/") for k in metadata)
+    has_matte_metadata = any(k.startswith("liveaov/matte/") for k in metadata)
 
     return SidecarReport(
         file=str(path),
@@ -149,21 +154,19 @@ def _filter_liveaov_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
     (width / height / nchannels / channelnames / pixelAspectRatio) and anything
     not under our namespace."""
     return {
-        k: v
-        for k, v in sorted(attrs.items())
-        if isinstance(k, str) and k.startswith("liveActionAOV/")
+        k: v for k, v in sorted(attrs.items()) if isinstance(k, str) and k.startswith("liveaov/")
     }
 
 
 def _build_hero_summary(metadata: dict[str, Any]) -> list[HeroSlot]:
-    """Translate `liveActionAOV/matte/hero_{slot}/{field}` attrs into HeroSlots.
+    """Translate `liveaov/matte/hero_{slot}/{field}` attrs into HeroSlots.
 
     Any slot with at least one field present is emitted; slots with no fields
     at all are emitted as empty placeholders so the output table always
     shows r/g/b/a. If no hero attrs exist at all, returns `[]` so callers
     can skip the Heroes block entirely.
     """
-    prefix = "liveActionAOV/matte/hero_"
+    prefix = "liveaov/matte/hero_"
     any_field = any(k.startswith(prefix) for k in metadata)
     if not any_field:
         return []
@@ -239,18 +242,16 @@ def format_text(report: SidecarReport) -> str:
                 f"[{c.min:.3f}, {c.max:.3f}]  mean={c.mean:.3f}{warn}"
             )
 
-    # Metadata block (only liveActionAOV/*, already filtered).
+    # Metadata block (only liveaov/*, already filtered).
     lines.append("")
     if report.metadata:
-        lines.append("liveActionAOV metadata:")
+        lines.append("liveaov metadata:")
         meta_key_width = max(len(k) for k in report.metadata)
         for k, v in report.metadata.items():
-            short = k.removeprefix("liveActionAOV/")
-            lines.append(
-                f"  {short.ljust(meta_key_width - len('liveActionAOV/'))}  = {_fmt_value(v)}"
-            )
+            short = k.removeprefix("liveaov/")
+            lines.append(f"  {short.ljust(meta_key_width - len('liveaov/'))}  = {_fmt_value(v)}")
     else:
-        lines.append("liveActionAOV metadata: (none)")
+        lines.append("liveaov metadata: (none)")
 
     # Hero summary — only when matte metadata is present.
     if report.has_matte_metadata and report.heroes:

@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Channel naming contract (design §5.1).
 
 The comper-visible, load-bearing truth for sidecar EXR channel names. Passes

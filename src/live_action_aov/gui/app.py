@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """GUI entry point — registered as the `liveaov-gui` console script.
 
 Constructs a QApplication + the three-panel MainWindow and enters the

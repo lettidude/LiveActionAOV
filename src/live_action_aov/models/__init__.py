@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Central model registry — lazy loading + reference counting + VRAM tracking.
 
 The registry is the single place where model checkpoints are loaded. Passes

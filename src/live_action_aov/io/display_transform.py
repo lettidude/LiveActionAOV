@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Display transform: scene-referred → model-friendly (design §7).
 
 Algorithm (per clip, uniform across frames):

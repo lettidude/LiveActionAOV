@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """LocalExecutor — single-GPU, in-process execution (v1).
 
 Responsibilities:
@@ -8,7 +13,7 @@ Responsibilities:
   4. Collect artifacts emitted by passes (flow → FlowCache)
   5. Apply configured post-processors (temporal smoother) to the per-frame
      channel dict
-  6. Write one sidecar EXR per frame with `liveActionAOV/*` metadata
+  6. Write one sidecar EXR per frame with `liveaov/*` metadata
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ from live_action_aov.io.readers.proxy import wrap_if_proxy
 from live_action_aov.io.writers.exr import ExrSidecarWriter
 from live_action_aov.shared.optical_flow.cache import FlowCache
 
-METADATA_NAMESPACE = "liveActionAOV"
+METADATA_NAMESPACE = "liveaov"
 
 # Callers pass a function that receives `(fraction_done, label)` per
 # milestone; the GUI routes these to its progress bar + status bar,

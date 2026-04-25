@@ -3,7 +3,7 @@
 **Status:** ✅ Complete — awaiting confirmation to begin Phase 1.
 
 **Exit criterion (from spec §13):**
-> `liveaov run-shot <folder> --passes noop` writes a valid sidecar EXR with `liveActionAOV/*` metadata, and `liveaov plugins list` returns `["noop"]`.
+> `liveaov run-shot <folder> --passes noop` writes a valid sidecar EXR with `liveaov/*` metadata, and `liveaov plugins list` returns `["noop"]`.
 
 Both met. 19 tests pass, 3 skip cleanly when OIIO / installed entry points are unavailable.
 
@@ -17,7 +17,7 @@ Both met. 19 tests pass, 3 skip cleanly when OIIO / installed entry points are u
 | CLI name | `liveaov` |
 | Source tree | `src/live_action_aov/` |
 | Entry-point group prefix | `live_action_aov.*` |
-| EXR metadata namespace | `liveActionAOV/` |
+| EXR metadata namespace | `liveaov/` |
 | Display name | LiveActionAOV |
 
 ---
@@ -54,7 +54,7 @@ Both met. 19 tests pass, 3 skip cleanly when OIIO / installed entry points are u
 
 ### executors/
 - `base.py` — `Executor` ABC.
-- `local.py` — `LocalExecutor.submit`: resolve passes via registry → topo-sort → iterate frames → write one sidecar per pass-type per frame with `liveActionAOV/*` metadata header.
+- `local.py` — `LocalExecutor.submit`: resolve passes via registry → topo-sort → iterate frames → write one sidecar per pass-type per frame with `liveaov/*` metadata header.
 - `deadline.py` — `DeadlineExecutorStub` raising `NotImplementedError` (non-goal, §1.3).
 
 ### integrations/
@@ -92,7 +92,7 @@ All 22 tests live under `tests/`. 19 pass, 3 skip cleanly.
 | `test_io/test_resize.py` | 4 — one per resize trap |
 | `test_io/test_display_transform.py` | 3 — clip-wide EV, manual override, clamp |
 | `test_io/test_oiio_roundtrip.py` | Skipif-OIIO; multi-channel + custom attrs + pixel aspect |
-| `test_passes/test_noop_end_to_end.py` | Skipif-OIIO; full pipeline integration, `liveActionAOV/*` header present |
+| `test_passes/test_noop_end_to_end.py` | Skipif-OIIO; full pipeline integration, `liveaov/*` header present |
 | `test_cli/test_cli_phase0.py` | 3 — `--version`, `plugins list`, `run-shot` sidecar count |
 
 ---

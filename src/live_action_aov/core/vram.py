@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """VRAM estimation + planning.
 
 v1 is a thin shim: `query_available_gb()` returns CUDA free VRAM via torch

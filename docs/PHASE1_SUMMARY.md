@@ -5,7 +5,7 @@
 **Exit criterion (spec §13.1, Phase 1):**
 > `uv run liveaov run-shot <folder> --passes flow` writes a sidecar EXR with
 > `motion.x`, `motion.y`, `back.x`, `back.y`, `flow.confidence` channels,
-> channel values in pixels at plate resolution, valid `liveActionAOV/flow/*`
+> channel values in pixels at plate resolution, valid `liveaov/flow/*`
 > metadata including `parallax_estimate`.
 
 Both met. 34 tests pass in ~2 s (including the CPU-friendly RAFT smoke test).
@@ -66,7 +66,7 @@ New `PostConfig` + `Job.post: list[PostConfig]` for configuring post-processors 
 - Calls `pass.run_shot()` instead of owning the frame iteration loop (passes now control their own temporal semantics).
 - Collects `pass.emit_artifacts()` per pass; mirrors `forward_flow`/`backward_flow` into `FlowCache` keyed by `(shot.name, frame, direction)`.
 - Resolves and applies each `Job.post` entry after all passes complete.
-- Writes `liveActionAOV/flow/parallax_estimate`, `liveActionAOV/flow/direction`, `liveActionAOV/flow/unit`, and `liveActionAOV/smooth/<name>/*` metadata when present.
+- Writes `liveaov/flow/parallax_estimate`, `liveaov/flow/direction`, `liveaov/flow/unit`, and `liveaov/smooth/<name>/*` metadata when present.
 
 ### `pyproject.toml`
 Entry points registered:
@@ -102,10 +102,10 @@ channel names: ['back.x', 'back.y', 'flow.confidence', 'motion.x', 'motion.y']
 shape: (192, 256, 5)
 motion.x range: -67.5 ... 123.0  (pixels at plate res — ✓)
 flow.confidence range: 0.00 ... 0.9999
-liveActionAOV/flow/parallax_estimate = 0.295
-liveActionAOV/flow/direction = bidirectional
-liveActionAOV/flow/unit = pixels_at_plate_res
-liveActionAOV/flow/license = BSD-3-Clause
+liveaov/flow/parallax_estimate = 0.295
+liveaov/flow/direction = bidirectional
+liveaov/flow/unit = pixels_at_plate_res
+liveaov/flow/license = BSD-3-Clause
 ```
 
 (OpenEXR sorts stored channels alphabetically in the file; Nuke/DJV group them back into `motion`/`back`/`flow` layers at read time.)

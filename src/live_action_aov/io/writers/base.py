@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """SidecarWriter ABC.
 
 Writers are single-frame-aware (they get called once per frame with the

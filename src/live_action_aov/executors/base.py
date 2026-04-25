@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Executor ABC.
 
 An Executor takes a Job and runs it. Subclasses differ in *where* the work

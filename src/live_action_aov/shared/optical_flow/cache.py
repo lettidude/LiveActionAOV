@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """Flow cache shared between the flow pass and the temporal smoother.
 
 Design goal (spec §1.2 + design §9): flow is the keystone intermediate that

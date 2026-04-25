@@ -106,11 +106,11 @@ blended 50/50).
 - The auto-wire only fires when `forward_flow` was actually emitted — if
   no flow pass ran, the smoother would have nothing to consume.
 - Metadata key disambiguation: each applied smoother writes to
-  `liveActionAOV/smooth/temporal_smooth::<pass_name>/*` when auto-wired, so
+  `liveaov/smooth/temporal_smooth::<pass_name>/*` when auto-wired, so
   a job with both depth and normals smoothing doesn't collide in the EXR
   header.
-- New metadata: `liveActionAOV/depth/normalization/min`, `.../max`,
-  `liveActionAOV/depth/space = "relative"`, `.../unit = "normalized_per_clip"`.
+- New metadata: `liveaov/depth/normalization/min`, `.../max`,
+  `liveaov/depth/space = "relative"`, `.../unit = "normalized_per_clip"`.
 
 ### `src/live_action_aov/cli/app.py` — semantic backend rewrite
 Two new options:
@@ -157,7 +157,7 @@ slow/gpu-marked tests in round 2.
 uv run liveaov run-shot A:/tmp/plate2 --passes flow,depth,normals \
     --depth-backend depth_anything_v2 --normals-backend dsine
 # → sidecar EXRs with Z, Z_raw, N.x, N.y, N.z + 9 flow channels
-# → `liveActionAOV/depth/normalization/min|max`, `depth/space=relative`
+# → `liveaov/depth/normalization/min|max`, `depth/space=relative`
 # → auto-wired `smooth/temporal_smooth::depth_anything_v2/applied_to=Z`
 # → auto-wired `smooth/temporal_smooth::dsine/applied_to=N.x,N.y,N.z`
 
@@ -285,11 +285,11 @@ property of round 1: tests bypass model downloads via `_load_model` /
 
 ```python
 if artifacts.get("depth_metric"):
-    base["liveActionAOV/depth/space"] = "metric"
-    base["liveActionAOV/depth/unit"]  = "meters"
+    base["liveaov/depth/space"] = "metric"
+    base["liveaov/depth/unit"]  = "meters"
 elif artifacts.get("depth_norm_min") and artifacts.get("depth_norm_max"):
-    base["liveActionAOV/depth/space"] = "relative"
-    base["liveActionAOV/depth/unit"]  = "normalized_per_clip"
+    base["liveaov/depth/space"] = "relative"
+    base["liveaov/depth/unit"]  = "normalized_per_clip"
 ```
 
 Metric wins if both are present (mixed-backend jobs are undefined, but
@@ -323,7 +323,7 @@ future-proofing if we swap in `apple-ml-depth-pro` as the backend).
 - `tests/test_executors/test_metric_depth_metadata.py` — 1 end-to-end
   test with a `_FakeMetricDepthPass` registered via fixture. Runs through
   the CLI, reads the sidecar EXR back, asserts
-  `liveActionAOV/depth/space=metric` + `liveActionAOV/depth/unit=meters`
+  `liveaov/depth/space=metric` + `liveaov/depth/unit=meters`
   and that the relative-depth wiring did NOT also fire.
 
 **Test totals: 92 passed (57 → 92, +35 for round 2).** Full suite under

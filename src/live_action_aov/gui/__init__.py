@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """PySide6 preparation GUI — Phase 5.
 
 Milestone 1 (this module tree): three-panel scaffold + colorspace

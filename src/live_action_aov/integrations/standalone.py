@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """StandaloneAdapter — no external pipeline, default for v1."""
 
 from __future__ import annotations

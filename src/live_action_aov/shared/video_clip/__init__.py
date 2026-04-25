@@ -1,3 +1,8 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: MIT
+
 """VIDEO_CLIP pass helpers — window planning and overlap stitching.
 
 DepthCrafter and NormalCrafter both operate on clips longer than their
