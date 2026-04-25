@@ -256,18 +256,24 @@ _LINEAR_SRGB = {
     "rec709_linear",
     "scene_linear",  # role name — treat as linear sRGB for preview
 }
-_DISPLAY_SRGB_LIKE = {
-    # sRGB and Rec.709 share primaries; their EOTFs differ very
-    # slightly but are visually indistinguishable on an 8-bit
-    # preview. Treat as one bucket.
+_DISPLAY_SRGB = {
+    # sRGB EOTF — piecewise curve with a linear toe below 0.04045
+    # and a (1/2.4) power above. Same primaries as Rec.709, but the
+    # toe makes shadows noticeably lighter than a pure-gamma decode.
     "srgb",
     "srgb_display",
     "srgb_texture",
     "srgb_encoded",
-    "rec709_display",
-    "rec709",
     "gamma_2.2",
     "gamma_22",
+}
+_DISPLAY_REC709 = {
+    # Rec.709 display (BT.1886) — pure 2.4 gamma, no toe. Shadows
+    # decode darker than sRGB; mid-greys differ ~6% at 0.18. Was
+    # previously bucketed with sRGB which made the two options
+    # look identical in the viewport.
+    "rec709",
+    "rec709_display",
 }
 # Log capture spaces — nonlinear curves, can NOT be faked with a
 # 3×3 matrix the way ACEScg / ACES2065-1 are below. The only sane
@@ -326,8 +332,10 @@ def _preview_to_linear(pixels: np.ndarray, colorspace: str) -> np.ndarray:
     - Unknown: identity + silent no-op so preview never raises.
     """
     key = colorspace.strip().lower()
-    if key in _DISPLAY_SRGB_LIKE:
+    if key in _DISPLAY_SRGB:
         return _srgb_to_linear(pixels)
+    if key in _DISPLAY_REC709:
+        return _rec709_to_linear(pixels)
     if key == "acescg":
         return _apply_matrix(pixels, _ACESCG_TO_SRGB)
     if key in {"aces2065_1", "aces2065", "aces"}:
@@ -378,6 +386,15 @@ def _linear_to_srgb(x: np.ndarray) -> np.ndarray:
     lo = x * 12.92
     hi = (1 + a) * np.power(x, 1 / 2.4) - a
     return np.where(x <= 0.0031308, lo, hi)
+
+
+def _rec709_to_linear(x: np.ndarray) -> np.ndarray:
+    # BT.1886 reference EOTF — pure 2.4 gamma, no toe. This is what
+    # `display_transform._apply_eotf` inverts on the output side, so
+    # keeping the preview input decode symmetric means a round-trip
+    # through rec709_display is lossless in the preview pipeline.
+    x = np.clip(x.astype(np.float32, copy=False), 0.0, None)
+    return np.power(x, 2.4)
 
 
 def _qimage_from_rgb_float32(rgb: np.ndarray) -> QImage:
