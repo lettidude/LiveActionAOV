@@ -244,6 +244,21 @@ class MainWindow(QMainWindow):
         if nc_summary:
             if not _confirm_nc_consent(self, nc_summary):
                 return
+
+        # Memory-budget preflight — VIDEO_CLIP passes (DepthCrafter,
+        # NormalCrafter) materialise the full clip at plate resolution
+        # before the per-window downscale, so a 4K × 180-frame plate
+        # blows past 20 GiB and OOMs. Offer one-click auto-proxy at
+        # 1920 long edge for any oversized shots; bail if the user
+        # cancels rather than silently downscale.
+        oversized = _plates_needing_proxy(queue)
+        if oversized:
+            if not _confirm_auto_proxy(self, oversized):
+                return
+            for shot, _gib in oversized:
+                shot.proxy_long_edge = _AUTO_PROXY_LONG_EDGE
+                self._registry.notify_updated(shot)
+
         # Passed validation — mark queued shots as 'queued' state, then
         # kick the first one.
         for shot in queue:
@@ -375,6 +390,85 @@ def _build_cuda_banner(state: CudaState, parent: QMainWindow) -> QWidget | None:
     )
     layout.addWidget(details_btn)
     return banner
+
+
+# VIDEO_CLIP passes stack every frame at plate resolution before the
+# per-window downscale. 8 GiB is the point where even without the later
+# stitched-output buffer the working set is shaky on a 24 GB card; the
+# stitched output + window upscales push it over on anything bigger.
+_MEMORY_BUDGET_BYTES = 8 * 1024**3
+# Matches the "1080p proxy" entry in the Output tab's dropdown. Plates
+# at this long edge max out around 2 GiB for a 200-frame clip — safely
+# inside any 16 GB host.
+_AUTO_PROXY_LONG_EDGE = 1920
+
+
+def _projected_clip_bytes(shot: ShotState) -> int:
+    """Bytes for the plate-res clip buffer a VIDEO_CLIP pass allocates:
+    `n_frames × H × W × 3 × 4`. Respects an already-set proxy."""
+    first, last = shot.frame_range
+    n_frames = max(last - first + 1, 1)
+    w, h = shot.resolution
+    if shot.proxy_long_edge is not None:
+        long_edge = max(w, h)
+        if long_edge > shot.proxy_long_edge:
+            scale = shot.proxy_long_edge / long_edge
+            w = max(int(round(w * scale)), 1)
+            h = max(int(round(h * scale)), 1)
+    return n_frames * h * w * 3 * 4
+
+
+def _plates_needing_proxy(shots: list[ShotState]) -> list[tuple[ShotState, float]]:
+    """Return `(shot, projected_gib)` for every queued shot whose
+    plate-native clip buffer exceeds `_MEMORY_BUDGET_BYTES`. Shots that
+    already have `proxy_long_edge` set are skipped — the user made an
+    explicit choice."""
+    out: list[tuple[ShotState, float]] = []
+    for shot in shots:
+        if shot.proxy_long_edge is not None:
+            continue
+        nbytes = _projected_clip_bytes(shot)
+        if nbytes > _MEMORY_BUDGET_BYTES:
+            out.append((shot, nbytes / 1024**3))
+    return out
+
+
+def _confirm_auto_proxy(parent: QMainWindow, entries: list[tuple[ShotState, float]]) -> bool:
+    """Ask the user to accept auto-proxy at 1920 long edge for oversized shots.
+
+    Shows the projected per-shot size so the decision is concrete, not
+    abstract. The sidecar writer upscales proxy output back to plate
+    resolution on write, so downstream comp stays at plate res — the
+    proxy only affects the *inference* pass, not the delivered EXR
+    dimensions.
+    """
+    lines = [
+        f"  • {shot.name} — {w}×{h} × {last - first + 1} frames  ({gib:.1f} GiB plate-native)"
+        for shot, gib in entries
+        for (w, h) in [shot.resolution]
+        for (first, last) in [shot.frame_range]
+    ]
+    msg = (
+        "The following shot(s) are too large to process at plate resolution "
+        f"(budget is {_MEMORY_BUDGET_BYTES / 1024**3:.0f} GiB; VIDEO_CLIP "
+        "passes materialise the whole clip in RAM before inference):\n\n"
+        + "\n".join(lines)
+        + f"\n\nProcessing will run at a {_AUTO_PROXY_LONG_EDGE}-pixel "
+        "long-edge proxy. Sidecar EXRs are still upscaled back to plate "
+        "resolution on write, so comp dimensions are unchanged — but the "
+        "underlying depth/normals are computed on a downsampled frame "
+        "and will be softer than plate-native inference would produce."
+        "\n\nContinue with auto-proxy, or cancel and pick a different "
+        "proxy setting in the Output tab?"
+    )
+    reply = QMessageBox.question(
+        parent,
+        "Plate too large — auto-proxy required",
+        msg,
+        QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        QMessageBox.StandardButton.Ok,
+    )
+    return reply == QMessageBox.StandardButton.Ok
 
 
 def _collect_nc_entries(shots: list[ShotState]) -> list[tuple[str, str, str]]:
