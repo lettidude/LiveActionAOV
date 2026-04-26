@@ -2,8 +2,13 @@
 
 ## TL;DR
 
-**Windows** — double-click `install.bat` in the project root.
+**Windows** — double-click `install.bat` in Explorer, or from a terminal:
+- PowerShell: `.\install.bat` (the `.\` prefix is required — PowerShell doesn't run scripts from the current directory by default).
+- cmd.exe: either `install.bat` or `.\install.bat` works.
+
 **Linux / macOS** — `./install.sh` from a terminal.
+
+**To update** an already-installed copy later, run `.\update.bat` (Windows) or `./update.sh` (Linux/macOS) from the project root. Idempotent: no-op if nothing changed upstream.
 
 Both scripts will:
 
