@@ -83,9 +83,7 @@ class ViewportPanel(QWidget):
         self._canvas = QLabel()
         self._canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._canvas.setMinimumSize(320, 200)
-        self._canvas.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+        self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._canvas.setStyleSheet("background: #1a1a1a; color: #888;")
         self._canvas.setWordWrap(True)
         self._canvas.setText("(no shot loaded)")
@@ -225,9 +223,7 @@ def _stitch_side_by_side(left: QImage, right: QImage) -> QPixmap:
     painter = QPainter(combined)
     painter.drawImage(0, (height - left.height()) // 2, left)
     painter.fillRect(left.width(), 0, divider, height, Qt.GlobalColor.darkGray)
-    painter.drawImage(
-        left.width() + divider, (height - right.height()) // 2, right
-    )
+    painter.drawImage(left.width() + divider, (height - right.height()) // 2, right)
     painter.end()
     return combined
 

@@ -50,7 +50,12 @@ def _register_windows_taskbar_id() -> None:
     """
     if sys.platform != "win32":
         return
-    try:
+    # mypy on Linux narrows `sys.platform != "win32"` to "always true",
+    # making the rest of the function unreachable in its analysis. On
+    # Windows the narrowing goes the other way and the ignore is
+    # unused — `unused-ignore` covers both cases without an OS-specific
+    # split.
+    try:  # type: ignore[unreachable, unused-ignore]
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_WINDOWS_APP_USER_MODEL_ID)
@@ -64,7 +69,15 @@ def _register_windows_taskbar_id() -> None:
 def main() -> int:
     _register_windows_taskbar_id()
 
+    # `QApplication.instance()` is typed as `QCoreApplication | None`,
+    # so the `or` expression unions to `QCoreApplication | QApplication`.
+    # The runtime guarantee is that we always end up with a
+    # `QApplication` (either the existing instance — which is one in
+    # this process — or a freshly constructed one). Narrow with an
+    # explicit assertion so the `setWindowIcon` call below is
+    # statically valid (QCoreApplication doesn't have setWindowIcon).
     app = QApplication.instance() or QApplication(sys.argv)
+    assert isinstance(app, QApplication)
     app.setApplicationName("Live Action AOV")
     app.setOrganizationName("LiveActionAOV")
     # `setWindowIcon` on the QApplication sets the default for every

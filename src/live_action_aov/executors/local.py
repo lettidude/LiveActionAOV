@@ -76,14 +76,12 @@ class LocalExecutor(Executor):
         # we want both a sidecar-local log and a central mirror.
         sidecar_dir = shot.output_dir or shot.folder
         with RunLoggingSession(shot_name=shot.name, sidecar_dir=sidecar_dir) as log_paths:
-            return self._submit_logged(
-                job, report, registry, shot, sidecar_dir, log_paths, cancel
-            )
+            return self._submit_logged(job, report, registry, shot, sidecar_dir, log_paths, cancel)
 
     def _submit_logged(
         self,
         job: Job,
-        report: ProgressCallback,
+        caller_report: ProgressCallback,
         registry: Any,
         shot: Shot,
         sidecar_dir: Path,
@@ -104,11 +102,11 @@ class LocalExecutor(Executor):
         # mirrors what the GUI bar shows — no new log lines needed at
         # each milestone below, and the CLI (which has no progress bar
         # in the console log) gets a readable timeline for free.
-        _original_report = report
-
+        # Parameter is `caller_report` (not `report`) so the local
+        # `report` definition below isn't a shadowing redefinition.
         def report(frac: float, label: str) -> None:
             _log.info("[%3.0f%%] %s", frac * 100, label)
-            _original_report(frac, label)
+            caller_report(frac, label)
 
         report(0.0, "Resolving passes…")
 

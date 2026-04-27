@@ -120,8 +120,12 @@ class ShotListPanel(QWidget):
 
     def _on_remove_clicked(self) -> None:
         item = self._list.currentItem()
+        # PySide6 stubs annotate `currentItem()` as never-None; runtime it
+        # absolutely can be None when the list is empty. Keep the runtime
+        # guard, suppress mypy's stub-driven "unreachable" complaint.
+        # `unused-ignore` covers stub updates that fix it upstream.
         if item is None:
-            return
+            return  # type: ignore[unreachable, unused-ignore]
         shot = item.data(Qt.ItemDataRole.UserRole)
         if shot is not None:
             self._registry.remove(shot)
@@ -180,9 +184,7 @@ class ShotListPanel(QWidget):
         # Per-row checkbox drives ShotState.queued — determines which
         # shots Submit local will iterate.
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        item.setCheckState(
-            Qt.CheckState.Checked if shot.queued else Qt.CheckState.Unchecked
-        )
+        item.setCheckState(Qt.CheckState.Checked if shot.queued else Qt.CheckState.Unchecked)
         # Full info in a tooltip so the label can truncate without losing
         # data — compers hover to confirm frame range + resolution when
         # the panel is sized narrow.
@@ -318,7 +320,9 @@ def _format_item_tooltip(shot: ShotState) -> str:
     return "<br/>".join(lines)
 
 
-def _sniff_sequence(folder: Path):
+def _sniff_sequence(
+    folder: Path,
+) -> tuple[str, tuple[int, int], tuple[int, int], float, Path]:
     """Discover an EXR sequence in `folder` and return `(pattern,
     frame_range, resolution, pixel_aspect, first_frame_path)`.
 

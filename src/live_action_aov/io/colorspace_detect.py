@@ -117,7 +117,12 @@ def detect_colorspace(
     # Ladder step 3-4: chromaticity-primary inference.
     chroma = attrs.get("chromaticities")
     if chroma and isinstance(chroma, (list, tuple)) and len(chroma) >= 8:
-        match = _match_chromaticities(tuple(float(c) for c in chroma[:8]))
+        # Unpack to a fixed-arity tuple so the type matches
+        # `_match_chromaticities`'s signature exactly. The runtime
+        # `len(chroma) >= 8` guard above already proves we have at
+        # least 8 floats; the unpack just communicates that to mypy.
+        c0, c1, c2, c3, c4, c5, c6, c7 = (float(c) for c in chroma[:8])
+        match = _match_chromaticities((c0, c1, c2, c3, c4, c5, c6, c7))
         if match is not None:
             name, primaries_label = match
             return DetectedColorspace(
