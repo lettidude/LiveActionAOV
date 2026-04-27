@@ -93,12 +93,34 @@ class MainWindow(QMainWindow):
         # _on_submit_finished. The currently-running shot is the head
         # of the deque.
         self._queue: list[ShotState] = []
+        # Set when the user clicks Cancel — the next pop in
+        # _start_next_in_queue() honours this and short-circuits the
+        # remaining batch instead of starting the next shot.
+        self._batch_cancelled: bool = False
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 1000)
         self._progress.setFormat("%p% — %v")  # replaced with label text at run time
         self._progress.setTextVisible(True)
         self._progress.setVisible(False)
+
+        # Cancel sits next to the progress bar, hidden until a submit
+        # starts. We deliberately keep it OUT of the layout slot the
+        # Submit button occupies so the user can't accidentally click
+        # the wrong action — Submit is "start", Cancel is "stop", and
+        # they're mutually exclusive. Cancel only signals at the
+        # executor's next checkpoint (between passes / before each
+        # sidecar write); a torch inference mid-call still has to
+        # complete. Tooltip spells that out so the user isn't
+        # confused by the lag between click and abort.
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.setToolTip(
+            "Stop the current run. Takes effect at the next safe "
+            "checkpoint (between passes / before each sidecar write). "
+            "Heavy passes already mid-inference must finish first."
+        )
+        self._cancel_btn.clicked.connect(self._on_cancel_clicked)
 
         self._reveal_btn = QPushButton("Reveal output")
         self._reveal_btn.setEnabled(False)
@@ -116,6 +138,7 @@ class MainWindow(QMainWindow):
         bottom_row = QHBoxLayout()
         bottom_row.addWidget(self._submit_btn)
         bottom_row.addWidget(self._progress, stretch=1)
+        bottom_row.addWidget(self._cancel_btn)
         bottom_row.addWidget(self._log_toggle_btn)
         bottom_row.addWidget(self._reveal_btn)
 
@@ -258,15 +281,37 @@ class MainWindow(QMainWindow):
             shot.last_error = ""
             self._registry.notify_updated(shot)
         self._queue = queue
+        self._batch_cancelled = False
         self._submit_btn.setEnabled(False)
+        # Cancel button activates while the batch runs. Hidden again
+        # in _start_next_in_queue() once the queue drains.
+        self._cancel_btn.setVisible(True)
+        self._cancel_btn.setEnabled(True)
+        self._cancel_btn.setText("Cancel")
         self._start_next_in_queue()
 
     def _start_next_in_queue(self) -> None:
+        # Honor a mid-batch cancel: if the user clicked Cancel while
+        # one shot was running, every remaining shot is dropped. We
+        # mark them back to queued (not failed) so re-clicking Submit
+        # picks them up next time — a cancelled run is reversible
+        # state, not a failure mode.
+        if self._batch_cancelled and self._queue:
+            for shot in self._queue:
+                shot.status = "queued"
+                self._registry.notify_updated(shot)
+            self._queue.clear()
         if not self._queue:
-            # Done with the whole batch.
+            # Done with the whole batch (or batch was cancelled).
             self._progress.setVisible(False)
-            self.statusBar().showMessage("Batch complete.", 8_000)
-            self._log_panel.append_lifecycle("===== Batch complete =====")
+            self._cancel_btn.setVisible(False)
+            if self._batch_cancelled:
+                self.statusBar().showMessage("Batch cancelled.", 8_000)
+                self._log_panel.append_lifecycle("===== Batch cancelled =====")
+                self._batch_cancelled = False
+            else:
+                self.statusBar().showMessage("Batch complete.", 8_000)
+                self._log_panel.append_lifecycle("===== Batch complete =====")
             self._refresh_submit_button(None)
             return
         shot = self._queue[0]
@@ -285,6 +330,22 @@ class MainWindow(QMainWindow):
             f"({len(shot.enabled_models)} model{'s' if len(shot.enabled_models) != 1 else ''}) ====="
         )
         self._submit_worker.submit(shot)
+
+    def _on_cancel_clicked(self) -> None:
+        # First click flips both the worker's CancelToken AND a
+        # batch-level flag so any remaining queued shots are dropped
+        # in _start_next_in_queue() once the current shot's worker
+        # callback fires. Disable the button immediately so the user
+        # gets visual feedback that the click registered, even though
+        # the executor won't observe it until its next checkpoint.
+        if not self._cancel_btn.isEnabled():
+            return
+        self._batch_cancelled = True
+        self._submit_worker.cancel()
+        self._cancel_btn.setEnabled(False)
+        self._cancel_btn.setText("Cancelling…")
+        self.statusBar().showMessage("Cancelling — finishing current step…", 0)
+        self._log_panel.append_lifecycle("===== User cancel requested =====")
 
     def _on_submit_progress(self, fraction: float, label: str) -> None:
         self._progress.setValue(int(fraction * 1000))
@@ -315,6 +376,14 @@ class MainWindow(QMainWindow):
             self._log_panel.append_lifecycle(
                 f"===== Submit done: {target.name} → {result.sidecar_dir} ====="
             )
+        elif result.cancelled:
+            # User-initiated abort. Mark the shot as cancelled (not
+            # failed) — partial sidecars on disk are expected and the
+            # user will commonly retry without a code change. No
+            # error dialog: the click was the user's intent.
+            target.status = "cancelled"
+            target.last_error = ""
+            self._log_panel.append_lifecycle(f"===== Submit cancelled: {target.name} =====")
         else:
             target.status = "failed"
             target.last_error = result.error or "unknown error"

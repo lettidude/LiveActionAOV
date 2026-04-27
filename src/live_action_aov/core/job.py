@@ -32,6 +32,7 @@ ShotStatus = Literal[
     "running",
     "done",
     "failed",
+    "cancelled",
 ]
 
 

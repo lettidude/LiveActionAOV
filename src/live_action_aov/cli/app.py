@@ -17,6 +17,7 @@ Phase 4 fleshes this out with discover / analyze / run / preflight / models.
 from __future__ import annotations
 
 import re
+import signal
 from pathlib import Path
 from typing import Annotated
 
@@ -25,6 +26,7 @@ from rich.console import Console
 from rich.table import Table
 
 import live_action_aov
+from live_action_aov.core.cancel import CancelledError, CancelToken
 from live_action_aov.core.job import Job, PassConfig, Shot
 from live_action_aov.core.pass_base import License
 from live_action_aov.core.registry import get_registry
@@ -233,11 +235,45 @@ def run_shot(
         f"[cyan]Running[/cyan] {shot.name} frames {frame_range[0]}..{frame_range[1]} "
         f"with passes: {pass_names}"
     )
+    # Install a SIGINT handler that flips a CancelToken instead of
+    # raising KeyboardInterrupt mid-inference. Two ergonomic wins:
+    # (1) the executor finishes whatever frame is being written to disk
+    # so the partial output is at least file-aligned; (2) we can print
+    # a clean "Cancelled." line and exit 130 (Unix convention for
+    # SIGINT) instead of dumping a Python traceback.
+    cancel = CancelToken()
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    def _on_sigint(signum: int, frame: object) -> None:
+        if cancel.is_cancelled():
+            # Second Ctrl+C — escalate to the previous handler (default
+            # KeyboardInterrupt) so a stuck inference call still
+            # responds to a forceful abort. We don't try to be clever
+            # here; if the user double-tapped, they want out NOW.
+            if callable(previous_handler):
+                previous_handler(signum, frame)  # type: ignore[arg-type]
+            else:
+                raise KeyboardInterrupt
+            return
+        cancel.cancel("Cancelled by SIGINT")
+        console.print(
+            "\n[yellow]Cancelling…[/yellow] (Ctrl+C again to force-quit)"
+        )
+
+    signal.signal(signal.SIGINT, _on_sigint)
     try:
-        live_action_aov.run(job)
+        live_action_aov.run(job, cancel=cancel)
+    except CancelledError:
+        console.print("[yellow]Cancelled.[/yellow]")
+        # 130 is the standard exit code for "terminated by SIGINT"
+        # (128 + signal number). Lets shell scripts distinguish
+        # user-cancelled runs from real failures.
+        raise typer.Exit(code=130) from None
     except Exception as e:
         console.print(f"[red]FAILED:[/red] {e}")
         raise typer.Exit(code=1) from e
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
 
     console.print(f"[green]Done.[/green] Sidecar example: {shot.sidecars.get('utility')}")
 
