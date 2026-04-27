@@ -12,6 +12,12 @@ import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
+# normalcrafter.py imports cv2 at module level for the upscale step;
+# `cv2` rides in via the `[video_depth_anything]` extra (and any other
+# extra that pulls opencv-python). On a slim install (just the dev
+# extras) it's missing, so skip the whole file rather than crashing
+# with `ModuleNotFoundError: cv2` during test collection.
+pytest.importorskip("cv2")
 
 from live_action_aov.io.channels import CH_N_X, CH_N_Y, CH_N_Z  # noqa: E402
 from live_action_aov.passes.normals.normalcrafter import NormalCrafterPass  # noqa: E402

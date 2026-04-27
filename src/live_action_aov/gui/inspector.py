@@ -140,9 +140,16 @@ class InspectorPanel(QWidget):
         # Per-radio `toggled` instead of QButtonGroup.idToggled — avoids
         # the double-fire (deselect + select) pattern that was causing
         # the Choose-root button to sometimes miss its enable event.
-        self._out_inplace.toggled.connect(lambda c: c and self._set_output_mode("inplace"))
-        self._out_subfolder.toggled.connect(lambda c: c and self._set_output_mode("subfolder"))
-        self._out_external.toggled.connect(lambda c: c and self._set_output_mode("external"))
+        # Conditional `if c else None` form (rather than `c and …`) so
+        # mypy sees the lambda as `() -> None` instead of an expression
+        # that returns the value of a void function.
+        self._out_inplace.toggled.connect(lambda c: self._set_output_mode("inplace") if c else None)
+        self._out_subfolder.toggled.connect(
+            lambda c: self._set_output_mode("subfolder") if c else None
+        )
+        self._out_external.toggled.connect(
+            lambda c: self._set_output_mode("external") if c else None
+        )
 
         # Subfolder name field — lets the user pick a name other than
         # "utility". Only enabled in subfolder mode.
@@ -282,7 +289,7 @@ class InspectorPanel(QWidget):
             off_radio.setStyleSheet("color: #888;")
             off_radio.setChecked(True)
             off_radio.toggled.connect(
-                lambda checked, cat=category: checked and self._on_category_off(cat)
+                lambda checked, cat=category: self._on_category_off(cat) if checked else None
             )
             self._off_radios[category] = off_radio
             group.addButton(off_radio)
@@ -298,7 +305,7 @@ class InspectorPanel(QWidget):
                 row_layout.setSpacing(6)
                 radio = QRadioButton(entry.label)
                 radio.toggled.connect(
-                    lambda checked, key=entry.key: checked and self._on_model_selected(key)
+                    lambda checked, key=entry.key: self._on_model_selected(key) if checked else None
                 )
                 self._model_radios[entry.key] = radio
                 group.addButton(radio)

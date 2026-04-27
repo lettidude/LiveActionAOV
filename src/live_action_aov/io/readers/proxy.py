@@ -90,9 +90,7 @@ class ProxyReader(ImageSequenceReader):
         return resized.astype(np.float32, copy=False), attrs
 
 
-def wrap_if_proxy(
-    reader: ImageSequenceReader, proxy_long_edge: int | None
-) -> ImageSequenceReader:
+def wrap_if_proxy(reader: ImageSequenceReader, proxy_long_edge: int | None) -> ImageSequenceReader:
     """Return `reader` wrapped in a `ProxyReader` when `proxy_long_edge`
     is set, otherwise return the input reader unchanged. Single entry
     point the executor uses so the opt-in flows through one hook."""

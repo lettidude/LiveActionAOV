@@ -205,7 +205,17 @@ src = ["src", "tests"]
 # upstream repos — keeping them clean against our style rules would mean a
 # never-ending diff-burn every time we resync. Lint and typecheck our own
 # code only.
-extend-exclude = ["src/live_action_aov/vendored"]
+#
+# The Nuke plugin (`plugins/nuke/UtilityRelight/`) is also excluded: it
+# runs inside Nuke's bundled Python interpreter, which has its own
+# style/typing constraints (no modern type hints, single-line try/except
+# is idiomatic for Nuke gizmos, `nuke.tprint` instead of `print`). Linting
+# it against ruff's modern-Python rules produces noise that drowns out
+# real issues in the core lib.
+extend-exclude = [
+    "src/live_action_aov/vendored",
+    "src/live_action_aov/plugins/nuke",
+]
 
 [tool.ruff.lint]
 select = [
@@ -277,8 +287,12 @@ python_version = "3.11"
 strict = true
 warn_unreachable = true
 ignore_missing_imports = true
-# Same rationale as ruff's extend-exclude — vendored sources aren't ours.
-exclude = ['^src/live_action_aov/vendored/']
+# Same rationale as ruff's extend-exclude — vendored sources aren't ours,
+# and the Nuke plugin lives in Nuke's interpreter (different stdlib).
+exclude = [
+    '^src/live_action_aov/vendored/',
+    '^src/live_action_aov/plugins/nuke/',
+]
 disable_error_code = [
     # Parameterising every `np.ndarray` with dtype/shape generics is a
     # numpy-typing treadmill we don't want to opt into — it changes by

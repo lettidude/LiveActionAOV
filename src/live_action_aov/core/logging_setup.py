@@ -53,14 +53,18 @@ import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
+from types import TracebackType
+from typing import Literal
 
 from platformdirs import user_log_dir
 
 # Passing `appauthor=False` to platformdirs stops the Windows path
 # from getting an extra `<APPDATA>\LiveActionAOV\LiveActionAOV\Logs`
 # double-nest; the result is the cleaner `<APPDATA>\LiveActionAOV\Logs`.
+# Type is `str | Literal[False]` (not `str | bool`) because platformdirs
+# accepts the False sentinel specifically, not arbitrary bools.
 _APP_NAME = "LiveActionAOV"
-_APP_AUTHOR: str | bool = False
+_APP_AUTHOR: str | Literal[False] = False
 
 _MAX_CENTRAL_LOGS = 30
 _WARNINGS_FILENAME = "warnings.log"
@@ -177,7 +181,12 @@ class RunLoggingSession:
         logging.getLogger("live_action_aov").info(header)
         return self.paths
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         log = logging.getLogger("live_action_aov")
         if exc_type is not None:
             # Capture the traceback into the files before the handlers

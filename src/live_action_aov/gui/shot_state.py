@@ -83,9 +83,7 @@ class ShotState:
         from live_action_aov.gui.pass_catalog import PASS_CATALOG
 
         key_to_category: dict[str, str] = {
-            e.key: cat.lower()
-            for cat, entries in PASS_CATALOG.items()
-            for e in entries
+            e.key: cat.lower() for cat, entries in PASS_CATALOG.items() for e in entries
         }
         seen: set[str] = set()
         out: list[str] = []

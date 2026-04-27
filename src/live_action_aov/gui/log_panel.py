@@ -100,9 +100,7 @@ class LogPanel(QWidget):
         # transformers / huggingface_hub progress bars + our own
         # logging.info calls. DEBUG is usually noise from tokenisers.
         handler = _QtSignalLogHandler(self._emitter, level=logging.INFO)
-        handler.setFormatter(
-            logging.Formatter("%(name)s: %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
         logging.getLogger().addHandler(handler)
         self._log_handler = handler
 
@@ -114,17 +112,12 @@ class LogPanel(QWidget):
         mono.setPointSize(9)
         self._view.setFont(mono)
         self._view.setStyleSheet(
-            "QTextEdit {"
-            " background: #121212; color: #cfcfcf;"
-            " border: 1px solid #2a2a2a;"
-            "}"
+            "QTextEdit { background: #121212; color: #cfcfcf; border: 1px solid #2a2a2a;}"
         )
         self._view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         title = QLabel("Log")
-        title.setStyleSheet(
-            "font-weight: 600; color: #cfcfcf; padding: 2px 6px;"
-        )
+        title.setStyleSheet("font-weight: 600; color: #cfcfcf; padding: 2px 6px;")
         clear_btn = QPushButton("Clear")
         clear_btn.setFlat(True)
         clear_btn.clicked.connect(self._view.clear)
@@ -144,9 +137,7 @@ class LogPanel(QWidget):
         root.setSpacing(2)
         header_frame = QFrame()
         header_frame.setLayout(header)
-        header_frame.setStyleSheet(
-            "background: #1d1d1d; border-bottom: 1px solid #2a2a2a;"
-        )
+        header_frame.setStyleSheet("background: #1d1d1d; border-bottom: 1px solid #2a2a2a;")
         root.addWidget(header_frame)
         root.addWidget(self._view, stretch=1)
 
@@ -157,9 +148,7 @@ class LogPanel(QWidget):
     def append_progress(self, fraction: float, label: str) -> None:
         """Called from the main window on SubmitWorker.progress."""
         pct = int(round(fraction * 100))
-        self._emitter.emit_line(
-            LogLine(time.time(), "PROGRESS", f"{pct:3d}% — {label}")
-        )
+        self._emitter.emit_line(LogLine(time.time(), "PROGRESS", f"{pct:3d}% — {label}"))
 
     def append_lifecycle(self, text: str) -> None:
         """Submit bookends and similar high-level marks."""

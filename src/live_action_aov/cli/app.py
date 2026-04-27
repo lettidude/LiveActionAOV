@@ -256,9 +256,7 @@ def run_shot(
                 raise KeyboardInterrupt
             return
         cancel.cancel("Cancelled by SIGINT")
-        console.print(
-            "\n[yellow]Cancelling…[/yellow] (Ctrl+C again to force-quit)"
-        )
+        console.print("\n[yellow]Cancelling…[/yellow] (Ctrl+C again to force-quit)")
 
     signal.signal(signal.SIGINT, _on_sigint)
     try:

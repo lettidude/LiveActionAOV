@@ -20,6 +20,7 @@ lives in the viewport.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -147,7 +148,7 @@ class _PreviewTask(QRunnable):
 # ---------------------------------------------------------------------------
 
 
-def _resolve_frame_path(shot: ShotState, frame: int):
+def _resolve_frame_path(shot: ShotState, frame: int) -> Path:
     """Expand the shot's sequence pattern for `frame` and join with folder.
     Supports `####` and `%04d`-style tokens; same conventions as the
     OIIO reader."""
