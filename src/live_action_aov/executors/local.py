@@ -24,6 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from live_action_aov.core.cancel import CancelledError, CancelToken
 from live_action_aov.core.dag import PassNode, topological_sort
 from live_action_aov.core.job import Job, PassConfig, PostConfig, Shot
 from live_action_aov.core.logging_setup import RunLoggingSession
@@ -53,12 +54,20 @@ class LocalExecutor(Executor):
         self,
         job: Job,
         progress_callback: ProgressCallback | None = None,
+        cancel: CancelToken | None = None,
     ) -> Job:
         """Run the job synchronously. Optional `progress_callback(fraction,
         label)` is called at each milestone: reader analysis, each pass
         start, post-processor apply, sidecar write batch, done. Default
         `None` keeps the pre-M2.5 behaviour untouched (CLI + tests stay
-        working without edits)."""
+        working without edits).
+
+        Optional `cancel` is a `CancelToken` (see `core.cancel`). When
+        set externally between checkpoints, the executor raises
+        `CancelledError` at the next safe point and stamps the shot's
+        status as ``cancelled`` before re-raising. Mid-pass cancellation
+        is not supported — a torch inference call holds the GIL and we
+        only re-check the token after it returns."""
         report = progress_callback or (lambda _f, _l: None)
         registry = get_registry()
         shot = job.shot
@@ -67,7 +76,9 @@ class LocalExecutor(Executor):
         # we want both a sidecar-local log and a central mirror.
         sidecar_dir = shot.output_dir or shot.folder
         with RunLoggingSession(shot_name=shot.name, sidecar_dir=sidecar_dir) as log_paths:
-            return self._submit_logged(job, report, registry, shot, sidecar_dir, log_paths)
+            return self._submit_logged(
+                job, report, registry, shot, sidecar_dir, log_paths, cancel
+            )
 
     def _submit_logged(
         self,
@@ -77,6 +88,7 @@ class LocalExecutor(Executor):
         shot: Shot,
         sidecar_dir: Path,
         log_paths: Any,
+        cancel: CancelToken | None,
     ) -> Job:
         _log.info(
             "passes=%s post=%s frames=%s colorspace=%s proxy=%s output=%s",
@@ -147,6 +159,13 @@ class LocalExecutor(Executor):
 
             total_passes = max(1, len(ordered))
             for pass_idx, node in enumerate(ordered):
+                # Cancel checkpoint #1: between passes. This is the
+                # most useful one in practice — a heavy pass like
+                # DepthCrafter or NormalCrafter can run for minutes,
+                # and cancelling between passes lets the user abort
+                # before the next one starts.
+                if cancel is not None:
+                    cancel.raise_if_cancelled()
                 # Passes dominate runtime — split the 0.1 → 0.9 band
                 # evenly across them so the bar moves predictably even
                 # though we can't see inside each pass.
@@ -322,6 +341,12 @@ class LocalExecutor(Executor):
             first_written: Path | None = None
             total_frames = max(1, len(per_frame_channels))
             for frame_write_idx, (frame_idx, channels) in enumerate(per_frame_channels.items()):
+                # Cancel checkpoint #2: between sidecar writes. Each
+                # write is ~50ms, so per-frame polling is essentially
+                # free here — the user gets near-instant abort during
+                # the 0.9→1.0 phase of the progress bar.
+                if cancel is not None:
+                    cancel.raise_if_cancelled()
                 if frame_write_idx % max(1, total_frames // 20) == 0:
                     frac = 0.9 + 0.1 * (frame_write_idx / total_frames)
                     report(
@@ -365,6 +390,16 @@ class LocalExecutor(Executor):
             shot.sidecars["utility"] = first_written or sidecar_dir
             shot.status = "done"
             report(1.0, "Done.")
+        except CancelledError:
+            # Distinct status so the GUI can render "Cancelled" rather
+            # than "Failed", and downstream tooling can tell the
+            # difference between "user aborted" and "actually broken".
+            # Partial sidecars on disk are accepted as the price of
+            # cancelling — cleaning them up automatically would surprise
+            # users who wanted to inspect what got written.
+            shot.status = "cancelled"
+            _log.info("Cancelled by user (token raised at safe checkpoint).")
+            raise
         except Exception:
             shot.status = "failed"
             raise
