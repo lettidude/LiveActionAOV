@@ -8,8 +8,7 @@
 
 > **Status:** alpha, pre-v1 release
 
-[![Watch the demo](https://img.shields.io/badge/Demo-YouTube-red?style=flat-square&logo=youtube)](https://youtu.be/TODO_REPLACE_AFTER_UPLOAD)
-*Demo video — coming soon.*
+[![Watch the demo](https://img.shields.io/badge/Demo-YouTube-red?style=flat-square&logo=youtube)](https://youtu.be/HnosSnK1MKs)
 
 ---
 
