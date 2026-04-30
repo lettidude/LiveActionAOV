@@ -30,6 +30,46 @@ class CudaState:
     advisory: str  # Human-readable summary for the UI.
 
 
+# Ada Lovelace (sm_89) runs Ampere (sm_86) SASS natively via NVIDIA's
+# CUDA binary-compatibility guarantee. PyTorch's cu128 wheel ships
+# sm_86 but not sm_89, so a strict `cap_str in arches` membership
+# check false-flags every RTX 40-series GPU. Hopper (sm_90) and
+# Blackwell (sm_100 / sm_120) don't get a similar fallback — they
+# need their own SASS, or a compute_XY PTX entry the runtime can JIT.
+_BINARY_COMPAT_FALLBACK: dict[str, str] = {
+    "sm_89": "sm_86",
+}
+
+
+def _arch_compatible(cap_str: str, arches: set[str]) -> bool:
+    """Is the GPU's compute capability runnable on this PyTorch wheel?
+
+    Three accepted paths:
+      1. Exact SASS match — the wheel ships kernels for `cap_str`.
+      2. Binary-compatible older SASS — see `_BINARY_COMPAT_FALLBACK`.
+      3. PTX JIT — any `compute_XY` entry with XY <= device cap
+         can be JIT-compiled at first kernel launch.
+    """
+    if cap_str in arches:
+        return True
+    fallback = _BINARY_COMPAT_FALLBACK.get(cap_str)
+    if fallback is not None and fallback in arches:
+        return True
+    try:
+        cap_num = int(cap_str.removeprefix("sm_"))
+    except ValueError:
+        return False
+    for entry in arches:
+        if entry.startswith("compute_"):
+            try:
+                ptx_num = int(entry.removeprefix("compute_"))
+            except ValueError:
+                continue
+            if cap_num >= ptx_num:
+                return True
+    return False
+
+
 def cuda_state() -> CudaState:
     """Probe torch + CUDA without crashing if torch itself is broken.
 
@@ -107,11 +147,16 @@ def cuda_state() -> CudaState:
     # against what the wheel was built for and surface the mismatch
     # loudly — otherwise the first fp16 matmul crashes at submit time
     # with a cryptic CUDA error.
+    #
+    # Compatibility is more nuanced than strict SASS membership:
+    # binary-compatible older SASS (Ada → Ampere) and PTX JIT
+    # (any newer arch can run older `compute_XY` PTX) both count.
+    # See `_arch_compatible` for the full rule set.
     try:
         arches = set(torch.cuda.get_arch_list())
         cap = torch.cuda.get_device_capability(0)
         cap_str = f"sm_{cap[0]}{cap[1]}"
-        if cap_str not in arches:
+        if not _arch_compatible(cap_str, arches):
             arches_str = ", ".join(sorted(arches))
             return CudaState(
                 available=False,
