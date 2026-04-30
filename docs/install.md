@@ -111,6 +111,63 @@ Each extra is a separate `live-action-aov[<family>]` so you get
 exactly what you need. Combine with the `all` meta if you realise
 later you want everything: `uv sync --extra dev --extra all`.
 
+## Hugging Face authentication for gated models
+
+Some of the models LiveActionAOV pulls from Hugging Face are **gated** —
+the publisher (typically Meta) requires you to accept their license terms
+before the weights are downloadable. The first model that needs this is
+**SAM 3** (`facebook/sam3`), which the matte pass uses by default.
+
+If you skip this step the matte pass fails on first use with:
+
+```
+OSError: You are trying to access a gated repo.
+... 401 Client Error ...
+Access to model facebook/sam3 is restricted.
+```
+
+It's a one-time setup, three steps:
+
+**1. Request access** to each gated model you'll use. For SAM 3:
+
+- Visit https://huggingface.co/facebook/sam3
+- Click **"Agree and access repository"** at the top of the page.
+- Approval is usually instant.
+
+**2. Create a Hugging Face access token** at
+https://huggingface.co/settings/tokens:
+
+- Click **"Create new token"**.
+- Any name. **"Read" scope is sufficient** — no write/admin permissions
+  needed.
+- Copy the token string.
+
+**3. Authenticate locally**, from the project root:
+
+```bash
+uv run hf auth login
+```
+
+(or `uv run huggingface-cli login` on older `huggingface_hub` versions).
+Paste the token when prompted. It's cached at
+`~/.cache/huggingface/token` and the next run downloads the weights
+cleanly.
+
+Prefer environment variables over the cached file? Set
+`HF_TOKEN=<your-token>` in your shell instead and skip step 3 — both
+`transformers` and `huggingface_hub` pick it up automatically.
+
+### Currently gated in the default stack
+
+| Model | Pass | HF page |
+|---|---|---|
+| SAM 3 | matte | https://huggingface.co/facebook/sam3 |
+
+Other models in the catalog (Depth Anything V2, DepthCrafter, NormalCrafter,
+DSINE, MatAnyone 2, RVM, RAFT) are not currently gated. If a publisher
+adds gating to one of them later, the same three-step flow applies — just
+swap the URL in step 1.
+
 ## Alternate GPU configurations
 
 The default pin (cu128 via `[tool.uv.sources]` in `pyproject.toml`)

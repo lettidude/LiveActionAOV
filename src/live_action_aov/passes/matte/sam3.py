@@ -63,6 +63,52 @@ from live_action_aov.passes.matte.rank import (
 )
 
 
+def _wrap_if_gated_repo(repo: str, exc: BaseException) -> RuntimeError | None:
+    """Translate a Hugging Face gated-repo / 401 error into actionable guidance.
+
+    Returns a ``RuntimeError`` with setup steps if ``exc`` is recognisable
+    as an HF gated-repo failure, or ``None`` if it's some other exception
+    (network blip, bad model_id, torch issue) that should propagate unchanged.
+
+    Why both a typed check and a string match: ``transformers.from_pretrained``
+    catches ``huggingface_hub.errors.GatedRepoError`` and re-raises it as
+    ``OSError``, so the typed isinstance check rarely fires through the
+    transformers path. The substring fallback is what handles real-world
+    cases. The typed check still helps for direct ``huggingface_hub`` calls.
+    """
+    is_gated = False
+    try:
+        from huggingface_hub.errors import GatedRepoError
+
+        if isinstance(exc, GatedRepoError):
+            is_gated = True
+    except ImportError:
+        pass
+    if not is_gated:
+        msg = str(exc).lower()
+        if (
+            "gated repo" in msg
+            or "401 client error" in msg
+            or ("access" in msg and "restricted" in msg)
+        ):
+            is_gated = True
+    if not is_gated:
+        return None
+    return RuntimeError(
+        f"Hugging Face model '{repo}' is gated — you need to request access "
+        "and authenticate before it can download.\n\n"
+        f"  1. Request access at https://huggingface.co/{repo}\n"
+        "  2. Create a token at https://huggingface.co/settings/tokens "
+        "('Read' scope is sufficient).\n"
+        "  3. Authenticate locally:\n"
+        "         uv run hf auth login\n"
+        "     (or `uv run huggingface-cli login` on older huggingface_hub).\n"
+        "     Paste your token when prompted.\n\n"
+        "Full instructions: docs/install.md → "
+        "'Hugging Face authentication for gated models'."
+    )
+
+
 @dataclass
 class _DetectedInstance:
     """Internal scratch structure — one detected + tracked instance.
@@ -183,17 +229,29 @@ class SAM3MattePass(UtilityPass):
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._dtype = torch.float32
 
-        self._det_processor = Sam3Processor.from_pretrained(repo)
-        det_model = Sam3Model.from_pretrained(repo)
-        det_model.to(self._device).eval()
-        self._det_model = det_model
+        # SAM 3 (and other Meta releases) are gated on the HF Hub. The raw
+        # `OSError: You are trying to access a gated repo.` PyTorch surfaces
+        # is unhelpful — users don't know they need to (a) request access
+        # and (b) `hf auth login` locally. Wrap the four `from_pretrained`
+        # calls and translate gated-repo / 401 errors into actionable
+        # guidance pointing at `docs/install.md`.
+        try:
+            self._det_processor = Sam3Processor.from_pretrained(repo)
+            det_model = Sam3Model.from_pretrained(repo)
+            det_model.to(self._device).eval()
+            self._det_model = det_model
 
-        self._trk_processor = Sam3TrackerVideoProcessor.from_pretrained(repo)
-        trk_dtype = torch.bfloat16 if self._device.type == "cuda" else torch.float32
-        trk_model = Sam3TrackerVideoModel.from_pretrained(repo, dtype=trk_dtype)
-        trk_model.to(self._device).eval()
-        self._trk_model = trk_model
-        self._trk_dtype = trk_dtype
+            self._trk_processor = Sam3TrackerVideoProcessor.from_pretrained(repo)
+            trk_dtype = torch.bfloat16 if self._device.type == "cuda" else torch.float32
+            trk_model = Sam3TrackerVideoModel.from_pretrained(repo, dtype=trk_dtype)
+            trk_model.to(self._device).eval()
+            self._trk_model = trk_model
+            self._trk_dtype = trk_dtype
+        except Exception as exc:
+            wrapped = _wrap_if_gated_repo(repo, exc)
+            if wrapped is not None:
+                raise wrapped from exc
+            raise
 
         # Sentinel that the other guard checks — any of the four attrs
         # set above would work; pick one that's definitely non-None.
