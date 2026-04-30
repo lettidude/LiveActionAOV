@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "live-action-aov"
-version = "0.1.0"
+version = "0.1.1"
 description = "AI-driven VFX plate preprocessor: depth, normals, motion, mattes as sidecar EXRs"
 readme = "README.md"
 license = { text = "MIT" }
