@@ -216,13 +216,22 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(get_log_dir())))
 
     def _show_about(self) -> None:
-        QMessageBox.about(
-            self,
-            "About Live Action AOV",
-            "Live Action AOV — Shot Prep GUI (Phase 5, Milestone 2).\n\n"
-            "Submit runs the pipeline locally via LocalExecutor.\n"
-            "Deadline submit and session autosave land in later milestones.",
+        from live_action_aov import __version__
+
+        repo_url = "https://github.com/lettidude/LiveActionAOV"
+        contact = "LeonardoVFX@gmail.com"
+        body = (
+            f"<h3 style='margin-bottom:2px;'>Live Action AOV</h3>"
+            f"<p style='margin-top:0; color:#888;'>"
+            f"v{__version__} &nbsp;·&nbsp; MIT License</p>"
+            f"<p>AI-driven VFX plate preprocessor — depth, normals, motion "
+            f"and mattes as sidecar EXRs.</p>"
+            f"<p><b>Author:</b> Leonardo Paolini<br>"
+            f"<b>Contact:</b> <a href='mailto:{contact}'>{contact}</a><br>"
+            f"<b>Repository:</b> <a href='{repo_url}'>{repo_url}</a></p>"
+            f"<p style='color:#888;'><i>Powered by Claude (Anthropic).</i></p>"
         )
+        QMessageBox.about(self, "About Live Action AOV", body)
 
     # --- Submit lifecycle ---
 
