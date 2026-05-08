@@ -43,7 +43,25 @@ uv run liveaov --help        # CLI reference
 > `~/.cache/huggingface/hub` (Linux/macOS) or
 > `%USERPROFILE%\.cache\huggingface\hub` (Windows). Subsequent runs are
 > offline-capable for any pass whose weights you've already pulled.
->
+
+### Hugging Face authentication (one-time, required for SAM 3)
+
+**SAM 3** is **gated** on Hugging Face — Meta's license terms, not ours — so the matte pass needs a one-time HF token. Three steps:
+
+1. **Request access** at https://huggingface.co/facebook/sam3 — click **"Agree and access repository"** at the top of the page. Approval is usually instant.
+2. **Create an HF token** at https://huggingface.co/settings/tokens — click **"Create new token"**, any name is fine, **"Read"** scope is sufficient (no write/admin needed). Copy the token string.
+3. **Authenticate locally**, from the project root:
+
+   ```bash
+   uv run hf auth login
+   ```
+
+   (or `uv run huggingface-cli login` on older `huggingface_hub` versions). Paste the token when prompted. It's cached at `~/.cache/huggingface/token` and SAM 3 will download cleanly on the next run.
+
+Prefer env vars? Set `HF_TOKEN=<your-token>` in your shell instead and skip step 3 — `transformers` and `huggingface_hub` pick it up automatically.
+
+If you skip this, the matte pass fails on first use with `OSError: You are trying to access a gated repo. ... 401 Client Error`. Other models in the catalog (Depth Anything V2, DepthCrafter, NormalCrafter, DSINE, MatAnyone 2, RVM, RAFT) are **not** currently gated.
+
 > **Updating to latest:** from the project root, run `.\update.bat` (Windows) or `./update.sh` (Linux/macOS). Pulls the latest code and re-syncs deps. Idempotent if there's nothing new.
 >
 > **What is `uv`?** A fast Python package manager from Astral —
