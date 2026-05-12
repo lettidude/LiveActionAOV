@@ -62,8 +62,28 @@ Prefer env vars? Set `HF_TOKEN=<your-token>` in your shell instead and skip step
 
 If you skip this, the matte pass fails on first use with `OSError: You are trying to access a gated repo. ... 401 Client Error`. Other models in the catalog (Depth Anything V2, DepthCrafter, NormalCrafter, DSINE, MatAnyone 2, RVM, RAFT) are **not** currently gated.
 
-> **Updating to latest:** from the project root, run `.\update.bat` (Windows) or `./update.sh` (Linux/macOS). Pulls the latest code and re-syncs deps. Idempotent if there's nothing new.
->
+### Updating an existing install
+
+Already cloned? From the project root:
+
+```powershell
+# Windows:
+.\update.bat
+```
+
+```bash
+# Linux / macOS:
+./update.sh
+```
+
+The script runs `git pull origin main` then `uv sync --extra all` — no re-download of torch / model weights, only changed source. Idempotent if there's nothing new.
+
+To check which version you're on:
+
+```bash
+uv run python -c "import importlib.metadata; print(importlib.metadata.version('live-action-aov'))"
+```
+
 > **What is `uv`?** A fast Python package manager from Astral —
 > drop-in replacement for `pip` + `venv`. The installer scripts grab
 > it for you. See [docs.astral.sh/uv](https://docs.astral.sh/uv/) if
