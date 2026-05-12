@@ -92,7 +92,15 @@ class OIIOExrReader(ImageSequenceReader):
             raise FileNotFoundError(
                 f"Frame {frame} not present in sequence; available: {min(frames)}..{max(frames)}"
             )
-        return read_exr(frames[frame])
+        pixels, attrs = read_exr(frames[frame])
+        # Drop alpha so every inference pass sees plain RGB. Most passes
+        # silently assumed 3 channels and crashed inside ImageNet
+        # normalize on RGBA plates (Video-Depth-Anything in particular).
+        # `read_exr` itself keeps the file's full channel set for the
+        # GUI / CLI inspect callers that want it.
+        if pixels.ndim == 3 and pixels.shape[-1] > 3:
+            pixels = pixels[..., :3]
+        return pixels, attrs
 
 
 def _pattern_to_regex(pattern: str) -> re.Pattern[str]:
