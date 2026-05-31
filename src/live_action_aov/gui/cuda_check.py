@@ -28,6 +28,15 @@ class CudaState:
     device_name: str | None
     device_count: int
     advisory: str  # Human-readable summary for the UI.
+    # Total VRAM of device 0 in GiB (the unit GPUs are marketed in:
+    # `total_memory / 1024**3` ≈ the "24 GB" / "32 GB" on the box).
+    # None when unknown — torch not loaded, no device, or the property
+    # query raised. Added so the GUI can show what the machine actually
+    # has and so heavy passes can capability-gate (see
+    # `meets_vram_requirement`) instead of OOM-crashing mid-batch on a
+    # smaller card. Defaulted last so existing constructors are
+    # unaffected.
+    total_vram_gb: float | None = None
 
 
 # Ada Lovelace (sm_89) runs Ampere (sm_86) SASS natively via NVIDIA's
@@ -140,6 +149,16 @@ def cuda_state() -> CudaState:
         count = 0
         name = None
 
+    # Total VRAM of device 0, in GiB. Best-effort — never let a
+    # property-query failure break the preflight; VRAM is advisory.
+    vram_gb: float | None = None
+    try:
+        if count:
+            total_bytes = int(torch.cuda.get_device_properties(0).total_memory)
+            vram_gb = round(total_bytes / (1024**3), 1)
+    except Exception:
+        vram_gb = None
+
     # Compute-capability sanity check: cuda.is_available() returns
     # True even when the installed wheel was built without kernels
     # for this GPU's arch (e.g. RTX 5090 / sm_120 on a cu124 wheel
@@ -164,6 +183,7 @@ def cuda_state() -> CudaState:
                 torch_built_for_cuda=True,
                 device_name=name,
                 device_count=count,
+                total_vram_gb=vram_gb,
                 advisory=(
                     f"Your GPU ({name}, {cap_str}) isn't supported by this "
                     f"PyTorch build ({ver}, compiled for: {arches_str}).\n\n"
@@ -181,14 +201,48 @@ def cuda_state() -> CudaState:
         # fail the whole preflight.
         pass
 
+    device_detail = name or "unknown device"
+    if vram_gb:
+        # Marketed-style rounding: a 24 GiB card reports ~23.9 → "24 GB".
+        device_detail += f", {vram_gb:.0f} GB VRAM"
     return CudaState(
         available=True,
         torch_version=ver,
         torch_built_for_cuda=True,
         device_name=name,
         device_count=count,
-        advisory=f"CUDA ready — {name} ({count} device{'s' if count != 1 else ''}).",
+        total_vram_gb=vram_gb,
+        advisory=(
+            f"CUDA ready — {device_detail} "
+            f"({count} device{'s' if count != 1 else ''})."
+        ),
     )
 
 
-__all__ = ["CudaState", "cuda_state"]
+def meets_vram_requirement(state: CudaState, min_vram_gb: float) -> bool:
+    """Does this machine have at least `min_vram_gb` of total VRAM?
+
+    The portability gate: a heavy pass (e.g. a future Wan-based albedo
+    model that wants ~16 GB) calls this to decide whether to offer
+    itself on the current machine, rather than letting the user wait
+    then OOM-crash mid-batch on a smaller card.
+
+    Policy:
+      - GPU unavailable        → False (nothing heavy can run anyway).
+      - VRAM unknown (None)     → True. We never block on missing
+        telemetry — if it truly doesn't fit, the pass OOMs loudly and
+        the retry/backoff layer handles it. Better than silently hiding
+        a pass because a property query failed.
+      - VRAM known              → True iff it meets the floor.
+
+    `min_vram_gb` is compared in the same GiB unit as
+    `CudaState.total_vram_gb`.
+    """
+    if not state.available:
+        return False
+    if state.total_vram_gb is None:
+        return True
+    return state.total_vram_gb >= float(min_vram_gb)
+
+
+__all__ = ["CudaState", "cuda_state", "meets_vram_requirement"]
