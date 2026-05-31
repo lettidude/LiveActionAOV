@@ -87,6 +87,24 @@ MATTE_CHANNELS = (CH_MATTE_R, CH_MATTE_G, CH_MATTE_B, CH_MATTE_A)
 CH_AO = "ao.a"
 AO_CHANNELS = (CH_AO,)
 
+# --- Intrinsics (albedo / irradiance, intrinsic-decomposition passes) ---
+# Albedo = view-independent base colour (lighting removed); irradiance =
+# the incident-light / shading term such that, in a Lambertian
+# approximation, plate ≈ albedo * irradiance. Both are RGB triplets in a
+# linear working space so a comper can divide the plate by albedo to
+# recover shading, or relight by swapping irradiance. Layered under
+# `albedo.` / `irradiance.` so Nuke groups each triplet. First consumer
+# is the UniVidX intrinsic pass (Apache-2.0, Wan2.1 backbone).
+CH_ALBEDO_R = "albedo.r"
+CH_ALBEDO_G = "albedo.g"
+CH_ALBEDO_B = "albedo.b"
+ALBEDO_CHANNELS = (CH_ALBEDO_R, CH_ALBEDO_G, CH_ALBEDO_B)
+
+CH_IRRADIANCE_R = "irradiance.r"
+CH_IRRADIANCE_G = "irradiance.g"
+CH_IRRADIANCE_B = "irradiance.b"
+IRRADIANCE_CHANNELS = (CH_IRRADIANCE_R, CH_IRRADIANCE_G, CH_IRRADIANCE_B)
+
 
 # --- Semantic masks (dynamic — one per detected concept) ---
 MASK_PREFIX = "mask."
@@ -108,14 +126,20 @@ CANONICAL_CHANNEL_ORDER: tuple[str, ...] = (
     *POSITION_CHANNELS,
     *NORMAL_CHANNELS,
     *AO_CHANNELS,
+    *ALBEDO_CHANNELS,
+    *IRRADIANCE_CHANNELS,
     *FLOW_CHANNELS,
     *MATTE_CHANNELS,
 )
 
 
 __all__ = [
+    "ALBEDO_CHANNELS",
     "AO_CHANNELS",
     "CANONICAL_CHANNEL_ORDER",
+    "CH_ALBEDO_B",
+    "CH_ALBEDO_G",
+    "CH_ALBEDO_R",
     "CH_AO",
     "CH_BACKWARD_U",
     "CH_BACKWARD_V",
@@ -126,6 +150,9 @@ __all__ = [
     "CH_FLOW_OCCLUSION",
     "CH_FORWARD_U",
     "CH_FORWARD_V",
+    "CH_IRRADIANCE_B",
+    "CH_IRRADIANCE_G",
+    "CH_IRRADIANCE_R",
     "CH_MATTE_A",
     "CH_MATTE_B",
     "CH_MATTE_G",
@@ -143,6 +170,7 @@ __all__ = [
     "CH_Z_RAW",
     "DEPTH_CHANNELS",
     "FLOW_CHANNELS",
+    "IRRADIANCE_CHANNELS",
     "MASK_PREFIX",
     "MATTE_CHANNELS",
     "NORMAL_CHANNELS",
