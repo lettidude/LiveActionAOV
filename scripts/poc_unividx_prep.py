@@ -11,15 +11,16 @@ What this script DOES (fully implemented, verified against our own code):
   1. Reads an EXR plate sequence via OIIOExrReader (+ optional proxy).
   2. Applies the clip-uniform display transform (auto-exposure → AgX →
      sRGB), exactly like the depth/normals passes.
-  3. Writes numbered PNG frames into <out>/<video_name>/00000.rgb.jpg ...
+  3. Writes numbered frames into <out>/<video_name>/00000.rgb.jpg ...
      — the folder layout UniVidX's inference script expects.
   4. Probes + prints total VRAM so you know whether the 14B model fits.
 
 What this script does NOT do (on purpose):
   - It does NOT run UniVidX. The 14B model isn't vendored yet — that's
-    the whole point of validating first. Instead it prints the exact
-    upstream commands to run against the prepped frames. VERIFY those
-    against the current upstream README before trusting them:
+    the whole point of validating first. Instead it prints the upstream
+    steps (config-driven: mode R2AIN in a YAML, not CLI flags) to run
+    against the prepped frames. VERIFY every path/key against the current
+    upstream README before trusting it — the interface drifts:
     https://github.com/houyuanchen111/UniVidX
 
 After you run upstream inference and eyeball the albedo quality +
@@ -58,13 +59,15 @@ def _probe_vram() -> None:
         name = torch.cuda.get_device_name(0)
         total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         print(f"[vram] GPU 0: {name}, {total_gb:.1f} GB total")
-        # ~15 GB for Q8 Wan2.1-14B inference per field reports; 16 w/ headroom.
-        if total_gb >= 16:
-            print("[vram] OK — should fit UniVidX at fp8/int8 (~15 GB).")
-        elif total_gb >= 12:
-            print("[vram] TIGHT — may need aggressive quant (Q5/Q6) or offload.")
+        # 24 GB FP8 minimum per the UniVidX_ComfyUI maintainer (peak
+        # 18-20 GB FP8, 32-34 GB BF16). Earlier ~15 GB Q8 reports were
+        # optimistic — 24 is the honest floor.
+        if total_gb >= 32:
+            print("[vram] OK -- comfortable for UniVidX (FP8 or BF16).")
+        elif total_gb >= 24:
+            print("[vram] OK -- fits UniVidX at FP8 (~18-20 GB peak).")
         else:
-            print("[vram] TOO SMALL — UniVidX 14B will not fit; expect OOM.")
+            print("[vram] TOO SMALL -- UniVidX 14B needs 24 GB FP8; expect OOM.")
     except Exception as exc:
         print(f"[vram] probe failed ({type(exc).__name__}: {exc})")
 
@@ -116,15 +119,16 @@ def _prep_frames(args: argparse.Namespace) -> Path:
         out_path = video_dir / f"{i:05d}.rgb.jpg"
         cv2.imwrite(str(out_path), bgr)
         n += 1
-    print(f"[prep] wrote {n} frames → {video_dir}")
+    print(f"[prep] wrote {n} frames -> {video_dir}")
     return video_dir
 
 
-def _print_upstream_commands(video_parent: Path, n_frames: int) -> None:
+def _print_upstream_commands(video_dir: Path, n_frames: int) -> None:
     print("\n" + "=" * 70)
     print(" NEXT: run UniVidX upstream inference on the prepped frames.")
-    print(" VERIFY these against the current upstream README — the flags")
-    print(" below are from the 2026-05 release and may drift.")
+    print(" UniVidX is config-driven (a YAML), NOT CLI flags. VERIFY every")
+    print(" path/key against the current upstream README before trusting it")
+    print(" — the interface drifts release to release.")
     print("   https://github.com/houyuanchen111/UniVidX")
     print("=" * 70)
     print(
@@ -132,19 +136,35 @@ def _print_upstream_commands(video_parent: Path, n_frames: int) -> None:
         "git clone https://github.com/houyuanchen111/UniVidX.git\n"
         "cd UniVidX\n"
         "conda create -n unividx python=3.10 -y && conda activate unividx\n"
-        "pip install -r requirement.txt\n"
-        "# Download Wan2.1-T2V-14B backbone weights per their Model Zoo.\n"
+        "pip install -r requirements.txt\n"
     )
     print(
-        "# 2. Run intrinsic inference (albedo/irradiance/normal):\n"
+        "# 2. Download weights (~85 GB total — backbone + LoRA checkpoint):\n"
+        'pip install "huggingface_hub[cli]"\n'
+        "huggingface-cli download Wan-AI/Wan2.1-T2V-14B \\\n"
+        "    --local-dir ./models/Wan-AI/Wan2.1-T2V-14B   # ~69 GB backbone\n"
+        "huggingface-cli download houyuanchen/UniVidX \\\n"
+        "    --local-dir ./checkpoints                     # univid_intrinsic.safetensors\n"
+    )
+    print(
+        "# 3. Edit configs/univid_intrinsic_inference.yaml:\n"
+        "#      mode: R2AIN          # RGB -> albedo + irradiance + normal\n"
+        f"#      inference_rgb_path: {video_dir.resolve()}\n"
+        "#      inference_albedo_path: null      # leave null for R2AIN\n"
+        "#      inference_irradiance_path: null  #   (these are the targets)\n"
+        "#      inference_normal_path: null\n"
+        "#      experiment_name: poc_albedo\n"
+        f"#    NOTE: {n_frames} frames prepped. Confirm whether inference_rgb_path\n"
+        "#    wants this FRAME FOLDER or a single .mp4 — upstream has used both.\n"
+        "#    If it wants a video:  ffmpeg -framerate 24 -i %05d.rgb.jpg poc.mp4\n"
+    )
+    print(
+        "# 4. Run inference:\n"
         "python scripts/inference_univid_intrinsic.py \\\n"
-        "    --config configs/univid_intrinsic_inference.yaml \\\n"
-        f"    --input_dir {video_parent.resolve()} \\\n"
-        f"    --sample_n_frames {n_frames} \\\n"
-        "    --output_path ./outputs/poc_albedo\n"
+        "    --config configs/univid_intrinsic_inference.yaml\n"
     )
     print(
-        "# 3. Time it + watch VRAM in another shell:\n"
+        "# 5. Time it + watch VRAM in another shell:\n"
         "#    nvidia-smi --query-gpu=memory.used --format=csv -l 1\n"
         "# Report back: wall-clock for the clip, peak VRAM, and whether the\n"
         "# albedo looks lighting-free (no baked shadows in the base colour).\n"
@@ -152,6 +172,15 @@ def _print_upstream_commands(video_parent: Path, n_frames: int) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows consoles default to cp1252; force UTF-8 so non-ASCII in the
+    # -h help text or status lines never raises UnicodeEncodeError (it just
+    # crashed a real run on a cp1252 console). Guarded — a redirected
+    # stream may not support reconfigure.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--folder", required=True, help="Plate folder (contains the EXR sequence)")
     p.add_argument("--pattern", required=True, help="Sequence pattern, e.g. shot.####.exr")
@@ -174,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[error] frame prep failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     n_frames = args.last - args.first + 1
-    _print_upstream_commands(video_dir.parent, n_frames)
+    _print_upstream_commands(video_dir, n_frames)
     return 0
 
 
