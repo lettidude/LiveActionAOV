@@ -9,7 +9,24 @@ hard-blocked Submit in `main_window._on_submit_clicked`.
 
 from __future__ import annotations
 
-from live_action_aov.gui.cuda_check import _arch_compatible
+from live_action_aov.gui.cuda_check import (
+    CudaState,
+    _arch_compatible,
+    meets_vram_requirement,
+)
+
+
+def _state(*, available: bool = True, vram: float | None = None) -> CudaState:
+    """Build a CudaState for gate tests without touching torch/CUDA."""
+    return CudaState(
+        available=available,
+        torch_version="2.11.0+cu128",
+        torch_built_for_cuda=True,
+        device_name="Test GPU",
+        device_count=1 if available else 0,
+        advisory="",
+        total_vram_gb=vram,
+    )
 
 
 def test_exact_sass_match() -> None:
@@ -57,3 +74,30 @@ def test_malformed_cap_string_is_safe() -> None:
 def test_malformed_arch_entry_is_skipped() -> None:
     """A junk `compute_` entry shouldn't crash the JIT scan."""
     assert _arch_compatible("sm_90", {"compute_oops", "compute_80"}) is True
+
+
+# --- VRAM capability gate (portability) ------------------------------
+
+
+def test_vram_gate_passes_when_above_floor() -> None:
+    """RTX 5090 (32 GB) clears a 16 GB heavy-pass floor."""
+    assert meets_vram_requirement(_state(vram=32.0), 16.0) is True
+
+
+def test_vram_gate_passes_at_exact_floor() -> None:
+    assert meets_vram_requirement(_state(vram=16.0), 16.0) is True
+
+
+def test_vram_gate_fails_below_floor() -> None:
+    """RTX 4060 (8 GB) can't run a pass that needs 16 GB."""
+    assert meets_vram_requirement(_state(vram=8.0), 16.0) is False
+
+
+def test_vram_gate_permissive_when_unknown() -> None:
+    """Unknown VRAM never blocks a pass — telemetry gaps shouldn't hide
+    capabilities; the pass OOMs loudly if it truly doesn't fit."""
+    assert meets_vram_requirement(_state(vram=None), 16.0) is True
+
+
+def test_vram_gate_false_when_gpu_unavailable() -> None:
+    assert meets_vram_requirement(_state(available=False, vram=32.0), 1.0) is False
