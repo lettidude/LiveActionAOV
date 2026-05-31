@@ -163,14 +163,10 @@ class UniVidXIntrinsicPass(UtilityPass):
         return frames
 
     def infer(self, tensor: Any) -> Any:
-        raise NotImplementedError(
-            "UniVidXIntrinsicPass is VIDEO_CLIP; drive it via run_shot."
-        )
+        raise NotImplementedError("UniVidXIntrinsicPass is VIDEO_CLIP; drive it via run_shot.")
 
     def postprocess(self, tensor: Any) -> dict[str, np.ndarray]:
-        raise NotImplementedError(
-            "UniVidXIntrinsicPass is VIDEO_CLIP; drive it via run_shot."
-        )
+        raise NotImplementedError("UniVidXIntrinsicPass is VIDEO_CLIP; drive it via run_shot.")
 
     # ------------------------------------------------------------------
     # Shot-level iteration

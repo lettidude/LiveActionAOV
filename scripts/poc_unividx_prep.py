@@ -159,8 +159,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--last", type=int, required=True, help="Last frame (inclusive)")
     p.add_argument("--out", default="./poc_unividx_frames", help="Output root for prepped frames")
     p.add_argument("--video-name", dest="video_name", default="video_1", help="Subfolder name")
-    p.add_argument("--proxy", type=int, default=None, help="Proxy long-edge px (e.g. 960); omit for full res")
-    p.add_argument("--colorspace", default="auto", help="Plate colorspace, e.g. lin_rec709 / acescg / auto")
+    p.add_argument(
+        "--proxy", type=int, default=None, help="Proxy long-edge px (e.g. 960); omit for full res"
+    )
+    p.add_argument(
+        "--colorspace", default="auto", help="Plate colorspace, e.g. lin_rec709 / acescg / auto"
+    )
     args = p.parse_args(argv)
 
     _probe_vram()
