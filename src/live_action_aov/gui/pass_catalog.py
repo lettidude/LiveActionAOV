@@ -73,13 +73,6 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
     "Normals": [
         ModelEntry("dsine", "DSINE", "MIT", True, ("dsine",)),
         ModelEntry(
-            "marigold_normals",
-            "Marigold Normals",
-            "OpenRAIL++-M",
-            True,
-            ("marigold_normals",),
-        ),
-        ModelEntry(
             "normalcrafter",
             "NormalCrafter",
             "CC-BY-NC-4.0",

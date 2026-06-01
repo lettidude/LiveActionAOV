@@ -3,7 +3,7 @@
 # Developed with Claude (Anthropic)
 # License: MIT
 
-"""Marigold passes — contract tests.
+"""Marigold-IID intrinsic passes — contract tests.
 
 Covers the declarative contract only (channels, license, temporal mode,
 produced channels, catalog wiring). No model is loaded — `_load_model` is
@@ -19,7 +19,8 @@ from live_action_aov.passes.intrinsic.marigold import (
     MarigoldIntrinsicsAppearancePass,
     MarigoldIntrinsicsLightingPass,
 )
-from live_action_aov.passes.normals.marigold_normals import MarigoldNormalsPass
+
+_INTRINSIC_PASSES = (MarigoldIntrinsicsLightingPass, MarigoldIntrinsicsAppearancePass)
 
 # --- channel additions ----------------------------------------------
 
@@ -50,12 +51,8 @@ def test_new_channel_symbols_exported() -> None:
 # --- license / contract ----------------------------------------------
 
 
-def test_all_marigold_passes_commercial_openrail() -> None:
-    for cls in (
-        MarigoldIntrinsicsLightingPass,
-        MarigoldIntrinsicsAppearancePass,
-        MarigoldNormalsPass,
-    ):
+def test_intrinsic_passes_commercial_openrail() -> None:
+    for cls in _INTRINSIC_PASSES:
         lic = cls.declared_license()
         assert isinstance(lic, License)
         assert lic.commercial_use is True
@@ -63,18 +60,13 @@ def test_all_marigold_passes_commercial_openrail() -> None:
 
 
 def test_temporal_mode_per_frame() -> None:
-    for cls in (
-        MarigoldIntrinsicsLightingPass,
-        MarigoldIntrinsicsAppearancePass,
-        MarigoldNormalsPass,
-    ):
+    for cls in _INTRINSIC_PASSES:
         assert cls.temporal_mode is TemporalMode.PER_FRAME
 
 
-def test_pass_types() -> None:
-    assert MarigoldIntrinsicsLightingPass.pass_type is PassType.RADIOMETRIC
-    assert MarigoldIntrinsicsAppearancePass.pass_type is PassType.RADIOMETRIC
-    assert MarigoldNormalsPass.pass_type is PassType.GEOMETRIC
+def test_pass_type_radiometric() -> None:
+    for cls in _INTRINSIC_PASSES:
+        assert cls.pass_type is PassType.RADIOMETRIC
 
 
 def test_lighting_produces_albedo_shading_residual() -> None:
@@ -89,34 +81,27 @@ def test_appearance_produces_albedo_and_materials() -> None:
     assert produced == set(ch.ALBEDO_CHANNELS) | set(ch.MATERIAL_CHANNELS)
 
 
-def test_normals_produces_xyz() -> None:
-    produced = {c.name for c in MarigoldNormalsPass.produces_channels}
-    assert produced == {ch.CH_N_X, ch.CH_N_Y, ch.CH_N_Z}
-
-
 def test_smoothable_channels_match_produced() -> None:
-    # Every smoothable channel must be one the pass actually produces.
-    for cls in (
-        MarigoldIntrinsicsLightingPass,
-        MarigoldIntrinsicsAppearancePass,
-        MarigoldNormalsPass,
-    ):
+    for cls in _INTRINSIC_PASSES:
         produced = {c.name for c in cls.produces_channels}
         assert set(cls.smoothable_channels) <= produced
 
 
+def test_temporal_blend_param_default() -> None:
+    # Latent propagation: anchor-weight blend in (0, 1).
+    for cls in _INTRINSIC_PASSES:
+        p = cls()
+        b = float(p.params["temporal_blend"])
+        assert 0.0 <= b <= 1.0
+
+
 def test_vram_floor_declared() -> None:
     assert MIN_VRAM_GB <= 8.0  # lightweight vs the 24 GB UniVidX path
-    for cls in (
-        MarigoldIntrinsicsLightingPass,
-        MarigoldIntrinsicsAppearancePass,
-        MarigoldNormalsPass,
-    ):
+    for cls in _INTRINSIC_PASSES:
         assert cls.vram_estimate_gb_fn(1920, 1080) >= 1.0
 
 
 def test_construct_does_not_load_model() -> None:
-    # Lazy: constructing must not build the diffusers pipe.
     p = MarigoldIntrinsicsLightingPass()
     assert p._pipe is None
 
@@ -127,9 +112,9 @@ def test_construct_does_not_load_model() -> None:
 def test_in_gui_catalog() -> None:
     from live_action_aov.gui.pass_catalog import PASS_CATALOG, find_entry
 
-    for key in ("marigold_iid_lighting", "marigold_iid_appearance", "marigold_normals"):
+    for key in ("marigold_iid_lighting", "marigold_iid_appearance"):
         assert find_entry(key) is not None
-    assert "Intrinsics" in PASS_CATALOG
-    # All Marigold catalog entries are commercial (no NC consent dialog).
-    for key in ("marigold_iid_lighting", "marigold_iid_appearance", "marigold_normals"):
         assert find_entry(key).commercial is True
+    assert "Intrinsics" in PASS_CATALOG
+    # Marigold normals was dropped (NormalCrafter/DSINE cover normals).
+    assert find_entry("marigold_normals") is None

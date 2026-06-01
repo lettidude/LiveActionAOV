@@ -20,10 +20,12 @@ Why Marigold (chosen over UniVidX for this tool): ~0.4 s/frame, ~3-4 GB VRAM,
 (validated head-to-head 2026-06, see docs/albedo-marigold.md). License is
 OpenRAIL++-M (commercial use permitted, use-restricted) — fine for this tool.
 
-Temporal: PER_FRAME (single-image model). A fixed per-frame seed gives strong
-frame-to-frame stability; the flow-guided temporal smoother (`smooth: auto`)
-cleans up any residual flicker. Outputs are LINEAR (albedo absolute; shading/
-residual up-to-scale) so they drop straight into the linear sidecar.
+Temporal: single-image model, so `run_shot` adds **latent propagation**
+(Marigold's recommended video scheme — each frame's init latent blends a
+constant frame-0 anchor with the previous frame's latent) to fight flicker,
+on top of a fixed seed. The flow-guided temporal smoother (`smooth: auto`,
+needs a Motion pass) can stack further. Outputs are LINEAR (albedo absolute;
+shading/residual up-to-scale) so they drop straight into the linear sidecar.
 """
 
 from __future__ import annotations
@@ -91,9 +93,14 @@ class _MarigoldIntrinsicBase(UtilityPass):
     DEFAULT_PARAMS: dict[str, Any] = {
         "num_inference_steps": 4,  # Marigold is reliable at 1-4 steps
         "ensemble_size": 1,  # >=3 improves precision at linear cost
-        "seed": 42,  # fixed per frame -> temporal stability
+        "seed": 42,  # fixed init noise -> temporal stability
         "precision": "fp16",  # "fp16" | "fp32" (fp16 only on cuda)
-        "smooth": "auto",  # executor auto-wires the flow smoother
+        "smooth": "auto",  # executor auto-wires the flow smoother (needs Motion/RAFT)
+        # Latent propagation (Marigold's recommended video-consistency scheme):
+        # each frame's init latent = blend*anchor + (1-blend)*prev_frame_latent.
+        # Higher blend = steadier (more anchored to frame 0), lower = more
+        # responsive to motion. 0 disables propagation (pure per-frame).
+        "temporal_blend": 0.9,
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -145,21 +152,70 @@ class _MarigoldIntrinsicBase(UtilityPass):
         return {"image": u8, "plate_shape": (plate_h, plate_w)}
 
     def infer(self, tensor: Any) -> Any:
+        # Single-frame path (used by the default per-frame run_shot, e.g. for a
+        # one-frame still). No latent propagation here — that lives in run_shot.
+        pred, _ = self._run_pipe(tensor["image"], latents=None)
+        return {"prediction": pred, "plate_shape": tensor["plate_shape"]}
+
+    def _run_pipe(self, image_u8: np.ndarray, latents: Any) -> tuple[np.ndarray, Any]:
+        """One pipe call. Returns (prediction (n_targets,H,W,3) linear, out_latent).
+
+        `latents` seeds the diffusion init (for temporal propagation); None lets
+        the pipe sample from the fixed generator. `output_latent=True` returns
+        the latent to propagate into the next frame.
+        """
         import torch
         from PIL import Image
 
         assert self._pipe is not None
-        gen = torch.Generator(device=self._device).manual_seed(int(self.params["seed"]))
-        with torch.no_grad():
-            out = self._pipe(
-                Image.fromarray(tensor["image"]),
-                num_inference_steps=int(self.params["num_inference_steps"]),
-                ensemble_size=int(self.params["ensemble_size"]),
-                generator=gen,
-                match_input_resolution=True,
+        kw: dict[str, Any] = {
+            "num_inference_steps": int(self.params["num_inference_steps"]),
+            "ensemble_size": int(self.params["ensemble_size"]),
+            "match_input_resolution": True,
+            "output_latent": True,
+        }
+        if latents is not None:
+            # The pipe rejects `latents` + `generator` together — the provided
+            # latent IS the init, so no generator is needed.
+            kw["latents"] = latents
+        else:
+            kw["generator"] = torch.Generator(device=self._device).manual_seed(
+                int(self.params["seed"])
             )
-        # prediction: (n_targets, H, W, 3) float32 linear in [0, 1].
-        return {"prediction": np.asarray(out.prediction), "plate_shape": tensor["plate_shape"]}
+        with torch.no_grad():
+            out = self._pipe(Image.fromarray(image_u8), **kw)
+        return np.asarray(out.prediction), out.latent
+
+    def run_shot(
+        self, reader: Any, frame_range: tuple[int, int]
+    ) -> dict[int, dict[str, np.ndarray]]:
+        """Clip-level latent propagation for temporal stability.
+
+        Marigold is single-image, so naive per-frame inference flickers as the
+        plate moves. Following Marigold's recommended video scheme, each frame's
+        init latent is `blend*anchor + (1-blend)*prev`, where the anchor is the
+        first frame's latent (a constant structural prior across the clip) and
+        `prev` carries the previous frame forward. The flow smoother
+        (`smooth: auto`, needs a Motion pass) can stack on top.
+        """
+        self._load_model()
+        blend = float(self.params.get("temporal_blend", 0.0))
+        out: dict[int, dict[str, np.ndarray]] = {}
+        anchor: Any = None
+        last: Any = None
+        for f in range(frame_range[0], frame_range[1] + 1):
+            frame, _ = reader.read_frame(f)
+            pre = self.preprocess(frame[None, ...])
+            if blend <= 0.0 or last is None:
+                latents = None  # frame 0 (or propagation off): sample from seed
+            else:
+                latents = blend * anchor + (1.0 - blend) * last
+            pred, latent = self._run_pipe(pre["image"], latents=latents)
+            if anchor is None:
+                anchor = latent  # frame 0's latent anchors the whole clip
+            last = latent
+            out[f] = self.postprocess({"prediction": pred, "plate_shape": pre["plate_shape"]})
+        return out
 
     def postprocess(self, tensor: Any) -> dict[str, np.ndarray]:
         pred = tensor["prediction"]

@@ -146,7 +146,6 @@ rvm_refiner        = "live_action_aov.passes.matte.rvm:RVMRefinerPass"
 matanyone2         = "live_action_aov.passes.matte.matanyone2:MatAnyone2RefinerPass"
 marigold_iid_lighting   = "live_action_aov.passes.intrinsic.marigold:MarigoldIntrinsicsLightingPass"
 marigold_iid_appearance = "live_action_aov.passes.intrinsic.marigold:MarigoldIntrinsicsAppearancePass"
-marigold_normals        = "live_action_aov.passes.normals.marigold_normals:MarigoldNormalsPass"
 
 [project.entry-points."live_action_aov.post"]
 temporal_smooth      = "live_action_aov.post.temporal_smooth:TemporalSmoother"
