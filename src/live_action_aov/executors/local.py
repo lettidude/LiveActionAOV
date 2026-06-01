@@ -593,6 +593,14 @@ def _base_attrs(
         base[f"{METADATA_NAMESPACE}/ao/bias"] = float(p["params"].get("bias", 0.0))
         base[f"{METADATA_NAMESPACE}/ao/intensity"] = float(p["params"].get("intensity", 1.0))
 
+    # Cryptomatte — the pass emits the full `cryptomatte/<keyhash>/*` header
+    # attrs (name, hash, conversion, manifest) as a shot-level artifact.
+    # These are NOT under the liveaov namespace: Nuke's Cryptomatte node
+    # reads them as `exr/cryptomatte/...`, so they must land verbatim.
+    crypto_hdr = artifacts.get("cryptomatte_header") or {}
+    if crypto_hdr:
+        base.update(next(iter(crypto_hdr.values())) or {})
+
     return base
 
 

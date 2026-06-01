@@ -31,6 +31,8 @@ dependencies = [
     "typer>=0.12",
     "pyyaml>=6.0",
     "numpy>=1.26,<2.0",
+    # MurmurHash3 for Cryptomatte object-id hashing (tiny C ext).
+    "mmh3>=4.0",
     # I/O
     "oiio-python>=2.5",
     "opencolorio>=2.3",
@@ -136,6 +138,7 @@ normalcrafter      = "live_action_aov.passes.normals.normalcrafter:NormalCrafter
 sam3_matte         = "live_action_aov.passes.matte.sam3:SAM3MattePass"
 rvm_refiner        = "live_action_aov.passes.matte.rvm:RVMRefinerPass"
 matanyone2         = "live_action_aov.passes.matte.matanyone2:MatAnyone2RefinerPass"
+cryptomatte        = "live_action_aov.passes.matte.cryptomatte:CryptomattePass"
 
 [project.entry-points."live_action_aov.post"]
 temporal_smooth      = "live_action_aov.post.temporal_smooth:TemporalSmoother"
