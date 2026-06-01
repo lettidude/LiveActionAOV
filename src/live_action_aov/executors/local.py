@@ -29,6 +29,7 @@ from live_action_aov.core.dag import PassNode, topological_sort
 from live_action_aov.core.job import Job, PassConfig, PostConfig, Shot
 from live_action_aov.core.logging_setup import RunLoggingSession
 from live_action_aov.core.pass_base import TemporalMode, UtilityPass
+from live_action_aov.core.preflight import check_dependencies
 from live_action_aov.core.registry import get_registry
 from live_action_aov.executors.base import Executor
 from live_action_aov.io.readers.display_transform_reader import DisplayTransformedReader
@@ -115,6 +116,12 @@ class LocalExecutor(Executor):
         resolved: list[tuple[PassConfig, type[UtilityPass]]] = []
         for pc in job.passes:
             resolved.append((pc, registry.get_pass(pc.name)))
+
+        # Pre-flight: a selected pass whose optional extra isn't installed
+        # used to crash mid-run with a raw ModuleNotFoundError deep in
+        # _load_model. Check up-front and raise one clear, forwardable message
+        # naming the exact `pip install` to run.
+        check_dependencies([pc.name for pc in job.passes])
 
         nodes = [_node_for(pc, cls) for (pc, cls) in resolved]
         ordered = topological_sort(nodes)
