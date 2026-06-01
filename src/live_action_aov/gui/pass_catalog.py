@@ -73,11 +73,37 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
     "Normals": [
         ModelEntry("dsine", "DSINE", "MIT", True, ("dsine",)),
         ModelEntry(
+            "marigold_normals",
+            "Marigold Normals",
+            "OpenRAIL++-M",
+            True,
+            ("marigold_normals",),
+        ),
+        ModelEntry(
             "normalcrafter",
             "NormalCrafter",
             "CC-BY-NC-4.0",
             False,
             ("normalcrafter",),
+        ),
+    ],
+    # Intrinsic image decomposition (albedo + lighting/material) — Marigold-IID.
+    # Single-select per category, so picking Lighting vs Appearance avoids
+    # producing two different albedos at once.
+    "Intrinsics": [
+        ModelEntry(
+            "marigold_iid_lighting",
+            "Marigold IID — Lighting (albedo · shading · residual)",
+            "OpenRAIL++-M",
+            True,
+            ("marigold_iid_lighting",),
+        ),
+        ModelEntry(
+            "marigold_iid_appearance",
+            "Marigold IID — Appearance (albedo · roughness · metal)",
+            "OpenRAIL++-M",
+            True,
+            ("marigold_iid_appearance",),
         ),
     ],
     "Matte": [

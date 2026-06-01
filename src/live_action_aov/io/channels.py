@@ -105,6 +105,24 @@ CH_IRRADIANCE_G = "irradiance.g"
 CH_IRRADIANCE_B = "irradiance.b"
 IRRADIANCE_CHANNELS = (CH_IRRADIANCE_R, CH_IRRADIANCE_G, CH_IRRADIANCE_B)
 
+# Non-diffuse residual R such that plate ≈ albedo * shading + residual
+# (Marigold-IID "Lighting" decomposition). Captures speculars / highlights
+# the diffuse albedo×shading product can't explain — a ready-made specular
+# layer for comp. Linear, up-to-scale. Layered under `residual.` so Nuke
+# groups the triplet.
+CH_RESIDUAL_R = "residual.r"
+CH_RESIDUAL_G = "residual.g"
+CH_RESIDUAL_B = "residual.b"
+RESIDUAL_CHANNELS = (CH_RESIDUAL_R, CH_RESIDUAL_G, CH_RESIDUAL_B)
+
+# --- PBR materials (Marigold-IID "Appearance" decomposition) ---
+# Per-pixel scalar material properties, [0,1]. Single-channel each, layered
+# under `material.` so Nuke groups them. Useful for CG integration / lookdev
+# and material-aware grades from a live-action plate.
+CH_ROUGHNESS = "material.roughness"
+CH_METALNESS = "material.metalness"
+MATERIAL_CHANNELS = (CH_ROUGHNESS, CH_METALNESS)
+
 
 # --- Semantic masks (dynamic — one per detected concept) ---
 MASK_PREFIX = "mask."
@@ -128,6 +146,8 @@ CANONICAL_CHANNEL_ORDER: tuple[str, ...] = (
     *AO_CHANNELS,
     *ALBEDO_CHANNELS,
     *IRRADIANCE_CHANNELS,
+    *RESIDUAL_CHANNELS,
+    *MATERIAL_CHANNELS,
     *FLOW_CHANNELS,
     *MATTE_CHANNELS,
 )
@@ -157,6 +177,7 @@ __all__ = [
     "CH_MATTE_B",
     "CH_MATTE_G",
     "CH_MATTE_R",
+    "CH_METALNESS",
     "CH_MOTION_X",
     "CH_MOTION_Y",
     "CH_NORMALS_CONFIDENCE",
@@ -166,14 +187,20 @@ __all__ = [
     "CH_P_X",
     "CH_P_Y",
     "CH_P_Z",
+    "CH_RESIDUAL_B",
+    "CH_RESIDUAL_G",
+    "CH_RESIDUAL_R",
+    "CH_ROUGHNESS",
     "CH_Z",
     "CH_Z_RAW",
     "DEPTH_CHANNELS",
     "FLOW_CHANNELS",
     "IRRADIANCE_CHANNELS",
     "MASK_PREFIX",
+    "MATERIAL_CHANNELS",
     "MATTE_CHANNELS",
     "NORMAL_CHANNELS",
     "POSITION_CHANNELS",
+    "RESIDUAL_CHANNELS",
     "is_mask_channel",
 ]

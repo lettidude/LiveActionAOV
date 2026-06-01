@@ -61,6 +61,9 @@ dev = [
 # Model-specific extras (user installs what they need)
 depthcrafter = ["diffusers>=0.30", "accelerate>=0.30"]
 normalcrafter = ["diffusers>=0.30", "accelerate>=0.30"]
+# Marigold IID (intrinsics) + Marigold normals share the diffusers
+# `MarigoldIntrinsicsPipeline`/`MarigoldNormalsPipeline`, added in 0.37.
+marigold = ["diffusers>=0.37", "accelerate>=0.30"]
 # Video-Depth-Anything uses a vendored ViT + temporal DPT backbone. The
 # model's internal resize path uses OpenCV; einops ships with the
 # DINOv2/motion-module blocks; easydict is needed by the temporal head.
@@ -136,6 +139,9 @@ normalcrafter      = "live_action_aov.passes.normals.normalcrafter:NormalCrafter
 sam3_matte         = "live_action_aov.passes.matte.sam3:SAM3MattePass"
 rvm_refiner        = "live_action_aov.passes.matte.rvm:RVMRefinerPass"
 matanyone2         = "live_action_aov.passes.matte.matanyone2:MatAnyone2RefinerPass"
+marigold_iid_lighting   = "live_action_aov.passes.intrinsic.marigold:MarigoldIntrinsicsLightingPass"
+marigold_iid_appearance = "live_action_aov.passes.intrinsic.marigold:MarigoldIntrinsicsAppearancePass"
+marigold_normals        = "live_action_aov.passes.normals.marigold_normals:MarigoldNormalsPass"
 
 [project.entry-points."live_action_aov.post"]
 temporal_smooth      = "live_action_aov.post.temporal_smooth:TemporalSmoother"
