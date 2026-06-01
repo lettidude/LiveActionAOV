@@ -392,7 +392,13 @@ class InspectorPanel(QWidget):
             sa = QScrollArea()
             sa.setWidget(content)
             sa.setWidgetResizable(True)
-            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            # Horizontal scrollbar AS-NEEDED (was AlwaysOff): when the panel
+            # is narrow, long model labels + license tags overflowed and were
+            # clipped with no way to reach them. With widgetResizable the
+            # content still fills the viewport when wide; the bar only appears
+            # when the longest row can't fit, so the user can scroll to the
+            # truncated license tags.
+            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             sa.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             sa.setStyleSheet("QScrollArea { border: none; }")
             return sa
