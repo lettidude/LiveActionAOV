@@ -184,11 +184,16 @@ def _proxy_resize(pixels: np.ndarray, long_edge: int) -> np.ndarray:
     scale = long_edge / current_long
     new_w = max(1, int(round(w * scale)))
     new_h = max(1, int(round(h * scale)))
-    # Simple stride-subsample — good enough for a preview; a proper
-    # Lanczos downsample is M3 polish.
-    row_stride = max(1, h // new_h)
-    col_stride = max(1, w // new_w)
-    return pixels[::row_stride, ::col_stride][:new_h, :new_w]
+    # Nearest-neighbour sample across the FULL extent of each axis.
+    # The old approach strided (h // new_h) then cropped `[:new_h, :new_w]`,
+    # but integer-floor striding over-produces rows/cols, so the trailing
+    # crop chopped the right + bottom of any plate whose aspect isn't a
+    # clean stride multiple (e.g. a 3840×1536 ultrawide lost its right ~20%,
+    # shifting the frame off-centre). linspace spans 0..N-1 inclusive, so the
+    # whole frame is represented — no crop, just a downsample.
+    rows = np.linspace(0, h - 1, new_h).round().astype(np.intp)
+    cols = np.linspace(0, w - 1, new_w).round().astype(np.intp)
+    return pixels[rows][:, cols]
 
 
 def _to_qimage_sRGB_via_colorspace(pixels: np.ndarray, colorspace: str) -> QImage:
