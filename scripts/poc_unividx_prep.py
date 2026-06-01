@@ -136,7 +136,7 @@ def _print_upstream_commands(video_dir: Path, n_frames: int) -> None:
         "git clone https://github.com/houyuanchen111/UniVidX.git\n"
         "cd UniVidX\n"
         "conda create -n unividx python=3.10 -y && conda activate unividx\n"
-        "pip install -r requirements.txt\n"
+        "pip install -r requirement.txt   # NB: singular, and add: regex av\n"
     )
     print(
         "# 2. Download weights (~85 GB total — backbone + LoRA checkpoint):\n"
@@ -154,9 +154,12 @@ def _print_upstream_commands(video_dir: Path, n_frames: int) -> None:
         "#      inference_irradiance_path: null  #   (these are the targets)\n"
         "#      inference_normal_path: null\n"
         "#      experiment_name: poc_albedo\n"
-        f"#    NOTE: {n_frames} frames prepped. Confirm whether inference_rgb_path\n"
-        "#    wants this FRAME FOLDER or a single .mp4 — upstream has used both.\n"
-        "#    If it wants a video:  ffmpeg -framerate 24 -i %05d.rgb.jpg poc.mp4\n"
+        f"#    NOTE: {n_frames} frames prepped. inference_rgb_path takes a single\n"
+        "#    MP4 (torchvision.io.read_video), NOT a folder. Mux the frames:\n"
+        "#      ffmpeg -framerate 24 -i %05d.rgb.jpg -pix_fmt yuv420p poc.mp4\n"
+        "#    The model forces 640x480 / 21 frames / 50 steps (non-4:3 input is\n"
+        "#    squished). Verified: ~21 GB peak / ~33s per frame on a 5090 with\n"
+        "#    CPU offload; needs a 24 GB card.\n"
     )
     print(
         "# 4. Run inference:\n"
