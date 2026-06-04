@@ -209,6 +209,32 @@ class UtilityPass(ABC):
         """
         return {}
 
+    # --- Resource lifecycle ---
+    def unload(self) -> None:
+        """Release GPU/model state after this pass's `run_shot` completes.
+
+        The executor calls this between passes (then empties the CUDA cache),
+        so peak VRAM stays at the single heaviest pass rather than the sum of
+        every model in the job. Without it a multi-pass / multi-shot session
+        accumulates resident models until it OOMs (a 5-pass stack crashed on
+        the 2nd shot loading SAM 3 on top of the first shot's models).
+
+        Default nulls the common model/pipeline/processor attributes so they
+        become GC-able. Passes that hold heavy state under other names should
+        override and null those too.
+        """
+        for attr in (
+            "_model",
+            "_pipe",
+            "_det_model",
+            "_trk_model",
+            "_det_processor",
+            "_trk_processor",
+            "_image_processor",
+        ):
+            if getattr(self, attr, None) is not None:
+                setattr(self, attr, None)
+
     # --- Cross-pass artifact consumption ---
     def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:
         """Receive the full artifact dict produced by upstream passes.
