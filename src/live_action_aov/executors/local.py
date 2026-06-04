@@ -200,6 +200,17 @@ class LocalExecutor(Executor):
                     for f, arr in emitted["backward_flow"].items():
                         flow_cache.put(shot.name, f, "backward", arr)
 
+                # Free this pass's GPU model before the next one loads. Peak
+                # VRAM then tracks the single heaviest pass, not the sum of
+                # every model — a 5-pass stack used to OOM on the 2nd shot of
+                # a session because shot 1's models were never released.
+                try:
+                    instance.unload()
+                except Exception:
+                    _log.debug("unload() failed for %s", node.name, exc_info=True)
+                del instance
+                _free_gpu_memory()
+
             # --- Auto-wire TemporalSmoother for PER_FRAME passes with
             # `smooth: auto` (spec §13.1 Phase 2). Only runs when a flow pass
             # actually emitted forward_flow — otherwise the smoother would
@@ -402,6 +413,25 @@ class LocalExecutor(Executor):
             shot.status = "failed"
             raise
         return job
+
+
+def _free_gpu_memory() -> None:
+    """Run a GC pass + release torch's cached CUDA blocks back to the driver.
+
+    Called after each pass unloads its model so the freed allocations are
+    actually returned (torch caches them otherwise) before the next pass —
+    or the next shot — loads. No-op when torch/CUDA aren't present.
+    """
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def _smooth_wanted(value: Any) -> bool:
