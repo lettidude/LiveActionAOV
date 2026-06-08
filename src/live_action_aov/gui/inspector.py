@@ -331,6 +331,37 @@ class InspectorPanel(QWidget):
                 )
             )
 
+        # SAM 3 concepts — free-text list of what SAM 3 should detect.
+        # Drives BOTH the Matte and Cryptomatte passes (they share the
+        # `sam3_matte` detector). SAM 3 is concept-prompted: it only
+        # finds what you ask for, so an empty/black matte usually just
+        # means the subject wasn't on the list. Empty here = the pass's
+        # built-in default concepts.
+        self._sam3_concepts_edit = QLineEdit()
+        self._sam3_concepts_edit.setPlaceholderText(
+            "person, vehicle, tree, building, sky, water, animal"
+        )
+        self._sam3_concepts_edit.setToolTip(
+            "What SAM 3 should detect, comma-separated (e.g. \"person, red car, dog\").\n"
+            "Drives both the Matte and Cryptomatte passes. SAM 3 only finds the\n"
+            "concepts you prompt — leave empty to use the built-in defaults."
+        )
+        self._sam3_concepts_edit.textEdited.connect(self._on_sam3_concepts_edited)
+
+        concepts_label = QLabel("SAM 3 detects")
+        concepts_label.setStyleSheet(
+            "font-weight: 600; color: #ddd; font-size: 9pt; padding-top: 6px;"
+        )
+        concepts_hint = QLabel(
+            "Comma-separated. Matte + Cryptomatte. Empty = defaults."
+        )
+        concepts_hint.setStyleSheet("color: #999; font-size: 8pt;")
+        concepts_hint.setWordWrap(True)
+        passes_block.addSpacing(8)
+        passes_block.addWidget(concepts_label)
+        passes_block.addWidget(self._sam3_concepts_edit)
+        passes_block.addWidget(concepts_hint)
+
         # "Apply to all shots" — one-click broadcast of the active
         # shot's pass selections to every other shot in the queue.
         # Unlike Output (which is always session-wide), Passes stay
@@ -575,6 +606,9 @@ class InspectorPanel(QWidget):
                 for btn in group.buttons():
                     btn.blockSignals(False)
 
+            # SAM 3 concepts free-text (drives Matte + Cryptomatte).
+            self._sam3_concepts_edit.setText(shot.sam3_concepts)
+
             # Render the auto-EV provenance line. Matches the format
             # of the colorspace line: value + source + a small evidence
             # number so the user can sanity-check the pipeline's guess.
@@ -669,6 +703,17 @@ class InspectorPanel(QWidget):
         self._rebuild_resolved_out_label()
         self._broadcast_output_to_all_shots()
 
+    def _on_sam3_concepts_edited(self, text: str) -> None:
+        """SAM 3 concepts edited — stored verbatim (comma-separated).
+        Parsing into a list happens at submit time in the worker, so a
+        half-typed "person, " mid-edit isn't destroyed. Per-shot like
+        the model selection; the "Apply passes to all" button copies it
+        alongside enabled_models."""
+        if self._building or self._current is None:
+            return
+        self._current.sam3_concepts = text
+        self._registry.notify_updated(self._current)
+
     def _on_proxy_changed(self, idx: int) -> None:
         if self._building or self._current is None:
             return
@@ -750,17 +795,20 @@ class InspectorPanel(QWidget):
         self._registry.notify_updated(self._current)
 
     def _on_apply_passes_to_all(self) -> None:
-        """Broadcast the active shot's enabled_models list to every
-        other shot in the registry. Non-destructive wrt Output etc. —
-        only `enabled_models` is copied."""
+        """Broadcast the active shot's enabled_models list (and the SAM 3
+        concepts that drive Matte + Cryptomatte) to every other shot in
+        the registry. Non-destructive wrt Output etc. — only the pass
+        selection and its concepts are copied."""
         if self._current is None:
             return
         source = list(self._current.enabled_models)
+        source_concepts = self._current.sam3_concepts
         count = 0
         for shot in self._registry.shots():
             if shot is self._current:
                 continue
             shot.enabled_models = list(source)
+            shot.sam3_concepts = source_concepts
             self._registry.notify_updated(shot)
             count += 1
         # Tiny feedback — tooltip-style text in the button so the user

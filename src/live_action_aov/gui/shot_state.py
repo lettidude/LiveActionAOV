@@ -69,6 +69,14 @@ class ShotState:
     # combos) into concrete plugin names for the executor.
     enabled_models: list[str] = field(default_factory=list)
 
+    # What SAM 3 should detect, for the Matte AND Cryptomatte passes
+    # (both run the `sam3_matte` detector). Comma-separated free text,
+    # e.g. "person, red car, dog". Empty = the pass's built-in default
+    # list (person/vehicle/tree/building/sky/water/animal). SAM 3 only
+    # finds the concepts you prompt — an empty/black matte usually just
+    # means the subject wasn't on the list.
+    sam3_concepts: str = ""
+
     # --- Legacy M2 surface kept as properties below ---
     # Other code that still references `enabled_passes` / `pass_backends`
     # will need to migrate to `enabled_models` over time. The Inspector
