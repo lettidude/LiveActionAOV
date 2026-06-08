@@ -220,6 +220,15 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
     )
 
 
+def _parse_concepts(raw: str) -> list[str]:
+    """Split the GUI's comma-separated concepts field into a clean list.
+
+    Comma (not whitespace) is the separator so multi-word concepts like
+    "red car" survive. Blanks are dropped; "" -> [] (use pass defaults).
+    """
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
 def _build_pass_configs(state: ShotState) -> list[PassConfig]:
     """Resolve the ShotState's enabled model keys into concrete
     PassConfig list for the Job.
@@ -228,9 +237,19 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
     checkbox); the executor speaks in plugin names. `expand_models`
     bridges the two — trivially for single-plugin models, via a
     preset pair for matte combos (sam3 + refiner).
+
+    The user's SAM 3 `concepts` (Matte + Cryptomatte) are injected onto
+    the `sam3_matte` pass when set; empty falls back to the pass default.
     """
     plugin_names = expand_models(state.enabled_models)
-    return [PassConfig(name=n) for n in plugin_names]
+    concepts = _parse_concepts(state.sam3_concepts)
+    out: list[PassConfig] = []
+    for n in plugin_names:
+        if n == "sam3_matte" and concepts:
+            out.append(PassConfig(name=n, params={"concepts": concepts}))
+        else:
+            out.append(PassConfig(name=n))
+    return out
 
 
 __all__ = ["SubmitResult", "SubmitWorker"]
