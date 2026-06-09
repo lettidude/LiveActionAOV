@@ -48,8 +48,10 @@ uses [semantic versioning](https://semver.org/).
   on the right/bottom in the viewport.
 - **Inspector horizontal scrollbar** appears as-needed so long labels aren't
   clipped when the log panel is open.
-- **Friendly pre-flight dependency check** — selecting a pass whose optional
-  extra isn't installed (e.g. DepthCrafter → `diffusers`) now gives an
-  actionable install hint instead of a raw `ModuleNotFoundError`.
+- **Friendly pre-flight dependency checks** — selecting a pass whose optional
+  extra isn't installed now gives an actionable `pip install …[<extra>]` hint
+  instead of a raw `ModuleNotFoundError`. Now consistent across Video Depth
+  Anything (`einops`/`easydict`), DSINE (`geffnet`), DepthCrafter and
+  NormalCrafter (`diffusers`).
 
 [0.2.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.2.0
