@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "live-action-aov"
-version = "0.1.3"
+version = "0.2.0"
 description = "AI-driven VFX plate preprocessor: depth, normals, motion, mattes as sidecar EXRs"
 readme = "README.md"
 license = { text = "MIT" }
@@ -44,9 +44,12 @@ dependencies = [
     # Torch stack (CUDA 12.1 wheels)
     "torch>=2.3,<3.0",
     "torchvision>=0.18",
-    # Model hub + transformers (DepthAnythingV2 ships via transformers pipeline)
+    # Model hub + transformers (DepthAnythingV2 ships via transformers pipeline).
+    # SAM 3 only landed in transformers ~5.5 and its checkpoint key layout is
+    # version-coupled — an older/newer build silently random-inits the SAM 3
+    # text encoder (empty/black matte). Pin to the tested-good window.
     "huggingface-hub>=0.23",
-    "transformers>=4.45",
+    "transformers>=5.5.4,<6",
     # GUI
     "PySide6>=6.6",
     # Misc
