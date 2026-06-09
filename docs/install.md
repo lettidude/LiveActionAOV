@@ -89,26 +89,31 @@ base install stays lean. Which dependencies you get depends on how you
 install — this is the single most common source of
 `ModuleNotFoundError` for a pass, so pick deliberately.
 
-### End-user install (`uv tool install`)
+### End-user install (`uv tool install` from GitHub)
 
 This is the recommended way to run the tool without cloning the repo.
+LiveActionAOV is distributed from its **public GitHub repo** (it is not
+on PyPI), so the install string is a `git+https://…@<tag>` URL.
 
 ```bash
 # CORE — the commercial-safe default passes, nothing else:
 #   • Depth   → Depth Anything V2 (Apache-2.0)
 #   • Normals → DSINE (MIT)
 #   • Matte   → SAM 3 + RVM (SAM-License / MIT)
-uv tool install live-action-aov --torch-backend=auto
+uv tool install "git+https://github.com/lettidude/LiveActionAOV@v0.2.0" --torch-backend=auto
 
 # EVERY PASS — adds the optional backends (DepthCrafter, NormalCrafter,
 # Video Depth Anything, DepthPro, MatAnyone2). ~4 GB more for diffusers +
 # accelerate. Some of these are CC-BY-NC-4.0 (see licensing below).
-uv tool install "live-action-aov[all]" --torch-backend=auto
+uv tool install "live-action-aov[all] @ git+https://github.com/lettidude/LiveActionAOV@v0.2.0" --torch-backend=auto
 ```
 
-> **`--torch-backend=auto` is not optional on Windows.** A plain
-> `uv tool install` pulls the **CPU-only** torch wheel from PyPI on
-> Windows (`2.x+cpu`, `cuda False`) — the GUI then refuses to Submit
+Use `@main` instead of `@v0.2.0` to track the latest development tip, or
+omit `--torch-backend=auto` only if you've already set up CUDA torch.
+
+> **`--torch-backend=auto` is not optional on Windows.** Without it the
+> install pulls the **CPU-only** torch wheel from PyPI on Windows
+> (`2.x+cpu`, `cuda False`) — the GUI then refuses to Submit
 > because no GPU is available. `--torch-backend=auto` detects your CUDA
 > driver and fetches the matching wheel (e.g. cu128 for RTX 50-series);
 > you can also pin it explicitly with `--torch-backend=cu128`. On Linux
@@ -123,12 +128,11 @@ liveaov-gui          # three-panel prep GUI
 ```
 
 If you installed **core** and later click an optional pass in the GUI,
-you'll get a clear message telling you which extra to add, e.g.
-`Install via: pip install live-action-aov[video_depth_anything]`. With a
-`uv tool` install, add it by reinstalling with the extra:
+you'll get a clear message telling you which extra it needs (e.g.
+`video_depth_anything`). Add it by reinstalling with that extra:
 
 ```bash
-uv tool install "live-action-aov[video_depth_anything]"
+uv tool install "live-action-aov[video_depth_anything] @ git+https://github.com/lettidude/LiveActionAOV@v0.2.0"
 ```
 
 > **Note on OpenCV:** the core install already includes
