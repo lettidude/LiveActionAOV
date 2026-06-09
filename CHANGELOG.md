@@ -28,6 +28,13 @@ uses [semantic versioning](https://semver.org/).
   matte. The old `>=4.45` pin let installs resolve a broken version.
 - **OpenCV promoted to a core dependency** (`opencv-python-headless`) — fixes a
   `No module named 'cv2'` at submit time on clean installs.
+- **`geffnet` promoted to a core dependency** — DSINE is the default normals
+  backend, so a bare install would otherwise fail on normals with
+  `Missing dependencies: geffnet`. The `core` install now runs the full
+  default trio (depth / normals / matte) out of the box.
+- **Install docs now state the tiers explicitly:** `uv tool install
+  live-action-aov` = core (commercial-safe depth/normals/matte);
+  `uv tool install "live-action-aov[all]"` = every pass.
 
 ### Fixed
 - **Non-finite pixels no longer poison passes.** The reader now sanitises

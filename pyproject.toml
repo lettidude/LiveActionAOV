@@ -41,6 +41,11 @@ dependencies = [
     # via the video_depth_anything extra, so a fresh env without that extra
     # crashed at submit with "No module named 'cv2'".
     "opencv-python-headless>=4.7",
+    # geffnet (EfficientNet backbone) is the default normals backend's
+    # dependency — DSINE is enabled out of the box, so without this a bare
+    # `uv tool install live-action-aov` fails on normals with "Missing
+    # dependencies: geffnet". Core, for the same reason OpenCV is.
+    "geffnet>=1.0",
     # Torch stack (CUDA 12.1 wheels)
     "torch>=2.3,<3.0",
     "torchvision>=0.18",
