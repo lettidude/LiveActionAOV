@@ -100,6 +100,19 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         # shouldn't have a broken option staring at them. Add back
         # once the real torch.hub load + recurrent forward lands.
     ],
+    # Cryptomatte — one checkbox, two plugins: SAM 3 detects/tracks every
+    # instance, the cryptomatte encoder packs them into Nuke's click-any-
+    # object ID format. Commercial follows SAM 3 (SAM-License, military
+    # carve-out); the encoder itself is MIT.
+    "Cryptomatte": [
+        ModelEntry(
+            "cryptomatte",
+            "Cryptomatte (SAM3 object IDs)",
+            "SAM-License / MIT",
+            True,
+            ("sam3_matte", "cryptomatte"),
+        ),
+    ],
 }
 
 

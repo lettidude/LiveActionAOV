@@ -118,6 +118,28 @@ def is_mask_channel(name: str) -> bool:
     return name.startswith(MASK_PREFIX) and len(name) > len(MASK_PREFIX)
 
 
+# --- Cryptomatte (per-object ID mattes, Psyop spec) ---
+# Industry-standard "click any object" matte. The `cryptomatte` pass turns
+# SAM 3's tracked per-instance masks into ranked (hash-id, coverage) pairs
+# Nuke's Cryptomatte node reads natively. Layout: a colour preview
+# (`<type>.RGB`) + `levels` ranked channel-groups (`<type>NN.R/G/B/A` =
+# id0/cov0/id1/cov1). MUST be written float32 — the ids carry exact hash
+# bit-patterns half-float would corrupt. The manifest (name->hex) + the
+# `cryptomatte/<keyhash>/*` header keys are stamped by the executor.
+CRYPTOMATTE_TYPENAME = "CryptoObject"
+CRYPTOMATTE_LEVELS = 3  # 6 ranks; matches Nuke's default
+
+
+def _cryptomatte_channels(typename: str, levels: int) -> tuple[str, ...]:
+    chans = [f"{typename}.{c}" for c in "RGB"]  # colour preview
+    for lvl in range(levels):
+        chans += [f"{typename}{lvl:02d}.{c}" for c in "RGBA"]  # ranked id/cov pairs
+    return tuple(chans)
+
+
+CRYPTOMATTE_CHANNELS = _cryptomatte_channels(CRYPTOMATTE_TYPENAME, CRYPTOMATTE_LEVELS)
+
+
 #: EXR layer/channel ordering that Nuke and most EXR viewers expect (design
 #: §11.3, trap 8). Writers sort channels against this order before
 #: emitting; unknown channels follow in insertion order.
@@ -130,6 +152,7 @@ CANONICAL_CHANNEL_ORDER: tuple[str, ...] = (
     *IRRADIANCE_CHANNELS,
     *FLOW_CHANNELS,
     *MATTE_CHANNELS,
+    *CRYPTOMATTE_CHANNELS,
 )
 
 
@@ -168,6 +191,9 @@ __all__ = [
     "CH_P_Z",
     "CH_Z",
     "CH_Z_RAW",
+    "CRYPTOMATTE_CHANNELS",
+    "CRYPTOMATTE_LEVELS",
+    "CRYPTOMATTE_TYPENAME",
     "DEPTH_CHANNELS",
     "FLOW_CHANNELS",
     "IRRADIANCE_CHANNELS",

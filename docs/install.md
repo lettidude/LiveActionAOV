@@ -82,24 +82,69 @@ Linux/macOS:
 The GUI shows an amber banner and refuses to Submit when CUDA isn't
 available — you won't discover the problem 20 minutes into a batch.
 
-## Optional extras (per-pass)
+## Choosing an install: core vs. every pass
 
-The `install.bat` / `install.sh` scripts default to the `all`
-meta-extra, which pulls every pass's dependencies in one sync. Every
-model in the GUI's Passes tab just works after a clean install —
-you don't hit `ModuleNotFoundError: diffusers` when clicking
-DepthCrafter, etc.
+LiveActionAOV ships its heavy optional models behind **extras** so a
+base install stays lean. Which dependencies you get depends on how you
+install — this is the single most common source of
+`ModuleNotFoundError` for a pass, so pick deliberately.
 
-If you want a slim install (saves ~4 GB download + disk for
-`diffusers` + `accelerate`), skip `--extra all` and install only
-the pass families you actually use:
+### End-user install (`uv tool install`)
+
+This is the recommended way to run the tool without cloning the repo.
 
 ```bash
-# Slim base — commercial-safe defaults only
-uv sync --extra dev
-uv pip install 'live-action-aov[sam3]' 'live-action-aov[rvm]' 'live-action-aov[dsine]'
+# CORE — the commercial-safe default passes, nothing else:
+#   • Depth   → Depth Anything V2 (Apache-2.0)
+#   • Normals → DSINE (MIT)
+#   • Matte   → SAM 3 + RVM (SAM-License / MIT)
+uv tool install live-action-aov --torch-backend=auto
 
-# Add backends as needed
+# EVERY PASS — adds the optional backends (DepthCrafter, NormalCrafter,
+# Video Depth Anything, DepthPro, MatAnyone2). ~4 GB more for diffusers +
+# accelerate. Some of these are CC-BY-NC-4.0 (see licensing below).
+uv tool install "live-action-aov[all]" --torch-backend=auto
+```
+
+> **`--torch-backend=auto` is not optional on Windows.** A plain
+> `uv tool install` pulls the **CPU-only** torch wheel from PyPI on
+> Windows (`2.x+cpu`, `cuda False`) — the GUI then refuses to Submit
+> because no GPU is available. `--torch-backend=auto` detects your CUDA
+> driver and fetches the matching wheel (e.g. cu128 for RTX 50-series);
+> you can also pin it explicitly with `--torch-backend=cu128`. On Linux
+> the default PyPI torch already bundles CUDA, so this is a no-op there —
+> but pass it anyway so the same command works everywhere.
+
+After either, launch:
+
+```bash
+liveaov --help       # CLI
+liveaov-gui          # three-panel prep GUI
+```
+
+If you installed **core** and later click an optional pass in the GUI,
+you'll get a clear message telling you which extra to add, e.g.
+`Install via: pip install live-action-aov[video_depth_anything]`. With a
+`uv tool` install, add it by reinstalling with the extra:
+
+```bash
+uv tool install "live-action-aov[video_depth_anything]"
+```
+
+> **Note on OpenCV:** the core install already includes
+> `opencv-python-headless` — you do **not** need `--with opencv-python`.
+> On a headless server, adding the full `opencv-python` can drag in GUI
+> libraries (`libGL.so.1` …) that aren't present.
+
+### Developer install (cloned repo)
+
+The `install.bat` / `install.sh` scripts (see [TL;DR](#tldr)) default to
+the `all` meta-extra, so every pass works immediately after a clean
+checkout. For a slim dev environment, skip `--extra all` and add only
+what you use:
+
+```bash
+uv sync --extra dev                                      # core only
 uv pip install 'live-action-aov[depthcrafter]'           # CC-BY-NC-4.0
 uv pip install 'live-action-aov[normalcrafter]'          # CC-BY-NC-4.0
 uv pip install 'live-action-aov[video_depth_anything]'   # Apache-2.0
@@ -107,9 +152,8 @@ uv pip install 'live-action-aov[depthpro]'               # CC-BY-NC-4.0
 uv pip install 'live-action-aov[matanyone2]'             # CC-BY-NC-4.0
 ```
 
-Each extra is a separate `live-action-aov[<family>]` so you get
-exactly what you need. Combine with the `all` meta if you realise
-later you want everything: `uv sync --extra dev --extra all`.
+Combine later with the `all` meta if you want everything:
+`uv sync --extra dev --extra all`.
 
 ## Hugging Face authentication for gated models
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "live-action-aov"
-version = "0.1.3"
+version = "0.2.0"
 description = "AI-driven VFX plate preprocessor: depth, normals, motion, mattes as sidecar EXRs"
 readme = "README.md"
 license = { text = "MIT" }
@@ -31,15 +31,30 @@ dependencies = [
     "typer>=0.12",
     "pyyaml>=6.0",
     "numpy>=1.26,<2.0",
+    # MurmurHash3 for Cryptomatte object-id hashing (tiny C ext).
+    "mmh3>=4.0",
     # I/O
     "oiio-python>=2.5",
     "opencolorio>=2.3",
+    # OpenCV is used by core paths (proxy reader resize, local executor) and
+    # several passes — not optional. Was previously only pulled transitively
+    # via the video_depth_anything extra, so a fresh env without that extra
+    # crashed at submit with "No module named 'cv2'".
+    "opencv-python-headless>=4.7",
+    # geffnet (EfficientNet backbone) is the default normals backend's
+    # dependency — DSINE is enabled out of the box, so without this a bare
+    # `uv tool install live-action-aov` fails on normals with "Missing
+    # dependencies: geffnet". Core, for the same reason OpenCV is.
+    "geffnet>=1.0",
     # Torch stack (CUDA 12.1 wheels)
     "torch>=2.3,<3.0",
     "torchvision>=0.18",
-    # Model hub + transformers (DepthAnythingV2 ships via transformers pipeline)
+    # Model hub + transformers (DepthAnythingV2 ships via transformers pipeline).
+    # SAM 3 only landed in transformers ~5.5 and its checkpoint key layout is
+    # version-coupled — an older/newer build silently random-inits the SAM 3
+    # text encoder (empty/black matte). Pin to the tested-good window.
     "huggingface-hub>=0.23",
-    "transformers>=4.45",
+    "transformers>=5.5.4,<6",
     # GUI
     "PySide6>=6.6",
     # Misc
@@ -136,6 +151,7 @@ normalcrafter      = "live_action_aov.passes.normals.normalcrafter:NormalCrafter
 sam3_matte         = "live_action_aov.passes.matte.sam3:SAM3MattePass"
 rvm_refiner        = "live_action_aov.passes.matte.rvm:RVMRefinerPass"
 matanyone2         = "live_action_aov.passes.matte.matanyone2:MatAnyone2RefinerPass"
+cryptomatte        = "live_action_aov.passes.matte.cryptomatte:CryptomattePass"
 
 [project.entry-points."live_action_aov.post"]
 temporal_smooth      = "live_action_aov.post.temporal_smooth:TemporalSmoother"

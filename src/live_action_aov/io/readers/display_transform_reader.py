@@ -39,6 +39,7 @@ executor to turn it on.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
@@ -48,6 +49,43 @@ from live_action_aov.io import ocio_color
 from live_action_aov.io.colorspace_detect import detect_colorspace
 from live_action_aov.io.display_transform import DisplayTransform
 from live_action_aov.io.readers.base import ImageSequenceReader
+
+_log = logging.getLogger(__name__)
+
+
+def _sanitize_nonfinite(frames: np.ndarray, *, frame: int, where: str) -> np.ndarray:
+    """Replace NaN / ±Inf pixels with 0.0 and log how many were found.
+
+    This is the pipeline's defence against corrupt input. Comp-work
+    plates routinely carry non-finite pixels (unpremult divides, bad
+    merges, expression nodes); some renderers emit them too. Such a
+    pixel is poison: ``np.clip`` does NOT strip NaN/Inf, exposure is
+    typically a no-op (manual EV 0), and AgX's internal clip only bounds
+    *finite* values — so a single NaN sails through every transform into
+    the model, which then emits NaN into EVERY sidecar channel. Enough
+    of them silently turn a whole batch to garbage (or a blank matte,
+    since SAM 3 detects nothing on NaN input).
+
+    Replacing with 0.0 (not a large finite value) keeps the fix neutral:
+    a corrupt pixel reads as "empty/black" rather than a blown highlight.
+    The WARNING is the diagnostic — if it fires on the *source* stage the
+    plate is the culprit; if only on *post-transform* the colour decode
+    produced the non-finite values.
+    """
+    finite = np.isfinite(frames)
+    bad = int(frames.size) - int(finite.sum())
+    if bad:
+        _log.warning(
+            "frame %d: %d non-finite pixel value(s) (NaN/Inf) in %s — "
+            "sanitized to 0.0. Source plate likely contains bad pixels "
+            "(unpremult divide / expression / render hole); clean it "
+            "upstream to avoid blank or NaN passes.",
+            frame,
+            bad,
+            where,
+        )
+        return np.nan_to_num(frames, nan=0.0, posinf=0.0, neginf=0.0)
+    return frames
 
 
 class DisplayTransformedReader(ImageSequenceReader):
@@ -76,6 +114,9 @@ class DisplayTransformedReader(ImageSequenceReader):
         self._transform = DisplayTransform()
         self._analysis: dict[str, Any] | None = None
         self._working_space = "acescg"
+        # Warn at most once per shot if OCIO can't decode the source
+        # colorspace — otherwise it's one line per frame (50+ for a clip).
+        self._linearize_warned = False
 
     # --- Analysis ------------------------------------------------------
 
@@ -95,6 +136,9 @@ class DisplayTransformedReader(ImageSequenceReader):
         colorspace = self._resolve_colorspace()
         for fi in sampled_indices:
             raw, _ = self._base.read_frame(fi)
+            # Sanitize before exposure analysis: a single Inf would
+            # poison the percentile/median and yield a garbage clip EV.
+            raw = _sanitize_nonfinite(raw, frame=fi, where="source plate (exposure sample)")
             lin = self._linearize(raw, colorspace)
             sample_linear.append(lin)
         analysis = self._transform.analyze_clip(
@@ -117,6 +161,11 @@ class DisplayTransformedReader(ImageSequenceReader):
 
     def read_frame(self, frame: int) -> tuple[np.ndarray, dict[str, Any]]:
         raw, attrs = self._base.read_frame(frame)
+        # Source guard: strip NaN/Inf the plate carries before they can
+        # propagate through linearize → transform → model → sidecar.
+        # This is the primary fix; the WARNING here means the plate is
+        # the culprit.
+        raw = _sanitize_nonfinite(raw, frame=frame, where="source plate")
         if self._analysis is None:
             # Caller forgot to analyze — behave as a passthrough rather
             # than silently drop exposure. Most likely a test path.
@@ -124,6 +173,11 @@ class DisplayTransformedReader(ImageSequenceReader):
         colorspace = self._resolve_colorspace(attrs)
         lin = self._linearize(raw, colorspace)
         out = self._transform.apply(lin, self._params, self._analysis)
+        # Defensive net: a colour decode (e.g. an out-of-domain Log
+        # inverse) can manufacture non-finite values even from a clean
+        # plate. A WARNING here (with no source-stage warning) points at
+        # the transform rather than the plate.
+        out = _sanitize_nonfinite(out, frame=frame, where="post-transform output")
         return out.astype(np.float32, copy=False), attrs
 
     # --- Helpers -------------------------------------------------------
@@ -143,9 +197,29 @@ class DisplayTransformedReader(ImageSequenceReader):
             return frames.astype(np.float32, copy=False)
         try:
             return ocio_color.to_linear(frames, colorspace)
-        except Exception:
+        except Exception as exc:
             # OCIO misconfiguration shouldn't break the pipeline — fall
-            # back to the narrow hard-coded set (sRGB / linear).
+            # back to the narrow hard-coded set (sRGB / linear). But this
+            # is a *silent correctness trap*: if the active OCIO config
+            # has no colorspace named for `colorspace` (e.g. a studio
+            # config missing "ARRI LogC4"), the fallback can't decode a
+            # Log curve and returns the pixels UNCHANGED — the model then
+            # sees Log-encoded (washed-out / near-black) input and the
+            # passes come out wrong or dark. Surface it once per shot so
+            # the cause is visible in the log instead of guessed at.
+            if not self._linearize_warned:
+                self._linearize_warned = True
+                handled = colorspace in ocio_color._SRGB_NAMES or colorspace in ocio_color._LINEAR_NAMES
+                if not handled:
+                    _log.warning(
+                        "could not linearize colorspace %r via OCIO (%s); "
+                        "the fallback cannot decode this space so pixels are "
+                        "passed through UNLINEARIZED — passes will look wrong "
+                        "or dark. Point $OCIO at a config that defines this "
+                        "colorspace, or set the shot's colorspace explicitly.",
+                        colorspace,
+                        exc,
+                    )
             return ocio_color._fallback_to_linear(frames, colorspace)
 
 
