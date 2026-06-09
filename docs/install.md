@@ -98,13 +98,22 @@ This is the recommended way to run the tool without cloning the repo.
 #   • Depth   → Depth Anything V2 (Apache-2.0)
 #   • Normals → DSINE (MIT)
 #   • Matte   → SAM 3 + RVM (SAM-License / MIT)
-uv tool install live-action-aov
+uv tool install live-action-aov --torch-backend=auto
 
 # EVERY PASS — adds the optional backends (DepthCrafter, NormalCrafter,
 # Video Depth Anything, DepthPro, MatAnyone2). ~4 GB more for diffusers +
 # accelerate. Some of these are CC-BY-NC-4.0 (see licensing below).
-uv tool install "live-action-aov[all]"
+uv tool install "live-action-aov[all]" --torch-backend=auto
 ```
+
+> **`--torch-backend=auto` is not optional on Windows.** A plain
+> `uv tool install` pulls the **CPU-only** torch wheel from PyPI on
+> Windows (`2.x+cpu`, `cuda False`) — the GUI then refuses to Submit
+> because no GPU is available. `--torch-backend=auto` detects your CUDA
+> driver and fetches the matching wheel (e.g. cu128 for RTX 50-series);
+> you can also pin it explicitly with `--torch-backend=cu128`. On Linux
+> the default PyPI torch already bundles CUDA, so this is a no-op there —
+> but pass it anyway so the same command works everywhere.
 
 After either, launch:
 

@@ -34,7 +34,11 @@ uses [semantic versioning](https://semver.org/).
   default trio (depth / normals / matte) out of the box.
 - **Install docs now state the tiers explicitly:** `uv tool install
   live-action-aov` = core (commercial-safe depth/normals/matte);
-  `uv tool install "live-action-aov[all]"` = every pass.
+  `uv tool install "live-action-aov[all]"` = every pass. Documents the
+  end-user `uv tool` path (previously only the cloned-repo dev path was
+  covered) and `--torch-backend=auto`, which is required on Windows —
+  otherwise `uv tool install` pulls the CPU-only torch wheel and the GUI
+  refuses to Submit.
 
 ### Fixed
 - **Non-finite pixels no longer poison passes.** The reader now sanitises
