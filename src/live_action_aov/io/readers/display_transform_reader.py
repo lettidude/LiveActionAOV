@@ -114,6 +114,9 @@ class DisplayTransformedReader(ImageSequenceReader):
         self._transform = DisplayTransform()
         self._analysis: dict[str, Any] | None = None
         self._working_space = "acescg"
+        # Warn at most once per shot if OCIO can't decode the source
+        # colorspace — otherwise it's one line per frame (50+ for a clip).
+        self._linearize_warned = False
 
     # --- Analysis ------------------------------------------------------
 
@@ -194,9 +197,29 @@ class DisplayTransformedReader(ImageSequenceReader):
             return frames.astype(np.float32, copy=False)
         try:
             return ocio_color.to_linear(frames, colorspace)
-        except Exception:
+        except Exception as exc:
             # OCIO misconfiguration shouldn't break the pipeline — fall
-            # back to the narrow hard-coded set (sRGB / linear).
+            # back to the narrow hard-coded set (sRGB / linear). But this
+            # is a *silent correctness trap*: if the active OCIO config
+            # has no colorspace named for `colorspace` (e.g. a studio
+            # config missing "ARRI LogC4"), the fallback can't decode a
+            # Log curve and returns the pixels UNCHANGED — the model then
+            # sees Log-encoded (washed-out / near-black) input and the
+            # passes come out wrong or dark. Surface it once per shot so
+            # the cause is visible in the log instead of guessed at.
+            if not self._linearize_warned:
+                self._linearize_warned = True
+                handled = colorspace in ocio_color._SRGB_NAMES or colorspace in ocio_color._LINEAR_NAMES
+                if not handled:
+                    _log.warning(
+                        "could not linearize colorspace %r via OCIO (%s); "
+                        "the fallback cannot decode this space so pixels are "
+                        "passed through UNLINEARIZED — passes will look wrong "
+                        "or dark. Point $OCIO at a config that defines this "
+                        "colorspace, or set the shot's colorspace explicitly.",
+                        colorspace,
+                        exc,
+                    )
             return ocio_color._fallback_to_linear(frames, colorspace)
 
 

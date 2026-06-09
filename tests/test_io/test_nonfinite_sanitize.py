@@ -103,3 +103,28 @@ def test_reader_passthrough_path_also_sanitizes() -> None:
     )
     out, _ = reader.read_frame(1001)
     assert np.isfinite(out).all()
+
+
+def test_undecodable_colorspace_warns_once(caplog: Any, monkeypatch: Any) -> None:
+    # Simulate an OCIO config that lacks the source colorspace: to_linear
+    # raises, and the fallback can't decode a Log space → pixels pass
+    # through unlinearized. The reader must surface this once.
+    from live_action_aov.io import ocio_color
+
+    def _boom(_frames: np.ndarray, _cs: str, *a: Any, **k: Any) -> np.ndarray:
+        raise RuntimeError("colorspace 'ARRI LogC4' not found in config")
+
+    monkeypatch.setattr(ocio_color, "to_linear", _boom)
+    clean = np.full((4, 4, 3), 0.34, dtype=np.float32)
+    reader = DisplayTransformedReader(
+        _FakeReader(clean),
+        params=DisplayTransformParams(manual_exposure_ev=0.0),
+        colorspace_override="arri_logc4",
+    )
+    with caplog.at_level(logging.WARNING):
+        reader.analyze((1001, 1001))
+        reader.read_frame(1001)
+        reader.read_frame(1001)
+    decode_warnings = [r for r in caplog.records if "could not linearize" in r.message]
+    assert len(decode_warnings) == 1  # once per shot, not per frame
+    assert "arri_logc4" in decode_warnings[0].message
