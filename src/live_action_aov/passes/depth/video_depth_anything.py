@@ -150,6 +150,18 @@ class VideoDepthAnythingPass(UtilityPass):
     def _load_model(self) -> None:
         if self._model is not None:
             return
+        # Friendly pre-flight check (mirrors DepthCrafter): the vendored
+        # Video-Depth-Anything modules import einops / easydict at module
+        # load, so without this guard a missing optional extra surfaces as
+        # a raw `ModuleNotFoundError: einops` instead of an actionable hint.
+        try:
+            import easydict  # noqa: F401
+            import einops  # noqa: F401
+        except ImportError as e:
+            raise RuntimeError(
+                "Video Depth Anything requires the `einops` and `easydict` "
+                "packages. Install via: pip install live-action-aov[video_depth_anything]"
+            ) from e
         import torch
         from huggingface_hub import hf_hub_download
 

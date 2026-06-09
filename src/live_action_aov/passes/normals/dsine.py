@@ -99,6 +99,17 @@ class DSINEPass(UtilityPass):
     def _load_model(self) -> None:
         if self._model is not None:
             return
+        # Friendly pre-flight check (mirrors DepthCrafter / NormalCrafter):
+        # the vendored DSINE backbone imports `geffnet` internally, so a
+        # missing optional extra would otherwise surface as a raw
+        # `ModuleNotFoundError: geffnet` deep in the upstream import.
+        try:
+            import geffnet  # noqa: F401
+        except ImportError as e:
+            raise RuntimeError(
+                "DSINE requires the `geffnet` package. "
+                "Install via: pip install live-action-aov[dsine]"
+            ) from e
         import os
         import sys
         import types
