@@ -35,6 +35,28 @@ ViewMode = Literal["original", "transformed", "compare"]
 
 
 @dataclass
+class ClickInstance:
+    """One object the user seeded interactively (click-to-mask, v0.3).
+
+    The serializable prompt spec for SAM 3's video tracker: a name (→
+    Cryptomatte manifest name + `mask.<name>` label), the frame the user
+    clicked on, foreground/background points, and an optional box — all in
+    PLATE pixel coordinates. This is what makes the interaction reproducible
+    headlessly: the executor replays these prompts via the tracker's
+    `add_inputs_to_inference_session(input_points=…, input_boxes=…)`, no human
+    in the loop — the same seed→propagate→Cryptomatte path the text-concept
+    matte already uses.
+    """
+
+    name: str
+    seed_frame: int
+    # (x, y, label) in plate px; label 1 = foreground/include, 0 = background/exclude.
+    points: list[tuple[float, float, int]] = field(default_factory=list)
+    # Optional box (x1, y1, x2, y2) in plate px; None = points only.
+    box: tuple[float, float, float, float] | None = None
+
+
+@dataclass
 class ShotState:
     """Per-shot GUI state. See module docstring."""
 
@@ -76,6 +98,12 @@ class ShotState:
     # finds the concepts you prompt — an empty/black matte usually just
     # means the subject wasn't on the list.
     sam3_concepts: str = ""
+
+    # Interactive click-to-mask prompts (v0.3). Each entry is one object the
+    # user seeded by clicking in the viewport; serialized into the
+    # `sam3_matte` pass's `prompt_instances` param at submit time. Empty = the
+    # text-concept path only. Both can coexist (named clicks + concepts).
+    click_instances: list[ClickInstance] = field(default_factory=list)
 
     # --- Legacy M2 surface kept as properties below ---
     # Other code that still references `enabled_passes` / `pass_backends`
@@ -219,4 +247,4 @@ class ShotRegistry(QObject):
             self.shot_updated.emit(shot)
 
 
-__all__ = ["ShotRegistry", "ShotState", "ViewMode"]
+__all__ = ["ClickInstance", "ShotRegistry", "ShotState", "ViewMode"]

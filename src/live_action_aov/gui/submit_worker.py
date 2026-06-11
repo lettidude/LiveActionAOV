@@ -31,7 +31,7 @@ from live_action_aov.core.job import Job, PassConfig, Shot
 from live_action_aov.core.pass_base import DisplayTransformParams
 from live_action_aov.executors.local import LocalExecutor
 from live_action_aov.gui.pass_catalog import expand_models
-from live_action_aov.gui.shot_state import ShotState
+from live_action_aov.gui.shot_state import ClickInstance, ShotState
 
 
 @dataclass(frozen=True)
@@ -229,6 +229,40 @@ def _parse_concepts(raw: str) -> list[str]:
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
+def _serialize_click_instances(instances: list[ClickInstance]) -> list[dict[str, Any]]:
+    """Project the GUI's ClickInstance objects into plain JSON-friendly dicts
+    for the `sam3_matte` pass's `prompt_instances` param:
+    {name, seed_frame, points: [[x, y, label], ...], box: [x1, y1, x2, y2] | None}.
+
+    Instances with neither points nor a box are dropped — there is nothing to
+    seed the tracker with.
+    """
+    out: list[dict[str, Any]] = []
+    for inst in instances:
+        pts = [[float(x), float(y), int(lbl)] for (x, y, lbl) in inst.points]
+        box = [float(v) for v in inst.box] if inst.box is not None else None
+        if not pts and box is None:
+            continue
+        out.append(
+            {"name": inst.name, "seed_frame": int(inst.seed_frame), "points": pts, "box": box}
+        )
+    return out
+
+
+def _sam3_matte_params(state: ShotState) -> dict[str, Any]:
+    """Assemble the `sam3_matte` param dict from the GUI: text concepts and/or
+    interactive click prompts. Both may be present (named clicks alongside
+    concept categories). An empty dict means the pass uses its own defaults."""
+    params: dict[str, Any] = {}
+    concepts = _parse_concepts(state.sam3_concepts)
+    if concepts:
+        params["concepts"] = concepts
+    clicks = _serialize_click_instances(state.click_instances)
+    if clicks:
+        params["prompt_instances"] = clicks
+    return params
+
+
 def _build_pass_configs(state: ShotState) -> list[PassConfig]:
     """Resolve the ShotState's enabled model keys into concrete
     PassConfig list for the Job.
@@ -238,15 +272,15 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
     bridges the two — trivially for single-plugin models, via a
     preset pair for matte combos (sam3 + refiner).
 
-    The user's SAM 3 `concepts` (Matte + Cryptomatte) are injected onto
-    the `sam3_matte` pass when set; empty falls back to the pass default.
+    SAM 3 `concepts` (text) and `prompt_instances` (interactive clicks) are
+    injected onto the `sam3_matte` pass when set; empty falls back to defaults.
     """
     plugin_names = expand_models(state.enabled_models)
-    concepts = _parse_concepts(state.sam3_concepts)
+    sam3_params = _sam3_matte_params(state)
     out: list[PassConfig] = []
     for n in plugin_names:
-        if n == "sam3_matte" and concepts:
-            out.append(PassConfig(name=n, params={"concepts": concepts}))
+        if n == "sam3_matte" and sam3_params:
+            out.append(PassConfig(name=n, params=sam3_params))
         else:
             out.append(PassConfig(name=n))
     return out
