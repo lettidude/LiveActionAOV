@@ -163,6 +163,14 @@ class SAM3MattePass(UtilityPass):
         },
         "max_heroes": 4,
         "heroes": [],  # user overrides: [{"track_id": 17, "slot": "r"}]
+        # Interactive click-to-mask prompts (GUI viewport, v0.3). Each entry:
+        # {"name": str, "seed_frame": int (plate numbering), "points":
+        # [[x, y, label], ...] (label 1=fg, 0=bg), "box": [x1, y1, x2, y2] |
+        # None, "ref_size": [w, h] (resolution the clicks were captured at —
+        # we rescale to the frames the pass actually sees, so proxy mode
+        # doesn't shift the clicks)}. ADDITIVE to text concepts: empty list =
+        # concept detection only.
+        "prompt_instances": [],
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -338,21 +346,32 @@ class SAM3MattePass(UtilityPass):
         self,
         frames: np.ndarray,
         seed_frame_idx: int,
-        seed_mask: np.ndarray,
+        seed_mask: np.ndarray | None,
+        *,
+        points: list[list[float]] | None = None,
+        labels: list[int] | None = None,
+        box: list[float] | None = None,
     ) -> np.ndarray:
-        """Propagate `seed_mask` across all frames with SAM 3's tracker.
+        """Propagate one object across all frames with SAM 3's tracker.
 
-        Uses SAM 3's inference-session API: seed the mask at
-        `seed_frame_idx` via `add_inputs_to_inference_session(input_masks=)`,
-        then propagate forward + backward with
-        `propagate_in_video_iterator`. Each yielded step carries the logits
-        for its frame, which `post_process_masks` upsamples + binarizes.
+        Uses SAM 3's inference-session API: seed the object at
+        `seed_frame_idx` via `add_inputs_to_inference_session` — either from
+        a detector mask (`input_masks=`, the text-concept path) or from
+        interactive click prompts (`input_points`/`input_labels`/
+        `input_boxes`, the click-to-mask path) — then propagate forward +
+        backward with `propagate_in_video_iterator`. Each yielded step
+        carries the logits for its frame, which `post_process_masks`
+        upsamples + binarizes.
 
         Input: `frames` is (N, H, W, 3) float32 in [0, 1]; `seed_frame_idx`
         is the local index within `frames`; `seed_mask` is (H, W) float32
-        in [0, 1] at plate resolution. Output: (N, H, W) float32 stack of
-        hard-ish masks.
+        in [0, 1] at plate resolution, or None when seeding from prompts.
+        `points` is [[x, y], ...] and `labels` [1|0, ...] (1=fg, 0=bg);
+        `box` is [x1, y1, x2, y2] — all in pixels of `frames`. Output:
+        (N, H, W) float32 stack of hard-ish masks.
         """
+        if seed_mask is None and not points and box is None:
+            raise ValueError("_track_instance needs a seed_mask, points, or a box")
         from PIL import Image
 
         self._load_model()
@@ -381,15 +400,34 @@ class SAM3MattePass(UtilityPass):
             dtype=dtype,
         )
 
-        # SAM 3 wants a bool / {0,1} mask. Threshold at 0.5.
-        seed_bool = (seed_mask > 0.5).astype(np.uint8)
-        processor.add_inputs_to_inference_session(
-            session,
-            frame_idx=int(seed_frame_idx),
-            obj_ids=1,  # single-object track; we repeat per instance
-            input_masks=seed_bool,
-            original_size=(H, W),
-        )
+        if seed_mask is not None:
+            # SAM 3 wants a bool / {0,1} mask. Threshold at 0.5.
+            seed_bool = (seed_mask > 0.5).astype(np.uint8)
+            processor.add_inputs_to_inference_session(
+                session,
+                frame_idx=int(seed_frame_idx),
+                obj_ids=1,  # single-object track; we repeat per instance
+                input_masks=seed_bool,
+                original_size=(H, W),
+            )
+        else:
+            # Click-to-mask path: seed from interactive prompts. Nesting per
+            # the modeling docstrings — points (batch, point_batch, n, 2),
+            # labels (batch, point_batch, n), boxes (batch, point_batch, 4):
+            # one batch, one object ⇒ wrap twice.
+            prompt_kwargs: dict[str, Any] = {}
+            if points:
+                prompt_kwargs["input_points"] = [[points]]
+                prompt_kwargs["input_labels"] = [[labels or [1] * len(points)]]
+            if box is not None:
+                prompt_kwargs["input_boxes"] = [[box]]
+            processor.add_inputs_to_inference_session(
+                session,
+                frame_idx=int(seed_frame_idx),
+                obj_ids=1,
+                original_size=(H, W),
+                **prompt_kwargs,
+            )
 
         out = np.zeros((N, H, W), dtype=np.float32)
 
@@ -516,10 +554,67 @@ class SAM3MattePass(UtilityPass):
                 continue
             self._instances.append(_DetectedInstance(track_id, label, masks))
 
-        # Union by concept into per-frame channels.
+        # --- Interactive click prompts (click-to-mask, v0.3) ---
+        # Each spec seeds ONE object from user clicks instead of the text
+        # detector; the tracker session + propagation are the same engine.
+        # Coordinates are rescaled from the resolution they were captured at
+        # (`ref_size`) to the frames this pass actually sees, so proxy mode
+        # doesn't shift the clicks. Track ids live in a 1000+ block so they
+        # never collide with detector ids across re-runs. Additive to the
+        # concept path — an empty list changes nothing.
+        click_labels: list[str] = []
+        next_click_id = 1001
+        for idx, spec in enumerate(self.params.get("prompt_instances") or []):
+            name = str(spec.get("name") or f"click_{idx + 1}")
+            seed_plate = int(spec.get("seed_frame", first))
+            seed_local_i = min(max(seed_plate - first, 0), n_frames - 1)
+            ref = spec.get("ref_size") or None
+            sx = plate_w / float(ref[0]) if ref and float(ref[0]) > 0 else 1.0
+            sy = plate_h / float(ref[1]) if ref and float(ref[1]) > 0 else 1.0
+            raw_pts = spec.get("points") or []
+            pts = [[float(p[0]) * sx, float(p[1]) * sy] for p in raw_pts]
+            lbls = [int(p[2]) for p in raw_pts]
+            raw_box = spec.get("box")
+            box = (
+                [
+                    float(raw_box[0]) * sx,
+                    float(raw_box[1]) * sy,
+                    float(raw_box[2]) * sx,
+                    float(raw_box[3]) * sy,
+                ]
+                if raw_box
+                else None
+            )
+            if not pts and box is None:
+                continue
+            stack = self._track_instance(
+                frames,
+                seed_local_i,
+                None,
+                points=pts or None,
+                labels=lbls or None,
+                box=box,
+            )
+            if stack.ndim != 3 or stack.shape[1:] != (plate_h, plate_w):
+                raise ValueError(
+                    f"Click track stack for {name!r} has shape {stack.shape}, "
+                    f"expected ({n_frames}, {plate_h}, {plate_w})"
+                )
+            masks = {
+                first + k: stack[k].astype(np.float32, copy=False) for k in range(stack.shape[0])
+            }
+            area_floor = float(self.params["min_area_fraction"]) * plate_h * plate_w
+            if all(m.sum() < area_floor for m in masks.values()):
+                continue
+            self._instances.append(_DetectedInstance(next_click_id, name, masks))
+            next_click_id += 1
+            click_labels.append(name)
+
+        # Union by label into per-frame channels: text concepts first, then
+        # click names (deduped — a click named like a concept unions with it).
         per_frame: dict[int, dict[str, np.ndarray]] = {first + i: {} for i in range(n_frames)}
         concepts_found: set[str] = set()
-        for concept in concepts:
+        for concept in dict.fromkeys([*concepts, *click_labels]):
             # OR across all instances of this concept, per frame.
             any_nonzero = False
             for f in range(first, last + 1):

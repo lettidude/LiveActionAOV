@@ -70,6 +70,12 @@ class MainWindow(QMainWindow):
         self._viewport = ViewportPanel(self._registry)
         self._inspector = InspectorPanel(self._registry)
 
+        # Click-to-mask: the Masks tab drives the viewport — arming point
+        # placement and selecting which object receives the clicks.
+        self._inspector.click_mode_changed.connect(self._viewport.set_click_mode)
+        self._inspector.active_click_instance_changed.connect(self._viewport.set_active_instance)
+        self._inspector.mask_preview_requested.connect(self._viewport.preview_active_mask)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._shot_list)
         splitter.addWidget(self._viewport)
@@ -243,6 +249,9 @@ class MainWindow(QMainWindow):
         queue = [s for s in self._registry.shots() if s.queued and s.enabled_passes]
         if not queue:
             return
+        # Free the resident mask-preview model (if any) so the executor's
+        # passes get the whole GPU — same VRAM-hygiene rule as between passes.
+        self._viewport.release_mask_preview()
         # Environment precheck — every pass in the catalog is a neural
         # model that needs CUDA. Don't let the user wait 20 minutes for
         # a CPU-fp16 failure they could have been warned about in 2s.
