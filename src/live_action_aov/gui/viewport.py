@@ -21,8 +21,8 @@ worker pool is backed up.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPainter, QPixmap
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -35,7 +35,62 @@ from PySide6.QtWidgets import (
 )
 
 from live_action_aov.gui.preview_loader import PreviewLoader, PreviewResult
-from live_action_aov.gui.shot_state import ShotRegistry, ShotState, ViewMode
+from live_action_aov.gui.shot_state import ClickInstance, ShotRegistry, ShotState, ViewMode
+
+
+def _canvas_pos_to_norm(
+    pos_x: float,
+    pos_y: float,
+    canvas_w: int,
+    canvas_h: int,
+    pix_w: int,
+    pix_h: int,
+) -> tuple[float, float] | None:
+    """Map a click on the canvas to normalized [0,1] image coordinates.
+
+    The canvas centres its (aspect-preserving) scaled pixmap, so the image
+    sits at a letterbox offset. Returns None when the click lands outside
+    the image (in the letterbox bars) or no image is shown. Normalized
+    coords are resolution-independent: the caller multiplies by the plate
+    resolution, which is what `ClickInstance` stores.
+    """
+    if pix_w <= 0 or pix_h <= 0:
+        return None
+    off_x = (canvas_w - pix_w) / 2.0
+    off_y = (canvas_h - pix_h) / 2.0
+    nx = (pos_x - off_x) / float(pix_w)
+    ny = (pos_y - off_y) / float(pix_h)
+    if not (0.0 <= nx <= 1.0 and 0.0 <= ny <= 1.0):
+        return None
+    return nx, ny
+
+
+class _ClickCanvas(QLabel):
+    """The viewport image label, emitting normalized click positions.
+
+    Emits `pressed(nx, ny, label)` with label 1 for left-click (include)
+    and 0 for right-click (exclude). The panel decides whether the click
+    means anything (click mode armed, active instance, view mode)."""
+
+    pressed = Signal(float, float, int)
+
+    def mousePressEvent(self, ev: QMouseEvent) -> None:
+        pm = self.pixmap()
+        if pm is not None and not pm.isNull():
+            if ev.button() == Qt.MouseButton.LeftButton:
+                label = 1
+            elif ev.button() == Qt.MouseButton.RightButton:
+                label = 0
+            else:
+                super().mousePressEvent(ev)
+                return
+            pos = ev.position()
+            norm = _canvas_pos_to_norm(
+                pos.x(), pos.y(), self.width(), self.height(), pm.width(), pm.height()
+            )
+            if norm is not None:
+                self.pressed.emit(norm[0], norm[1], label)
+        super().mousePressEvent(ev)
 
 
 class ViewportPanel(QWidget):
@@ -47,6 +102,14 @@ class ViewportPanel(QWidget):
 
         self._current: ShotState | None = None
         self._latest_request_id = 0
+
+        # Click-to-mask state (driven by the inspector's Masks tab).
+        # `_click_mode` arms point placement; `_active_instance` is the
+        # ClickInstance receiving clicks. `_last_composed` keeps the last
+        # unscaled preview so markers repaint without re-decoding the EXR.
+        self._click_mode = False
+        self._active_instance: ClickInstance | None = None
+        self._last_composed: QPixmap | None = None
 
         # --- View mode radios ---
         # "Transformed" is the default because that's the mode compers
@@ -80,13 +143,14 @@ class ViewportPanel(QWidget):
         # splitter's centre column. Wrapping inside a QScrollArea is a
         # future move when we add high-res overlays — for now the
         # QLabel's scaled pixmap fits any viewport size.
-        self._canvas = QLabel()
+        self._canvas = _ClickCanvas()
         self._canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._canvas.setMinimumSize(320, 200)
         self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._canvas.setStyleSheet("background: #1a1a1a; color: #888;")
         self._canvas.setWordWrap(True)
         self._canvas.setText("(no shot loaded)")
+        self._canvas.pressed.connect(self._on_canvas_pressed)
 
         # --- Frame scrub slider + label ---
         self._frame_slider = QSlider(Qt.Orientation.Horizontal)
@@ -125,6 +189,7 @@ class ViewportPanel(QWidget):
             self._frame_slider.setEnabled(False)
             self._frame_slider.setRange(0, 0)
             self._frame_label.setText("Frame: —")
+            self._last_composed = None
             self._canvas.setPixmap(QPixmap())
             self._canvas.setText("(no shot loaded)")
             return
@@ -187,13 +252,82 @@ class ViewportPanel(QWidget):
         if pixmap is None:
             self._canvas.setText("(nothing to show)")
             return
-        self._canvas.setPixmap(
-            pixmap.scaled(
-                self._canvas.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+        self._last_composed = pixmap
+        self._repaint_canvas()
+
+    # --- Click-to-mask (driven by the inspector's Masks tab) ---
+
+    def set_click_mode(self, on: bool) -> None:
+        """Arm/disarm viewport point placement (inspector Masks tab toggle)."""
+        self._click_mode = bool(on)
+        self._canvas.setCursor(
+            Qt.CursorShape.CrossCursor if self._click_mode else Qt.CursorShape.ArrowCursor
         )
+        self._repaint_canvas()
+
+    def set_active_instance(self, inst: object) -> None:
+        """Select which ClickInstance receives clicks (or None)."""
+        self._active_instance = inst if isinstance(inst, ClickInstance) else None
+        self._repaint_canvas()
+
+    def _on_canvas_pressed(self, nx: float, ny: float, label: int) -> None:
+        shot = self._current
+        inst = self._active_instance
+        if not self._click_mode or shot is None or inst is None:
+            return
+        if shot.view_mode == "compare":
+            # Two images side by side — the mapping would be ambiguous.
+            self._frame_label.setText("Frame: — (exit Compare to place points)")
+            return
+        frame = shot.current_frame or shot.frame_range[0]
+        if not inst.points and inst.box is None:
+            # First click anchors the instance to the frame being viewed.
+            inst.seed_frame = frame
+        elif frame != inst.seed_frame:
+            # Points live on the seed frame; tell the user where it is
+            # rather than silently mixing frames.
+            self._frame_label.setText(f"Frame: {frame} (points live on f{inst.seed_frame})")
+            return
+        w, h = shot.resolution
+        inst.points.append((nx * float(w), ny * float(h), int(label)))
+        self._repaint_canvas()
+        # Let the inspector's list refresh its point count.
+        self._registry.notify_updated(shot)
+
+    def _repaint_canvas(self) -> None:
+        """Scale the last composed preview to the canvas and overlay the
+        active instance's points (seed frame only). Pure-paint — never
+        re-decodes the EXR."""
+        base = self._last_composed
+        if base is None or base.isNull():
+            return
+        scaled = base.scaled(
+            self._canvas.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        shot = self._current
+        inst = self._active_instance
+        if (
+            shot is not None
+            and inst is not None
+            and self._click_mode
+            and shot.view_mode != "compare"
+            and (shot.current_frame or shot.frame_range[0]) == inst.seed_frame
+            and inst.points
+        ):
+            w, h = shot.resolution
+            painter = QPainter(scaled)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            for px, py, lbl in inst.points:
+                cx = (px / float(w)) * scaled.width()
+                cy = (py / float(h)) * scaled.height()
+                colour = QColor(80, 220, 100) if lbl == 1 else QColor(230, 80, 80)
+                painter.setPen(QPen(QColor(255, 255, 255), 1.5))
+                painter.setBrush(colour)
+                painter.drawEllipse(int(cx) - 4, int(cy) - 4, 8, 8)
+            painter.end()
+        self._canvas.setPixmap(scaled)
 
 
 def _compose_pixmap(result: PreviewResult) -> QPixmap | None:

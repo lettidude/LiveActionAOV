@@ -34,9 +34,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -44,6 +45,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -55,7 +57,7 @@ from PySide6.QtWidgets import (
 )
 
 from live_action_aov.gui.pass_catalog import PASS_CATALOG
-from live_action_aov.gui.shot_state import ShotRegistry, ShotState
+from live_action_aov.gui.shot_state import ClickInstance, ShotRegistry, ShotState
 from live_action_aov.io.colorspace_detect import SUPPORTED_COLORSPACES
 
 
@@ -75,6 +77,11 @@ def _category_of(model_key: str) -> str | None:
 
 
 class InspectorPanel(QWidget):
+    # Click-to-mask wiring (MainWindow connects these to the ViewportPanel):
+    # arm/disarm viewport point placement, and which ClickInstance is active.
+    click_mode_changed = Signal(bool)
+    active_click_instance_changed = Signal(object)  # ClickInstance | None
+
     def __init__(self, registry: ShotRegistry) -> None:
         super().__init__()
         self._registry = registry
@@ -483,8 +490,64 @@ class InspectorPanel(QWidget):
         output_layout.addStretch()
         output_tab = _scrollable(output_layout)
 
+        # Masks tab — interactive click-to-mask (v0.3). Entirely OPTIONAL:
+        # an empty object list changes nothing at submit. Each object here
+        # is a ClickInstance: the user arms point placement, clicks the
+        # element in the viewport (left = include, right = exclude), and at
+        # submit the SAM 3 tracker propagates it across the shot into a
+        # mask.<name> channel + Cryptomatte ID.
+        masks_hint = QLabel(
+            "Optional. Click an element in the viewport to seed a tracked "
+            "mask — it becomes a mask.<name> channel and a Cryptomatte ID "
+            "at submit. Left-click = include, right-click = exclude. "
+            "Points live on the frame you first click (the seed frame)."
+        )
+        masks_hint.setStyleSheet("color: #999; font-size: 9pt;")
+        masks_hint.setWordWrap(True)
+
+        self._mask_mode_check = QCheckBox("Place points in viewport")
+        self._mask_mode_check.setToolTip(
+            "Arms the viewport: clicks add points to the selected object "
+            "instead of doing nothing. Disable to scrub freely."
+        )
+        self._mask_mode_check.toggled.connect(self._on_mask_mode_toggled)
+
+        self._mask_list = QListWidget()
+        self._mask_list.setFixedHeight(140)
+        self._mask_list.currentRowChanged.connect(self._on_mask_selected)
+
+        self._mask_name_edit = QLineEdit()
+        self._mask_name_edit.setPlaceholderText("object name (→ Cryptomatte)")
+        self._mask_name_edit.textEdited.connect(self._on_mask_name_edited)
+
+        self._mask_new_btn = QPushButton("New object")
+        self._mask_new_btn.clicked.connect(self._on_mask_new)
+        self._mask_del_btn = QPushButton("Delete")
+        self._mask_del_btn.clicked.connect(self._on_mask_delete)
+        self._mask_clear_btn = QPushButton("Clear points")
+        self._mask_clear_btn.clicked.connect(self._on_mask_clear_points)
+
+        mask_btn_row = QHBoxLayout()
+        mask_btn_row.addWidget(self._mask_new_btn)
+        mask_btn_row.addWidget(self._mask_del_btn)
+        mask_btn_row.addWidget(self._mask_clear_btn)
+
+        masks_layout = QVBoxLayout()
+        masks_layout.setContentsMargins(8, 8, 8, 8)
+        masks_layout.addWidget(_section_label("Click-to-mask"))
+        masks_layout.addWidget(masks_hint)
+        masks_layout.addSpacing(6)
+        masks_layout.addWidget(self._mask_mode_check)
+        masks_layout.addLayout(mask_btn_row)
+        masks_layout.addWidget(self._mask_list)
+        masks_layout.addWidget(QLabel("Name:"))
+        masks_layout.addWidget(self._mask_name_edit)
+        masks_layout.addStretch()
+        masks_tab = _scrollable(masks_layout)
+
         tabs = QTabWidget()
         tabs.addTab(passes_tab, "Passes")
+        tabs.addTab(masks_tab, "Masks")
         tabs.addTab(preview_tab, "Preview")
         tabs.addTab(output_tab, "Output")
 
@@ -522,6 +585,7 @@ class InspectorPanel(QWidget):
                 self._colorspace_box.setCurrentText("auto")
                 self._exposure_slider.setValue(0)
                 self._exposure_spin.setValue(0.0)
+                self._refresh_mask_list()
                 return
 
             self._name_label.setText(shot.name)
@@ -608,6 +672,9 @@ class InspectorPanel(QWidget):
 
             # SAM 3 concepts free-text (drives Matte + Cryptomatte).
             self._sam3_concepts_edit.setText(shot.sam3_concepts)
+
+            # Click-to-mask object list (Masks tab).
+            self._refresh_mask_list()
 
             # Render the auto-EV provenance line. Matches the format
             # of the colorspace line: value + source + a small evidence
@@ -713,6 +780,102 @@ class InspectorPanel(QWidget):
             return
         self._current.sam3_concepts = text
         self._registry.notify_updated(self._current)
+
+    # --- Click-to-mask (Masks tab) ---
+
+    def _active_mask_instance(self) -> ClickInstance | None:
+        if self._current is None:
+            return None
+        row = self._mask_list.currentRow()
+        if 0 <= row < len(self._current.click_instances):
+            return self._current.click_instances[row]
+        return None
+
+    @staticmethod
+    def _mask_item_text(inst: ClickInstance) -> str:
+        n = len(inst.points)
+        return f"{inst.name}  ·  f{inst.seed_frame}  ·  {n} pt{'s' if n != 1 else ''}"
+
+    def _refresh_mask_list(self) -> None:
+        """Repopulate the Masks list from the current shot, preserving the
+        selected row, then re-announce the active instance to the viewport."""
+        shot = self._current
+        row = self._mask_list.currentRow()
+        self._mask_list.blockSignals(True)
+        self._mask_list.clear()
+        if shot is not None and shot.click_instances:
+            for inst in shot.click_instances:
+                self._mask_list.addItem(self._mask_item_text(inst))
+            row = min(max(row, 0), len(shot.click_instances) - 1)
+            self._mask_list.setCurrentRow(row)
+        self._mask_list.blockSignals(False)
+        active = self._active_mask_instance()
+        self._mask_name_edit.blockSignals(True)
+        self._mask_name_edit.setText(active.name if active is not None else "")
+        self._mask_name_edit.blockSignals(False)
+        self.active_click_instance_changed.emit(active)
+
+    def _on_mask_mode_toggled(self, checked: bool) -> None:
+        self.click_mode_changed.emit(bool(checked))
+
+    def _on_mask_new(self) -> None:
+        if self._current is None:
+            return
+        shot = self._current
+        seed = shot.current_frame or shot.frame_range[0]
+        shot.click_instances.append(
+            ClickInstance(
+                name=f"object_{len(shot.click_instances) + 1}",
+                seed_frame=int(seed),
+            )
+        )
+        self._refresh_mask_list()
+        self._mask_list.setCurrentRow(len(shot.click_instances) - 1)
+        # Creating an object means the user wants to click — arm the viewport.
+        if not self._mask_mode_check.isChecked():
+            self._mask_mode_check.setChecked(True)  # emits click_mode_changed
+        self._registry.notify_updated(shot)
+
+    def _on_mask_delete(self) -> None:
+        if self._current is None:
+            return
+        row = self._mask_list.currentRow()
+        if 0 <= row < len(self._current.click_instances):
+            del self._current.click_instances[row]
+            self._refresh_mask_list()
+            self._registry.notify_updated(self._current)
+
+    def _on_mask_clear_points(self) -> None:
+        inst = self._active_mask_instance()
+        if inst is None or self._current is None:
+            return
+        inst.points.clear()
+        inst.box = None
+        self._refresh_mask_list()
+        self._registry.notify_updated(self._current)
+
+    def _on_mask_selected(self, row: int) -> None:
+        if self._building:
+            return
+        inst = self._active_mask_instance()
+        self._mask_name_edit.blockSignals(True)
+        self._mask_name_edit.setText(inst.name if inst is not None else "")
+        self._mask_name_edit.blockSignals(False)
+        self.active_click_instance_changed.emit(inst)
+
+    def _on_mask_name_edited(self, text: str) -> None:
+        """Rename the selected object. The name becomes the mask.<name>
+        channel + Cryptomatte manifest entry; empty falls back to a
+        click_<n> default at pass level, so storing '' is safe."""
+        if self._building or self._current is None:
+            return
+        inst = self._active_mask_instance()
+        if inst is None:
+            return
+        inst.name = text.strip()
+        item = self._mask_list.currentItem()
+        if item is not None:
+            item.setText(self._mask_item_text(inst))
 
     def _on_proxy_changed(self, idx: int) -> None:
         if self._building or self._current is None:

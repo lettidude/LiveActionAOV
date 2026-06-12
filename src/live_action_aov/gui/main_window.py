@@ -70,6 +70,11 @@ class MainWindow(QMainWindow):
         self._viewport = ViewportPanel(self._registry)
         self._inspector = InspectorPanel(self._registry)
 
+        # Click-to-mask: the Masks tab drives the viewport — arming point
+        # placement and selecting which object receives the clicks.
+        self._inspector.click_mode_changed.connect(self._viewport.set_click_mode)
+        self._inspector.active_click_instance_changed.connect(self._viewport.set_active_instance)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._shot_list)
         splitter.addWidget(self._viewport)
