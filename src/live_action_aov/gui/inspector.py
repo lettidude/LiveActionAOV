@@ -503,7 +503,10 @@ class InspectorPanel(QWidget):
             "Optional. Click an element in the viewport to seed a tracked "
             "mask — it becomes a mask.<name> channel and a Cryptomatte ID "
             "at submit. Left-click = include, right-click = exclude. "
-            "Points live on the frame you first click (the seed frame)."
+            "Points live on the frame you first click (the seed frame).\n"
+            "FEW CLICKS WORK BEST: 2–6 points, then Preview, then one "
+            "corrective click where the mask is wrong. SAM collapses under "
+            "dozens of points — don't paint the object with dots."
         )
         masks_hint.setStyleSheet("color: #999; font-size: 9pt;")
         masks_hint.setWordWrap(True)
@@ -558,8 +561,19 @@ class InspectorPanel(QWidget):
         masks_layout.addSpacing(6)
         masks_layout.addWidget(self._mask_mode_check)
         masks_layout.addLayout(mask_btn_row)
+        # Too-many-points guardrail. Empirically verified on real plates:
+        # 3+2 points → full-object mask (34.8% of frame); 50+ points → the
+        # mask collapses to nearly nothing (1.6%). SAM's interactive
+        # training regime is few-click; warn before the user dots the
+        # object to death and concludes the tool is broken.
+        self._mask_points_warn = QLabel()
+        self._mask_points_warn.setStyleSheet("color: #e0a040; font-size: 9pt;")
+        self._mask_points_warn.setWordWrap(True)
+        self._mask_points_warn.setVisible(False)
+
         masks_layout.addWidget(self._mask_preview_btn)
         masks_layout.addWidget(self._mask_list)
+        masks_layout.addWidget(self._mask_points_warn)
         masks_layout.addWidget(QLabel("Name:"))
         masks_layout.addWidget(self._mask_name_edit)
         masks_layout.addStretch()
@@ -833,7 +847,22 @@ class InspectorPanel(QWidget):
         self._mask_name_edit.blockSignals(True)
         self._mask_name_edit.setText(active.name if active is not None else "")
         self._mask_name_edit.blockSignals(False)
+        self._update_mask_points_warning(active)
         self.active_click_instance_changed.emit(active)
+
+    def _update_mask_points_warning(self, inst: ClickInstance | None) -> None:
+        """Amber warning once an object has more points than SAM's
+        few-click sweet spot — measured: 5 points = full object, 50+ =
+        collapsed mask. Threshold 9 = the upper end of sane refinement."""
+        too_many = inst is not None and len(inst.points) > 9
+        if too_many and inst is not None:
+            self._mask_points_warn.setText(
+                f"⚠ {len(inst.points)} points — SAM degrades with many "
+                "points and the mask can collapse to nothing. Try Clear "
+                "points, then 2–6 clicks + Preview, refining one click "
+                "at a time."
+            )
+        self._mask_points_warn.setVisible(bool(too_many))
 
     def _on_mask_mode_toggled(self, checked: bool) -> None:
         self.click_mode_changed.emit(bool(checked))

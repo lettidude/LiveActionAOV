@@ -159,6 +159,26 @@ def test_masks_tab_lifecycle_and_signals(qapp: QApplication) -> None:
     assert actives[-1] is None
 
 
+def test_too_many_points_warning(qapp: QApplication) -> None:
+    from live_action_aov.gui.inspector import InspectorPanel
+
+    reg = ShotRegistry()
+    panel = InspectorPanel(reg)
+    shot = _shot()
+    reg.add(shot)
+    panel._on_mask_new()
+    inst = shot.click_instances[0]
+    # 9 points: still fine, no warning.
+    inst.points.extend([(float(i), float(i), 1) for i in range(9)])
+    panel._refresh_mask_list()
+    assert panel._mask_points_warn.isHidden()
+    # 10th point crosses the few-click threshold → amber warning.
+    inst.points.append((99.0, 99.0, 1))
+    panel._refresh_mask_list()
+    assert not panel._mask_points_warn.isHidden()
+    assert "10 points" in panel._mask_points_warn.text()
+
+
 def test_undo_removes_only_last_point(qapp: QApplication) -> None:
     from live_action_aov.gui.inspector import InspectorPanel
 
