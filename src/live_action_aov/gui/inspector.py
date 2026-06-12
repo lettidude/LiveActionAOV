@@ -81,6 +81,9 @@ class InspectorPanel(QWidget):
     # arm/disarm viewport point placement, and which ClickInstance is active.
     click_mode_changed = Signal(bool)
     active_click_instance_changed = Signal(object)  # ClickInstance | None
+    # "Preview mask (this frame)" — MainWindow routes this to the viewport,
+    # which owns the preview image + the single-frame SAM 3 engine.
+    mask_preview_requested = Signal()
 
     def __init__(self, registry: ShotRegistry) -> None:
         super().__init__()
@@ -524,12 +527,28 @@ class InspectorPanel(QWidget):
         self._mask_new_btn.clicked.connect(self._on_mask_new)
         self._mask_del_btn = QPushButton("Delete")
         self._mask_del_btn.clicked.connect(self._on_mask_delete)
+        self._mask_undo_btn = QPushButton("Undo point")
+        self._mask_undo_btn.setToolTip("Remove the last point added to the selected object.")
+        self._mask_undo_btn.clicked.connect(self._on_mask_undo_point)
         self._mask_clear_btn = QPushButton("Clear points")
         self._mask_clear_btn.clicked.connect(self._on_mask_clear_points)
+
+        # On-demand single-frame SAM 3 preview: see what the points produce
+        # on the seed frame BEFORE running the whole shot. The heavy lifting
+        # lives in the viewport (which owns the preview image); this button
+        # just asks for it.
+        self._mask_preview_btn = QPushButton("Preview mask (this frame)")
+        self._mask_preview_btn.setToolTip(
+            "Runs SAM 3 on the seed frame only and overlays the resulting "
+            "mask in the viewport. First use loads the model (one-time "
+            "wait); after that it's quick. Adjust points and preview again."
+        )
+        self._mask_preview_btn.clicked.connect(self.mask_preview_requested.emit)
 
         mask_btn_row = QHBoxLayout()
         mask_btn_row.addWidget(self._mask_new_btn)
         mask_btn_row.addWidget(self._mask_del_btn)
+        mask_btn_row.addWidget(self._mask_undo_btn)
         mask_btn_row.addWidget(self._mask_clear_btn)
 
         masks_layout = QVBoxLayout()
@@ -539,6 +558,7 @@ class InspectorPanel(QWidget):
         masks_layout.addSpacing(6)
         masks_layout.addWidget(self._mask_mode_check)
         masks_layout.addLayout(mask_btn_row)
+        masks_layout.addWidget(self._mask_preview_btn)
         masks_layout.addWidget(self._mask_list)
         masks_layout.addWidget(QLabel("Name:"))
         masks_layout.addWidget(self._mask_name_edit)
@@ -844,6 +864,16 @@ class InspectorPanel(QWidget):
             del self._current.click_instances[row]
             self._refresh_mask_list()
             self._registry.notify_updated(self._current)
+
+    def _on_mask_undo_point(self) -> None:
+        """Remove the LAST point added to the selected object — the cheap
+        undo step for a misclick, without nuking the whole point set."""
+        inst = self._active_mask_instance()
+        if inst is None or self._current is None or not inst.points:
+            return
+        inst.points.pop()
+        self._refresh_mask_list()
+        self._registry.notify_updated(self._current)
 
     def _on_mask_clear_points(self) -> None:
         inst = self._active_mask_instance()

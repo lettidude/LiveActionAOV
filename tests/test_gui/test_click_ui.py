@@ -157,3 +157,84 @@ def test_masks_tab_lifecycle_and_signals(qapp: QApplication) -> None:
     panel._on_mask_delete()
     assert shot.click_instances == []
     assert actives[-1] is None
+
+
+def test_undo_removes_only_last_point(qapp: QApplication) -> None:
+    from live_action_aov.gui.inspector import InspectorPanel
+
+    reg = ShotRegistry()
+    panel = InspectorPanel(reg)
+    shot = _shot()
+    reg.add(shot)
+    panel._on_mask_new()
+    inst = shot.click_instances[0]
+    inst.points.extend([(1.0, 1.0, 1), (2.0, 2.0, 0), (3.0, 3.0, 1)])
+    panel._on_mask_undo_point()
+    assert inst.points == [(1.0, 1.0, 1), (2.0, 2.0, 0)]
+    panel._on_mask_undo_point()
+    panel._on_mask_undo_point()
+    panel._on_mask_undo_point()  # extra undo on empty list is a no-op
+    assert inst.points == []
+
+
+# --- Mask preview (GPU-free parts) --------------------------------------
+
+def test_preview_guards_no_points_and_wrong_frame(qapp: QApplication) -> None:
+    panel, shot, _ = _viewport_with_shot(qapp)
+    inst = ClickInstance(name="hero", seed_frame=1003)
+    shot.click_instances.append(inst)
+    panel.set_click_mode(True)
+    panel.set_active_instance(inst)
+    # No points yet → hint, no crash, no worker call.
+    panel.preview_active_mask()
+    assert "point" in panel._frame_label.text().lower()
+    # Points exist but user scrubbed off the seed frame → hint with frame no.
+    inst.points.append((10.0, 10.0, 1))
+    shot.current_frame = 1007
+    panel.preview_active_mask()
+    assert "f1003" in panel._frame_label.text()
+
+
+def test_preview_mask_invalidated_on_change(qapp: QApplication) -> None:
+    import numpy as np
+
+    panel, shot, _ = _viewport_with_shot(qapp)
+    inst = ClickInstance(name="hero", seed_frame=1003)
+    shot.click_instances.append(inst)
+    panel.set_click_mode(True)
+    panel.set_active_instance(inst)
+    # Pretend a preview happened.
+    panel._preview_mask = np.ones((8, 8), dtype=np.float32)
+    # New point → stale → cleared.
+    panel._on_canvas_pressed(0.5, 0.5, 1)
+    assert panel._preview_mask is None
+    # Again, then scrubbing clears it too.
+    panel._preview_mask = np.ones((8, 8), dtype=np.float32)
+    panel._on_frame_slider_changed(1005)
+    assert panel._preview_mask is None
+    # Again, then switching instance clears it.
+    panel._preview_mask = np.ones((8, 8), dtype=np.float32)
+    other = ClickInstance(name="b", seed_frame=1001)
+    panel.set_active_instance(other)
+    assert panel._preview_mask is None
+
+
+def test_pixmap_and_overlay_conversions(qapp: QApplication) -> None:
+    import numpy as np
+    from PySide6.QtGui import QColor, QImage, QPixmap
+
+    from live_action_aov.gui.viewport import _mask_to_overlay, _pixmap_to_rgb_float
+
+    # Solid mid-grey pixmap round-trips to ~0.5 float RGB.
+    img = QImage(16, 8, QImage.Format.Format_RGB888)
+    img.fill(QColor(128, 128, 128))
+    arr = _pixmap_to_rgb_float(QPixmap.fromImage(img))
+    assert arr.shape == (8, 16, 3)
+    assert abs(float(arr.mean()) - 128 / 255) < 0.01
+    # Overlay: masked pixels get alpha, unmasked stay fully transparent.
+    mask = np.zeros((8, 16), dtype=np.float32)
+    mask[2:6, 4:12] = 1.0
+    overlay = _mask_to_overlay(mask)
+    assert overlay.size().width() == 16
+    assert overlay.pixelColor(5, 3).alpha() > 0
+    assert overlay.pixelColor(0, 0).alpha() == 0

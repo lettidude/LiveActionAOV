@@ -21,6 +21,7 @@ worker pool is backed up.
 
 from __future__ import annotations
 
+import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
@@ -34,8 +35,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from live_action_aov.gui.mask_preview import MaskPreviewWorker
 from live_action_aov.gui.preview_loader import PreviewLoader, PreviewResult
 from live_action_aov.gui.shot_state import ClickInstance, ShotRegistry, ShotState, ViewMode
+
+
+def _pixmap_to_rgb_float(pm: QPixmap) -> np.ndarray:
+    """QPixmap → (H, W, 3) float32 in [0, 1] — the SAM preview input."""
+    img = pm.toImage().convertToFormat(QImage.Format.Format_RGB888)
+    w, h, bpl = img.width(), img.height(), img.bytesPerLine()
+    buf = np.frombuffer(img.constBits(), np.uint8, count=h * bpl).reshape(h, bpl)
+    return buf[:, : w * 3].reshape(h, w, 3).astype(np.float32) / 255.0
+
+
+def _mask_to_overlay(mask: np.ndarray) -> QImage:
+    """(H, W) float mask → semi-transparent green RGBA image for overlay."""
+    h, w = mask.shape
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+    rgba[mask > 0.5] = (80, 220, 100, 110)
+    img = QImage(rgba.data, w, h, 4 * w, QImage.Format.Format_RGBA8888)
+    return img.copy()  # detach from the numpy buffer before it goes away
 
 
 def _canvas_pos_to_norm(
@@ -110,6 +129,14 @@ class ViewportPanel(QWidget):
         self._click_mode = False
         self._active_instance: ClickInstance | None = None
         self._last_composed: QPixmap | None = None
+        # Single-frame SAM 3 preview of the active instance's mask. The
+        # ndarray lives at `_last_composed` resolution; it's invalidated on
+        # any point/frame/instance change so a stale mask never lies.
+        self._preview_mask: np.ndarray | None = None
+        self._mask_worker = MaskPreviewWorker()
+        self._mask_worker.ready.connect(self._on_mask_preview_ready)
+        self._mask_worker.failed.connect(self._on_mask_preview_failed)
+        self._mask_worker.status.connect(self._frame_status)
 
         # --- View mode radios ---
         # "Transformed" is the default because that's the mode compers
@@ -222,6 +249,8 @@ class ViewportPanel(QWidget):
             return
         self._current.current_frame = value
         self._frame_label.setText(f"Frame: {value}")
+        # Mask preview belongs to the seed frame — scrubbing away drops it.
+        self._preview_mask = None
         self._request_preview()
 
     def _on_mode_toggled(self, button_id: int, checked: bool) -> None:
@@ -267,8 +296,69 @@ class ViewportPanel(QWidget):
 
     def set_active_instance(self, inst: object) -> None:
         """Select which ClickInstance receives clicks (or None)."""
-        self._active_instance = inst if isinstance(inst, ClickInstance) else None
+        new = inst if isinstance(inst, ClickInstance) else None
+        if new is not self._active_instance:
+            self._preview_mask = None
+        self._active_instance = new
         self._repaint_canvas()
+
+    def preview_active_mask(self) -> None:
+        """Run SAM 3 on the seed frame only and overlay the resulting mask —
+        the 'what will my points produce?' check before a full submit."""
+        shot = self._current
+        inst = self._active_instance
+        if shot is None or inst is None or (not inst.points and inst.box is None):
+            self._frame_status("Preview: add at least one point first.")
+            return
+        frame = shot.current_frame or shot.frame_range[0]
+        if frame != inst.seed_frame:
+            self._frame_status(f"Preview: scrub to the seed frame (f{inst.seed_frame}).")
+            return
+        if shot.view_mode == "compare":
+            self._frame_status("Preview: exit Compare mode first.")
+            return
+        if self._last_composed is None or self._last_composed.isNull():
+            self._frame_status("Preview: no image loaded yet.")
+            return
+        if self._mask_worker.is_busy():
+            return
+        image = _pixmap_to_rgb_float(self._last_composed)
+        ih, iw = image.shape[0], image.shape[1]
+        w, h = shot.resolution
+        pts = [[px / float(w) * iw, py / float(h) * ih] for (px, py, _lbl) in inst.points]
+        lbls = [int(lbl) for (_px, _py, lbl) in inst.points]
+        box = (
+            [
+                inst.box[0] / float(w) * iw,
+                inst.box[1] / float(h) * ih,
+                inst.box[2] / float(w) * iw,
+                inst.box[3] / float(h) * ih,
+            ]
+            if inst.box is not None
+            else None
+        )
+        self._mask_worker.request(image, pts, lbls, box)
+
+    def release_mask_preview(self) -> None:
+        """Drop the overlay and free the resident preview model — called
+        before Submit so the batch executor gets the whole GPU."""
+        self._preview_mask = None
+        self._mask_worker.unload()
+        self._repaint_canvas()
+
+    def _frame_status(self, text: str) -> None:
+        self._frame_label.setText(text)
+
+    def _on_mask_preview_ready(self, mask: object) -> None:
+        self._preview_mask = mask if isinstance(mask, np.ndarray) else None
+        shot = self._current
+        frame = (shot.current_frame or shot.frame_range[0]) if shot else "—"
+        self._frame_label.setText(f"Frame: {frame}")
+        self._repaint_canvas()
+
+    def _on_mask_preview_failed(self, error: str) -> None:
+        self._preview_mask = None
+        self._frame_status(f"Preview failed: {error[:60]}")
 
     def _on_canvas_pressed(self, nx: float, ny: float, label: int) -> None:
         shot = self._current
@@ -290,6 +380,8 @@ class ViewportPanel(QWidget):
             return
         w, h = shot.resolution
         inst.points.append((nx * float(w), ny * float(h), int(label)))
+        # The point set changed — any previewed mask is now stale.
+        self._preview_mask = None
         self._repaint_canvas()
         # Let the inspector's list refresh its point count.
         self._registry.notify_updated(shot)
@@ -314,11 +406,23 @@ class ViewportPanel(QWidget):
             and self._click_mode
             and shot.view_mode != "compare"
             and (shot.current_frame or shot.frame_range[0]) == inst.seed_frame
-            and inst.points
+            and (inst.points or self._preview_mask is not None)
         ):
             w, h = shot.resolution
             painter = QPainter(scaled)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            # Mask preview first (under the point markers): the SAM 3 result
+            # at composed-image resolution, scaled onto the canvas pixmap.
+            if self._preview_mask is not None:
+                overlay = _mask_to_overlay(self._preview_mask)
+                painter.drawImage(
+                    scaled.rect(),
+                    overlay.scaled(
+                        scaled.size(),
+                        Qt.AspectRatioMode.IgnoreAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    ),
+                )
             for px, py, lbl in inst.points:
                 cx = (px / float(w)) * scaled.width()
                 cy = (py / float(h)) * scaled.height()
