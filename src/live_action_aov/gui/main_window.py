@@ -17,9 +17,12 @@ to `LocalExecutor` lands in M2.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -38,6 +41,12 @@ from live_action_aov.gui.cuda_check import CudaState, cuda_state
 from live_action_aov.gui.inspector import InspectorPanel
 from live_action_aov.gui.log_panel import LogPanel
 from live_action_aov.gui.pass_catalog import has_noncommercial
+from live_action_aov.gui.session_io import (
+    SESSION_SUFFIX,
+    autosave_path,
+    load_session,
+    save_session,
+)
 from live_action_aov.gui.shot_list import ShotListPanel
 from live_action_aov.gui.shot_state import ShotRegistry, ShotState
 from live_action_aov.gui.submit_worker import SubmitResult, SubmitWorker
@@ -185,6 +194,22 @@ class MainWindow(QMainWindow):
         self._registry.current_changed.connect(self._refresh_submit_button)
         self._registry.shot_updated.connect(lambda s: self._refresh_submit_button(s))
 
+        # --- Session autosave (crash insurance) ---
+        # Debounced: any registry change arms a 2 s timer; quiet typing /
+        # scrubbing collapses into a single atomic write. The artist never
+        # loses a 50-shot prep to a crash again.
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(2000)
+        self._autosave_timer.timeout.connect(self._do_autosave)
+        self._registry.shot_added.connect(lambda *_: self._autosave_timer.start())
+        self._registry.shot_removed.connect(lambda *_: self._autosave_timer.start())
+        self._registry.shot_updated.connect(lambda *_: self._autosave_timer.start())
+
+        # Offer to restore the autosaved session once the window is up
+        # (singleShot(0) → after this constructor returns and Qt paints).
+        QTimer.singleShot(0, self._offer_restore)
+
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
 
@@ -192,6 +217,17 @@ class MainWindow(QMainWindow):
         add_action.setShortcut(QKeySequence.StandardKey.Open)
         add_action.triggered.connect(self._shot_list._on_add_clicked)
         file_menu.addAction(add_action)
+
+        file_menu.addSeparator()
+
+        open_session_action = QAction("&Open session…", self)
+        open_session_action.triggered.connect(self._on_open_session)
+        file_menu.addAction(open_session_action)
+
+        save_session_action = QAction("&Save session as…", self)
+        save_session_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_session_action.triggered.connect(self._on_save_session)
+        file_menu.addAction(save_session_action)
 
         file_menu.addSeparator()
 
@@ -221,13 +257,106 @@ class MainWindow(QMainWindow):
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(get_log_dir())))
 
+    # --- Session save / load -------------------------------------------
+
+    def _on_save_session(self) -> None:
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "Save session", "", f"LiveActionAOV session (*{SESSION_SUFFIX})"
+        )
+        if not path_str:
+            return
+        if not path_str.endswith(SESSION_SUFFIX):
+            path_str += SESSION_SUFFIX
+        try:
+            save_session(Path(path_str), self._registry.shots())
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", f"{type(e).__name__}: {e}")
+            return
+        self.statusBar().showMessage(f"Session saved → {path_str}", 5000)
+
+    def _on_open_session(self) -> None:
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open session",
+            "",
+            f"LiveActionAOV session (*{SESSION_SUFFIX});;All files (*)",
+        )
+        if not path_str:
+            return
+        try:
+            shots, warnings = load_session(Path(path_str))
+        except Exception as e:
+            QMessageBox.critical(self, "Open failed", f"{type(e).__name__}: {e}")
+            return
+        if self._registry.shots():
+            resp = QMessageBox.question(
+                self,
+                "Replace current session?",
+                "Loading a session replaces the current shot list. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return
+            for shot in list(self._registry.shots()):
+                self._registry.remove(shot)
+        self._adopt_loaded_shots(shots, warnings, source=path_str)
+
+    def _adopt_loaded_shots(
+        self, shots: list[ShotState], warnings: list[str], source: str
+    ) -> None:
+        for shot in shots:
+            self._registry.add(shot)
+        msg = f"Session loaded — {len(shots)} shot(s) from {source}"
+        self.statusBar().showMessage(msg, 5000)
+        if warnings:
+            QMessageBox.warning(
+                self,
+                "Session loaded with warnings",
+                "\n".join(warnings[:12]) + ("\n…" if len(warnings) > 12 else ""),
+            )
+
+    # --- Autosave (crash insurance) -------------------------------------
+
+    def _do_autosave(self) -> None:
+        try:
+            save_session(autosave_path(), self._registry.shots())
+        except Exception:
+            # Autosave must never interrupt the artist; failures surface
+            # only in the log.
+            import logging
+
+            logging.getLogger(__name__).warning("session autosave failed", exc_info=True)
+
+    def _offer_restore(self) -> None:
+        p = autosave_path()
+        if not p.is_file():
+            return
+        try:
+            shots, warnings = load_session(p)
+        except Exception:
+            return
+        if not shots or self._registry.shots():
+            return
+        resp = QMessageBox.question(
+            self,
+            "Restore previous session?",
+            f"An autosaved session with {len(shots)} shot(s) was found.\n"
+            "Restore it?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if resp == QMessageBox.StandardButton.Yes:
+            self._adopt_loaded_shots(shots, warnings, source="autosave")
+
     def _show_about(self) -> None:
         QMessageBox.about(
             self,
             "About Live Action AOV",
-            "Live Action AOV — Shot Prep GUI (Phase 5, Milestone 2).\n\n"
+            "Live Action AOV — Shot Prep GUI.\n\n"
             "Submit runs the pipeline locally via LocalExecutor.\n"
-            "Deadline submit and session autosave land in later milestones.",
+            "Sessions autosave continuously; File → Save/Open session for "
+            "explicit files. Deadline submit lands in a later milestone.",
         )
 
     # --- Submit lifecycle ---

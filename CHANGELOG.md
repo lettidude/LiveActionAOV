@@ -4,6 +4,38 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [0.3.0] — 2026-06-13
+
+### Added
+- **Interactive click-to-mask** (Masks tab). Click an element in the viewport
+  — left = include, right = exclude — and at submit SAM 3 propagates it across
+  the whole shot into a `mask.<name>` channel **and a Cryptomatte ID** with the
+  name you typed. Entirely optional (an empty object list changes nothing) and
+  complementary to the text-concepts field: text grabs known categories,
+  clicks grab the element text can't name. Fully reproducible headlessly
+  (`prompt_instances` param on `sam3_matte`); proxy-safe coordinates.
+- **Seed-frame mask preview.** "Preview mask (this frame)" runs SAM 3 on the
+  seed frame only and overlays the result — adjust points and re-preview
+  before committing to a full-shot run. The model loads on first use, stays
+  resident for instant re-previews, and is freed automatically at Submit.
+- **Undo point** — remove the last point added without clearing the set.
+- **Session save/load + continuous autosave.** Every change autosaves
+  (debounced, atomic) to a per-user file; after a crash the next launch offers
+  a one-click restore. `File → Save/Open session` (`*.laov.json`) round-trips
+  the entire prep — shots, colour decisions, exposure, models, concepts,
+  click-to-mask points, output routing, proxy, queue flags. Shots whose plate
+  folder vanished are skipped with a warning instead of failing the load.
+
+### Notes
+- **Few clicks work best.** SAM's interactive regime is few-click: measured on
+  a real plate, 3+2 points segmented the full car (34.8% of frame) while 53
+  points collapsed the mask to ~nothing (1.6%). The GUI teaches the
+  2–6-clicks → preview → one-corrective-click workflow and warns past 9 points.
+- Hard-edge scope unchanged: click-to-mask produces selection/ID-grade masks,
+  not roto-grade alpha. A soft-edge refiner stage is the planned next step.
+
+[0.3.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.3.0
+
 ## [0.2.0] — 2026-06-09
 
 ### Added
