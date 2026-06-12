@@ -229,13 +229,19 @@ def _parse_concepts(raw: str) -> list[str]:
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
-def _serialize_click_instances(instances: list[ClickInstance]) -> list[dict[str, Any]]:
+def _serialize_click_instances(
+    instances: list[ClickInstance],
+    ref_size: tuple[int, int],
+) -> list[dict[str, Any]]:
     """Project the GUI's ClickInstance objects into plain JSON-friendly dicts
     for the `sam3_matte` pass's `prompt_instances` param:
-    {name, seed_frame, points: [[x, y, label], ...], box: [x1, y1, x2, y2] | None}.
+    {name, seed_frame, points: [[x, y, label], ...], box: [x1, y1, x2, y2] |
+    None, ref_size: [w, h]}.
 
-    Instances with neither points nor a box are dropped — there is nothing to
-    seed the tracker with.
+    `ref_size` is the plate resolution the clicks were captured at — the pass
+    rescales the coordinates onto whatever frames it actually reads, so proxy
+    mode can't shift the clicks. Instances with neither points nor a box are
+    dropped — there is nothing to seed the tracker with.
     """
     out: list[dict[str, Any]] = []
     for inst in instances:
@@ -244,7 +250,13 @@ def _serialize_click_instances(instances: list[ClickInstance]) -> list[dict[str,
         if not pts and box is None:
             continue
         out.append(
-            {"name": inst.name, "seed_frame": int(inst.seed_frame), "points": pts, "box": box}
+            {
+                "name": inst.name,
+                "seed_frame": int(inst.seed_frame),
+                "points": pts,
+                "box": box,
+                "ref_size": [int(ref_size[0]), int(ref_size[1])],
+            }
         )
     return out
 
@@ -257,7 +269,7 @@ def _sam3_matte_params(state: ShotState) -> dict[str, Any]:
     concepts = _parse_concepts(state.sam3_concepts)
     if concepts:
         params["concepts"] = concepts
-    clicks = _serialize_click_instances(state.click_instances)
+    clicks = _serialize_click_instances(state.click_instances, state.resolution)
     if clicks:
         params["prompt_instances"] = clicks
     return params
