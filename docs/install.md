@@ -153,6 +153,7 @@ uv pip install 'live-action-aov[depthcrafter]'           # CC-BY-NC-4.0
 uv pip install 'live-action-aov[normalcrafter]'          # CC-BY-NC-4.0
 uv pip install 'live-action-aov[video_depth_anything]'   # Apache-2.0
 uv pip install 'live-action-aov[depthpro]'               # CC-BY-NC-4.0
+uv pip install 'live-action-aov[birefnet]'               # MIT (soft-edge matte refiner)
 uv pip install 'live-action-aov[matanyone2]'             # CC-BY-NC-4.0
 ```
 
