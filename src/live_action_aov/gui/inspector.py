@@ -500,13 +500,14 @@ class InspectorPanel(QWidget):
         # submit the SAM 3 tracker propagates it across the shot into a
         # mask.<name> channel + Cryptomatte ID.
         masks_hint = QLabel(
-            "Optional. Click an element in the viewport to seed a tracked "
-            "mask — it becomes a mask.<name> channel and a Cryptomatte ID "
-            "at submit. Left-click = include, right-click = exclude. "
-            "Points live on the frame you first click (the seed frame).\n"
-            "FEW CLICKS WORK BEST: 2–6 points, then Preview, then one "
-            "corrective click where the mask is wrong. SAM collapses under "
-            "dozens of points — don't paint the object with dots."
+            "Optional. Seed a tracked mask in the viewport — it becomes a "
+            "mask.<name> channel and a Cryptomatte ID at submit. "
+            "Drag a box around the object (often the best single prompt), "
+            "or left-click = include / right-click = exclude. Inputs live "
+            "on the frame you first touch (the seed frame).\n"
+            "FEW INPUTS WORK BEST: a box or 2–6 points, then Preview, then "
+            "one corrective click where the mask is wrong. SAM collapses "
+            "under dozens of points — don't paint the object with dots."
         )
         masks_hint.setStyleSheet("color: #999; font-size: 9pt;")
         masks_hint.setWordWrap(True)
@@ -828,7 +829,8 @@ class InspectorPanel(QWidget):
     @staticmethod
     def _mask_item_text(inst: ClickInstance) -> str:
         n = len(inst.points)
-        return f"{inst.name}  ·  f{inst.seed_frame}  ·  {n} pt{'s' if n != 1 else ''}"
+        box = "  ·  box" if inst.box is not None else ""
+        return f"{inst.name}  ·  f{inst.seed_frame}  ·  {n} pt{'s' if n != 1 else ''}{box}"
 
     def _refresh_mask_list(self) -> None:
         """Repopulate the Masks list from the current shot, preserving the
@@ -895,12 +897,18 @@ class InspectorPanel(QWidget):
             self._registry.notify_updated(self._current)
 
     def _on_mask_undo_point(self) -> None:
-        """Remove the LAST point added to the selected object — the cheap
-        undo step for a misclick, without nuking the whole point set."""
+        """Undo the last input on the selected object — pop the last point,
+        or if there are none, drop the box. The cheap misclick fix between
+        nothing and Clear points."""
         inst = self._active_mask_instance()
-        if inst is None or self._current is None or not inst.points:
+        if inst is None or self._current is None:
             return
-        inst.points.pop()
+        if inst.points:
+            inst.points.pop()
+        elif inst.box is not None:
+            inst.box = None
+        else:
+            return
         self._refresh_mask_list()
         self._registry.notify_updated(self._current)
 
