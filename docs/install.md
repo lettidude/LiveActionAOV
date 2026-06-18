@@ -317,6 +317,23 @@ Check the OS taskbar for a hidden window — Qt sometimes opens the
 window off-screen on multi-monitor setups. `Alt+Space` then `M` then
 arrow keys will move a stuck window back into view.
 
+### Network timeouts / running on an unreliable link or content machine
+
+Models download from Hugging Face on first use and, by default, the Hub
+re-validates cached weights over the network on every run. A slow link or
+a brief outage can therefore abort a run **even when the weights are
+already on disk**. Two mitigations:
+
+- The tool now defaults `HF_HUB_DOWNLOAD_TIMEOUT=120` and
+  `HF_HUB_ETAG_TIMEOUT=30` (up from 10 s) so cold downloads and brief
+  blips don't fail.
+- **For a content machine or air-gapped/unreliable setup:** run once so
+  the cache fully warms (this pulls every model, including secondary
+  repos some passes depend on — e.g. NormalCrafter / DepthCrafter pull
+  `stabilityai/stable-video-diffusion-img2vid-xt`), then set
+  **`HF_HUB_OFFLINE=1`**. Subsequent runs use only the local cache and
+  never touch the network.
+
 ## Uninstall
 
 ```bash
