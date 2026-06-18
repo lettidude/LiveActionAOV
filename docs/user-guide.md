@@ -73,7 +73,22 @@ Heroes (1 of 4 slots filled):
 liveaov-gui
 ```
 
-Lands in Phase 5.
+**Workflow:**
+
+1. **Load plates** — drag plate folders onto the shot list (or File → Add shot). Each shot auto-detects its colourspace and seeds exposure.
+2. **Passes tab** — pick a model per category. For matte, choose a backend:
+   - **SAM3 + RVM** — hard masks + RVM soft alpha (default, commercial-safe).
+   - **SAM3 + BiRefNet (soft edges)** — roto-grade soft alpha (hair, motion blur, fine edges) in `matte.*`. MIT, commercial-safe.
+   - The **"SAM 3 detects"** field takes comma-separated concepts (e.g. `person, red car`) driving both the matte and the Cryptomatte.
+3. **Masks tab (interactive click-to-mask, optional)** — seed an object directly in the viewport:
+   - **Drag a box** around it (often the strongest single prompt), and/or **left-click = include**, **right-click = exclude**.
+   - **Preview mask (this frame)** runs SAM 3 on the seed frame so you can refine before the full run.
+   - **Fewer inputs work better** — a box or 2–6 points beats dozens; SAM collapses under too many point constraints.
+   - At submit, each object propagates across the shot into a `mask.<name>` channel + a named **Cryptomatte ID**.
+4. **Output tab** — choose where sidecars land (next-to-plate / subfolder / external root) and an optional proxy resolution for fast iterations.
+5. **Submit local** — runs the pipeline; a log panel shows progress.
+
+**Sessions** autosave continuously — after a crash, the next launch offers a one-click restore. Use **File → Save / Open session** (`*.laov.json`) for explicit project files; the whole prep round-trips (shots, colour, models, concepts, click points, output routing).
 
 ## Nuke plugin — UtilityRelight
 
