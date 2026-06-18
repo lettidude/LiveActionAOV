@@ -66,11 +66,14 @@ call :log "[OK] Python 3.11 provisioned"
 
 REM 4. Sync dependencies. `[tool.uv.sources]` in pyproject pins torch
 REM    + torchvision to the pytorch-cu124 index on Windows/Linux, so
-REM    this call pulls the CUDA build deterministically — no separate
+REM    this call pulls the CUDA build deterministically - no separate
 REM    reinstall step needed, no risk of a future `uv sync` silently
 REM    downgrading to the CPU wheel.
+REM    `--python 3.11` is explicit belt-and-suspenders alongside the
+REM    `.python-version` pin: never build the venv against a newer system
+REM    Python (3.13+) that NumPy <2.0 doesn't support.
 call :log "Installing dependencies (this may take several minutes)..."
-"%UV_EXE%" sync --extra dev --extra all >> %LOG_FILE% 2>&1
+"%UV_EXE%" sync --python 3.11 --extra dev --extra all >> %LOG_FILE% 2>&1
 if errorlevel 1 (
     call :fail "uv sync failed" "See %LOG_FILE% for details. Common causes: network issues, incompatible torch wheel"
     exit /b 1

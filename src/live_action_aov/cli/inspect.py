@@ -3,7 +3,7 @@
 # Developed with Claude (Anthropic)
 # License: MIT
 
-"""Sidecar EXR inspector — rendering logic for `liveaov inspect`.
+"""Sidecar EXR inspector - rendering logic for `liveaov inspect`.
 
 Separated from the Typer command so the pure render path is unit-testable
 without `CliRunner`. `build_report` consumes the `(pixels, attrs)` tuple
@@ -18,16 +18,16 @@ Design notes:
   sub-bucket (heroes), `mask.*` is dynamic concepts, anything else is
   "other". `matte` is split off from "canonical" so the Heroes summary
   below reads naturally next to it.
-- **Value ranges use `[min, max]`** rounded to 3 decimals. A `⚠` suffix
+- **Value ranges use `[min, max]`** rounded to 3 decimals. A `!` suffix
   flags matte/mask channels that land outside `[0, 1]` beyond a small
-  tolerance — the integration test asserts the same envelope, so any
+  tolerance - the integration test asserts the same envelope, so any
   sidecar that trips the warning here would also trip CI.
 - **Hero summary** is a one-line-per-slot read from the
   `liveaov/matte/hero_{r,g,b,a}/{label,track_id,score}` attrs.
   Empty slots are labeled `(empty)`; a sidecar with no heroes at all
   (no `matte/detector` attr) skips the block entirely.
-- **JSON output** pins a stable top-level key set —
-  `{file, resolution, channels, metadata, heroes}` — so batch runners
+- **JSON output** pins a stable top-level key set -
+  `{file, resolution, channels, metadata, heroes}` - so batch runners
   and future CI tooling have a contract to bind against.
 """
 
@@ -48,7 +48,7 @@ from live_action_aov.io.channels import (
 from live_action_aov.io.oiio_io import read_exr
 
 # Tolerance for [0, 1] envelope check on matte/mask channels. Matches the
-# ±1e-6 slop used in the real-weights integration test.
+# +/-1e-6 slop used in the real-weights integration test.
 _VALUE_TOLERANCE = 1e-6
 
 
@@ -220,7 +220,7 @@ def format_text(report: SidecarReport) -> str:
     lines.append(f"Resolution: {report.width} x {report.height}")
     lines.append(f"Channels ({len(report.channels)}):")
 
-    # Column width based on the longest channel name — keeps stats aligned
+    # Column width based on the longest channel name - keeps stats aligned
     # even when there's a long concept like `mask.construction_vehicle`.
     name_width = max((len(c.name) for c in report.channels), default=10)
     name_width = max(name_width, 12)
@@ -236,7 +236,7 @@ def format_text(report: SidecarReport) -> str:
             continue
         lines.append(f"  {bucket_label}:")
         for c in group:
-            warn = "  ⚠ out of [0,1]" if c.out_of_range else ""
+            warn = "  ! out of [0,1]" if c.out_of_range else ""
             lines.append(
                 f"    {c.name.ljust(name_width)}  "
                 f"[{c.min:.3f}, {c.max:.3f}]  mean={c.mean:.3f}{warn}"
@@ -253,7 +253,7 @@ def format_text(report: SidecarReport) -> str:
     else:
         lines.append("liveaov metadata: (none)")
 
-    # Hero summary — only when matte metadata is present.
+    # Hero summary - only when matte metadata is present.
     if report.has_matte_metadata and report.heroes:
         filled = sum(1 for h in report.heroes if not h.is_empty)
         lines.append("")
@@ -266,10 +266,10 @@ def format_text(report: SidecarReport) -> str:
                 tid_str = str(h.track_id) if h.track_id is not None else "?"
                 lines.append(f"  matte.{h.slot} = {h.label} (track {tid_str}, score {score_str})")
     elif report.has_matte_metadata:
-        # Matte pipeline ran but produced no heroes — worth flagging,
+        # Matte pipeline ran but produced no heroes - worth flagging,
         # it means the detector found nothing or the refiner dropped them.
         lines.append("")
-        lines.append("Heroes: (none — detector found nothing or refiner dropped all slots)")
+        lines.append("Heroes: (none - detector found nothing or refiner dropped all slots)")
 
     return "\n".join(lines)
 
@@ -277,7 +277,7 @@ def format_text(report: SidecarReport) -> str:
 def _fmt_value(v: Any) -> str:
     """Render a metadata value for display. Strings get quoted so the
     boundary between `matte/commercial = "true"` (string) and a numeric
-    attribute is visually obvious. Floats get clipped to 4 decimals —
+    attribute is visually obvious. Floats get clipped to 4 decimals -
     OIIO round-trips `0.91` as `0.8700000047683716` through float32, which
     is technically accurate but garbage to read in a terminal."""
     if isinstance(v, str):
@@ -295,7 +295,7 @@ def _fmt_value(v: Any) -> str:
 def format_json(report: SidecarReport) -> dict[str, Any]:
     """Stable key set: {file, resolution, channels, metadata, heroes}.
 
-    Batch runners bind against this — any change here is a downstream
+    Batch runners bind against this - any change here is a downstream
     contract break. Keep additions additive (extra keys fine; rename /
     drop is not)."""
     return {

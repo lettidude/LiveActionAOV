@@ -8,7 +8,7 @@
 Phase 0 surface:
   - `liveaov --version`
   - `liveaov plugins list [--type <pass_type>]`
-  - `liveaov run-shot <folder> --passes <csv>` — run registered passes on a
+  - `liveaov run-shot <folder> --passes <csv>` - run registered passes on a
     sequence folder and write sidecar EXRs
 
 Phase 4 fleshes this out with discover / analyze / run / preflight / models.
@@ -34,7 +34,7 @@ from live_action_aov.io.readers.oiio_exr import OIIOExrReader
 
 app = typer.Typer(
     name="liveaov",
-    help="LiveActionAOV — VFX plate → AOV sidecar preprocessor.",
+    help="LiveActionAOV - VFX plate -> AOV sidecar preprocessor.",
     add_completion=False,
     no_args_is_help=True,
 )
@@ -180,7 +180,7 @@ def run_shot(
             "--colorspace",
             help="Override the plate colourspace. Accepts `lin_rec709`, "
             "`acescg`, `srgb_display`, `rec709_display`, etc. Use this "
-            "when the EXR's `oiio:ColorSpace` tag is wrong — e.g. MOV→EXR "
+            "when the EXR's `oiio:ColorSpace` tag is wrong - e.g. MOV->EXR "
             "conversions that preserve display-referred values but tag "
             "them as linear. When unset the display transform reader "
             "trusts whatever the plate's metadata says.",
@@ -198,7 +198,7 @@ def run_shot(
     )
     registry = get_registry()
 
-    # License gate — check before any I/O.
+    # License gate - check before any I/O.
     blocked: list[tuple[str, str]] = []
     for name in pass_names:
         cls = registry.get_pass(name)
@@ -213,7 +213,7 @@ def run_shot(
         )
         raise typer.Exit(code=2)
 
-    # Discover the sequence — find one EXR, derive a `####` pattern.
+    # Discover the sequence - find one EXR, derive a `####` pattern.
     pattern, frame_range, resolution, pixel_aspect = _sniff_sequence(folder)
     shot = Shot(
         name=folder.name,
@@ -246,7 +246,7 @@ def run_shot(
 
     def _on_sigint(signum: int, frame: object) -> None:
         if cancel.is_cancelled():
-            # Second Ctrl+C — escalate to the previous handler (default
+            # Second Ctrl+C - escalate to the previous handler (default
             # KeyboardInterrupt) so a stuck inference call still
             # responds to a forceful abort. We don't try to be clever
             # here; if the user double-tapped, they want out NOW.
@@ -256,7 +256,7 @@ def run_shot(
                 raise KeyboardInterrupt
             return
         cancel.cancel("Cancelled by SIGINT")
-        console.print("\n[yellow]Cancelling…[/yellow] (Ctrl+C again to force-quit)")
+        console.print("\n[yellow]Cancelling...[/yellow] (Ctrl+C again to force-quit)")
 
     signal.signal(signal.SIGINT, _on_sigint)
     try:
@@ -277,7 +277,7 @@ def run_shot(
 
 
 # ---------------------------------------------------------------------------
-# inspect — dump channels, metadata, and hero summary for a sidecar EXR
+# inspect - dump channels, metadata, and hero summary for a sidecar EXR
 # ---------------------------------------------------------------------------
 
 
@@ -308,14 +308,14 @@ def inspect_cmd(
     + `matte.{r,g,b,a}` channels landed, the `liveaov/*` metadata
     block is stamped correctly, and shows which hero ended up in which
     slot. Pixel-level QC (edge quality, temporal flicker) still belongs in
-    Nuke — this command is the plumbing check that comes before that.
+    Nuke - this command is the plumbing check that comes before that.
     """
     from live_action_aov.cli import inspect as _inspect
 
     try:
         report = _inspect.build_report(sidecar)
     except Exception as e:
-        # Bubble a clean one-liner rather than a traceback — `inspect` is
+        # Bubble a clean one-liner rather than a traceback - `inspect` is
         # user-facing tooling, not a dev command.
         typer.echo(f"inspect: failed to read {sidecar}: {e}", err=True)
         raise typer.Exit(code=1) from e
@@ -352,9 +352,9 @@ def _resolve_semantic_passes(
 ) -> list[str]:
     """Rewrite semantic names (`depth`, `normals`, `matte`) to real pass names.
 
-    - `depth`   → depth_backend
-    - `normals` → normals_backend
-    - `matte`   → [matte_detector, refiner]   (compound: two passes)
+    - `depth`   -> depth_backend
+    - `normals` -> normals_backend
+    - `matte`   -> [matte_detector, refiner]   (compound: two passes)
 
     Users can also pass concrete backend names directly (e.g. `depthcrafter`
     or `sam3_matte`) and they flow through unchanged. Duplicates are
@@ -383,7 +383,7 @@ def _resolve_semantic_passes(
 
 def _sniff_sequence(folder: Path) -> tuple[str, tuple[int, int], tuple[int, int], float]:
     """Find an EXR sequence in `folder` and derive its pattern + metadata."""
-    # Skip sidecar EXRs from previous runs — the sidecar writer injects
+    # Skip sidecar EXRs from previous runs - the sidecar writer injects
     # `.utility.`, `.hero.`, or `.mask.` before the frame token (see
     # `executors.local._sidecar_pattern`). sorted() puts them before the
     # plate alphabetically, which would otherwise make the sniffer pick
