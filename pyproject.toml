@@ -4,11 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "live-action-aov"
-version = "0.4.0"
+version = "0.4.1"
 description = "AI-driven VFX plate preprocessor: depth, normals, motion, mattes as sidecar EXRs"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.11"
+# Capped below 3.13: NumPy is pinned <2.0 (1.26), which does not support
+# Python 3.13+ and crashes on import with "OverflowError: cannot convert
+# longdouble infinity to integer". Without this cap (and the .python-version
+# pin), `uv sync` / `uv tool install` build the venv against a newer system
+# Python 3.13/3.14 instead of the 3.11 the installer provisions. Lift the cap
+# when we migrate to NumPy 2.x.
+requires-python = ">=3.11,<3.13"
 authors = [
     { name = "Leonardo Paolini", email = "LeonardoVFX@gmail.com" }
 ]
