@@ -41,10 +41,13 @@ uv run python -c "import torch; print('  torch       :', torch.__version__); pri
 echo.
 
 REM --- Stream Python output to the console in real time -------------------
-REM  PYTHONUNBUFFERED  — don't hold stdout/stderr in 4KB buffers.
-REM  PYTHONFAULTHANDLER — dump a C-level traceback on segfault (GPU drivers).
+REM  PYTHONUNBUFFERED   - don't hold stdout/stderr in 4KB buffers.
+REM  PYTHONFAULTHANDLER - dump a C-level traceback on segfault (GPU drivers).
+REM  PYTHONUTF8         - force UTF-8 stdio so any non-ASCII text never trips
+REM                       a legacy cp1252 console with a UnicodeEncodeError.
 set PYTHONUNBUFFERED=1
 set PYTHONFAULTHANDLER=1
+set PYTHONUTF8=1
 
 echo ----------------------------------------------------------------------
 echo  Launching: uv run liveaov-gui

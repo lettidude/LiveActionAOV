@@ -4,6 +4,24 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [0.4.2] — 2026-06-18
+
+### Fixed
+- **`liveaov --help` crashed on a legacy (cp1252) Windows console / when
+  stdout is piped.** The CLI help and `inspect` output contained non-ASCII
+  glyphs (`—`, `→`, `…`, `⚠`, `±`); Rich raised `UnicodeEncodeError` rendering
+  them on non-UTF-8 stdout. All CLI user-facing strings are now ASCII, so
+  `--help` works everywhere. (`--version` and the GUI were unaffected.)
+
+### Changed
+- `launch.bat` now sets `PYTHONUTF8=1` (defence-in-depth for any future
+  non-ASCII output).
+- `install.bat` / `install.sh` pass `uv sync --python 3.11` explicitly,
+  alongside the `.python-version` pin from 0.4.1 — belt-and-suspenders so the
+  venv is never built against an unsupported system Python.
+
+[0.4.2]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.4.2
+
 ## [0.4.1] — 2026-06-18
 
 ### Fixed

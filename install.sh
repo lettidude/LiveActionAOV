@@ -67,7 +67,9 @@ ok "Python 3.11 provisioned"
 #    authoritative — no separate reinstall step, no risk of a future
 #    resync silently downgrading to the CPU wheel.
 log "Installing dependencies (this may take several minutes)..."
-if ! uv sync --extra dev --extra all >>"$LOG_FILE" 2>&1; then
+# --python 3.11 alongside the .python-version pin: never build the venv
+# against a newer system Python (3.13+) that NumPy <2.0 can't import.
+if ! uv sync --python 3.11 --extra dev --extra all >>"$LOG_FILE" 2>&1; then
     fail "uv sync failed" "See $LOG_FILE for details. Common causes: network issues, incompatible torch wheel for platform"
 fi
 ok "Dependencies installed"
