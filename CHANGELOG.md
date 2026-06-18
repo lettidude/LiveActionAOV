@@ -4,6 +4,27 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [0.5.0] — 2026-06-18
+
+### Added
+- **Offline operation + model prefetch** (reliability: a real batch failed 8
+  shots whose weights were *already cached* when Hugging Face had a ~14-min
+  outage — the tool re-validates the cache over the network on every run).
+  - **`liveaov prefetch`** — a "dummy preload" that loads each pass's model
+    once **on CPU** (no GPU, no VRAM contention) purely to trigger every
+    download, including the secondary repos some passes pull (NormalCrafter /
+    DepthCrafter → `stable-video-diffusion`) and the torch.hub backends.
+    `--passes a,b,c` for a subset, `--all` for every backend.
+  - **`liveaov --offline ...`** — sets `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE`
+    so a run never contacts the network and a blip can't abort it. Workflow:
+    `prefetch` once online → run with `--offline` forever.
+- Default HF timeouts raised (`HF_HUB_DOWNLOAD_TIMEOUT=120`,
+  `HF_HUB_ETAG_TIMEOUT=30`, up from 10 s) at the entry points + `launch.bat`,
+  so cold downloads and brief blips don't fail.
+
+### Changed
+- Per-run log filename now carries the shot slug (batch triage).
+
 ## [0.4.2] — 2026-06-18
 
 ### Fixed
@@ -20,6 +41,7 @@ uses [semantic versioning](https://semver.org/).
   alongside the `.python-version` pin from 0.4.1 — belt-and-suspenders so the
   venv is never built against an unsupported system Python.
 
+[0.5.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.0
 [0.4.2]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.4.2
 
 ## [0.4.1] — 2026-06-18

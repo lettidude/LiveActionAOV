@@ -16,6 +16,7 @@ Phase 4 fleshes this out with discover / analyze / run / preflight / models.
 
 from __future__ import annotations
 
+import os
 import re
 import signal
 from pathlib import Path
@@ -68,8 +69,98 @@ def main_callback(
             help="Show the version and exit.",
         ),
     ] = False,
+    offline: Annotated[
+        bool,
+        typer.Option(
+            "--offline",
+            help="Never contact Hugging Face - use only already-downloaded "
+            "models (sets HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE). Run "
+            "`liveaov prefetch` once online first.",
+        ),
+    ] = False,
 ) -> None:
     """Top-level options."""
+    if offline:
+        # Set before any pass imports huggingface_hub (loads are lazy). A
+        # blip / outage can no longer abort a run whose weights are cached.
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+
+# Commercial-safe default set a typical run uses - what `prefetch` warms
+# when no explicit list is given.
+_DEFAULT_PREFETCH = [
+    "depth_anything_v2",
+    "dsine",
+    "sam3_matte",
+    "rvm_refiner",
+    "birefnet_refiner",
+    "flow",
+]
+
+
+@app.command("prefetch")
+def prefetch(
+    passes: Annotated[
+        str | None,
+        typer.Option(
+            "--passes",
+            "-p",
+            help="Comma-separated pass names to prefetch. Default: the "
+            "commercial-safe set (depth/normals/matte/soft-matte/flow).",
+        ),
+    ] = None,
+    all_passes: Annotated[
+        bool,
+        typer.Option("--all", help="Prefetch every registered pass (incl. heavy backends)."),
+    ] = False,
+) -> None:
+    """Download all model weights into the local cache ('dummy preload').
+
+    Loads each pass's model once ON CPU (no GPU, no VRAM contention) purely
+    to trigger every download - including secondary repos some passes pull
+    (e.g. NormalCrafter / DepthCrafter -> stable-video-diffusion) and the
+    torch.hub backends (RVM, DSINE). Run this once while online; afterwards
+    you can run fully offline (`liveaov --offline ...` or HF_HUB_OFFLINE=1)
+    on an unreliable link or a content machine.
+    """
+    # Force CPU before torch is imported anywhere: we only want the download
+    # side effect, not a GPU load (keeps VRAM free, never fights ComfyUI).
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    registry = get_registry()
+    if all_passes:
+        names = [n for n in registry.list_passes() if n != "matanyone2"]  # stub
+    elif passes:
+        names = [p.strip() for p in passes.split(",") if p.strip()]
+    else:
+        names = list(_DEFAULT_PREFETCH)
+
+    ok: list[str] = []
+    failed: list[tuple[str, str]] = []
+    for name in names:
+        console.print(f"[cyan]Prefetching[/cyan] {name} ...")
+        try:
+            inst = registry.get_pass(name)()
+            load = getattr(inst, "_load_model", None)
+            if callable(load):
+                load()  # triggers the download(s)
+            unload = getattr(inst, "unload", None)
+            if callable(unload):
+                unload()
+            ok.append(name)
+            console.print(f"  [green]cached[/green] {name}")
+        except Exception as e:
+            failed.append((name, f"{type(e).__name__}: {e}"))
+            console.print(f"  [yellow]skipped[/yellow] {name}: {type(e).__name__}: {e}")
+
+    console.print(
+        f"\n[bold]Prefetched {len(ok)}/{len(names)}[/bold]"
+        + (f" - {len(failed)} failed (see above)." if failed else " - all cached.")
+    )
+    if ok and not failed:
+        console.print("You can now run offline:  liveaov --offline run-shot <folder> ...")
+    if failed:
+        raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------
