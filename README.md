@@ -8,7 +8,13 @@
 
 > **Status:** alpha, pre-v1 release
 
-[![Watch the demo](https://img.shields.io/badge/Demo-YouTube-red?style=flat-square&logo=youtube)](https://youtu.be/HnosSnK1MKs)
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=HnosSnK1MKs">
+    <img src="docs/img/youtube-demo.jpg" alt="Watch the LiveActionAOV demo on YouTube" width="760">
+  </a>
+  <br>
+  <a href="https://www.youtube.com/watch?v=HnosSnK1MKs"><b>▶ Watch the demo</b></a> — how it works, end to end
+</p>
 
 ---
 
