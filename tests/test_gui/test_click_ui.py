@@ -159,6 +159,112 @@ def test_masks_tab_lifecycle_and_signals(qapp: QApplication) -> None:
     assert actives[-1] is None
 
 
+def test_box_drag_sets_plate_px_box(qapp: QApplication) -> None:
+    panel, shot, _ = _viewport_with_shot(qapp)
+    inst = ClickInstance(name="car", seed_frame=1003)
+    shot.click_instances.append(inst)
+    panel.set_click_mode(True)
+    panel.set_active_instance(inst)
+    # Normalized box → plate px (1920x1080).
+    panel._on_canvas_boxed(0.25, 0.5, 0.75, 0.9)
+    assert inst.box == (480.0, 540.0, 1440.0, 972.0)
+
+
+def test_box_anchors_seed_frame_and_invalidates_preview(qapp: QApplication) -> None:
+    import numpy as np
+
+    panel, shot, _ = _viewport_with_shot(qapp)
+    inst = ClickInstance(name="car", seed_frame=1001)  # created on a different frame
+    shot.click_instances.append(inst)
+    panel.set_click_mode(True)
+    panel.set_active_instance(inst)
+    panel._preview_mask = np.ones((4, 4), dtype=np.float32)
+    panel._on_canvas_boxed(0.1, 0.1, 0.4, 0.4)
+    assert inst.seed_frame == 1003  # first input re-anchored
+    assert panel._preview_mask is None  # box invalidated the stale preview
+
+
+def test_box_ignored_when_disarmed_or_compare(qapp: QApplication) -> None:
+    panel, shot, _ = _viewport_with_shot(qapp)
+    inst = ClickInstance(name="car", seed_frame=1003)
+    shot.click_instances.append(inst)
+    panel.set_active_instance(inst)
+    panel.set_click_mode(False)  # disarmed
+    panel._on_canvas_boxed(0.1, 0.1, 0.4, 0.4)
+    assert inst.box is None
+    panel.set_click_mode(True)
+    shot.view_mode = "compare"
+    panel._on_canvas_boxed(0.1, 0.1, 0.4, 0.4)
+    assert inst.box is None
+
+
+def test_canvas_distinguishes_click_from_drag(qapp: QApplication) -> None:
+    # The canvas decides click-vs-box by movement threshold on release.
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QColor, QImage, QMouseEvent, QPixmap
+
+    from live_action_aov.gui.viewport import _ClickCanvas
+
+    canvas = _ClickCanvas()
+    img = QImage(100, 100, QImage.Format.Format_RGB888)
+    img.fill(QColor(50, 50, 50))
+    canvas.setPixmap(QPixmap.fromImage(img))
+    canvas.resize(100, 100)
+
+    events: list[tuple] = []
+    canvas.pressed.connect(lambda nx, ny, lbl: events.append(("point", nx, ny, lbl)))
+    canvas.boxed.connect(lambda *r: events.append(("box", *r)))
+
+    def _release(x: float, y: float) -> QMouseEvent:
+        return QMouseEvent(
+            QEvent.Type.MouseButtonRelease,
+            QPointF(x, y),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+    # Tiny movement (< threshold) → click.
+    canvas._press_pos = QPointF(40, 40)
+    canvas._press_norm = (0.4, 0.4)
+    canvas.mouseReleaseEvent(_release(42, 42))
+    assert events and events[-1][0] == "point"
+
+    # Big movement → box.
+    canvas._press_pos = QPointF(20, 20)
+    canvas._press_norm = (0.2, 0.2)
+    canvas.mouseReleaseEvent(_release(80, 70))
+    assert events[-1][0] == "box"
+
+
+def test_undo_drops_box_when_no_points(qapp: QApplication) -> None:
+    from live_action_aov.gui.inspector import InspectorPanel
+
+    reg = ShotRegistry()
+    panel = InspectorPanel(reg)
+    shot = _shot()
+    reg.add(shot)
+    panel._on_mask_new()
+    inst = shot.click_instances[0]
+    inst.box = (1.0, 2.0, 3.0, 4.0)
+    inst.points.append((5.0, 6.0, 1))
+    # Undo pops the point first…
+    panel._on_mask_undo_point()
+    assert inst.points == []
+    assert inst.box == (1.0, 2.0, 3.0, 4.0)
+    # …then drops the box.
+    panel._on_mask_undo_point()
+    assert inst.box is None
+
+
+def test_mask_item_text_shows_box(qapp: QApplication) -> None:
+    from live_action_aov.gui.inspector import InspectorPanel
+
+    inst = ClickInstance(name="car", seed_frame=1006, points=[(1.0, 1.0, 1)], box=(0.0, 0.0, 9.0, 9.0))
+    text = InspectorPanel._mask_item_text(inst)
+    assert "car" in text and "1 pt" in text and "box" in text
+
+
 def test_too_many_points_warning(qapp: QApplication) -> None:
     from live_action_aov.gui.inspector import InspectorPanel
 

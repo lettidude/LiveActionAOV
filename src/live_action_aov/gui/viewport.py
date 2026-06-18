@@ -21,6 +21,8 @@ worker pool is backed up.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
@@ -85,31 +87,70 @@ def _canvas_pos_to_norm(
 
 
 class _ClickCanvas(QLabel):
-    """The viewport image label, emitting normalized click positions.
+    """The viewport image label, emitting normalized click / box positions.
 
-    Emits `pressed(nx, ny, label)` with label 1 for left-click (include)
-    and 0 for right-click (exclude). The panel decides whether the click
-    means anything (click mode armed, active instance, view mode)."""
+    Mouse semantics (all in [0,1] image coords; the panel decides whether
+    they mean anything — click mode armed, active instance, view mode):
+    - Right-click → `pressed(nx, ny, 0)` — an exclude point, immediately.
+    - Left-click (no drag) → `pressed(nx, ny, 1)` — an include point, on
+      release once it's clear it wasn't a drag.
+    - Left-drag → `boxed(nx0, ny0, nx1, ny1)` — a box prompt (normalized,
+      top-left → bottom-right). `dragging((…)|None)` fires live for the
+      rubber-band overlay.
+    """
 
     pressed = Signal(float, float, int)
+    boxed = Signal(float, float, float, float)
+    dragging = Signal(object)  # (nx0, ny0, nx1, ny1) live, or None on end
+
+    _DRAG_PX = 5  # movement below this on release = a click, not a box
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._press_pos: Any = None  # QPointF in widget coords, or None
+        self._press_norm: tuple[float, float] | None = None
+
+    def _norm_at(self, pos: Any) -> tuple[float, float] | None:
+        pm = self.pixmap()
+        if pm is None or pm.isNull():
+            return None
+        return _canvas_pos_to_norm(
+            pos.x(), pos.y(), self.width(), self.height(), pm.width(), pm.height()
+        )
 
     def mousePressEvent(self, ev: QMouseEvent) -> None:
-        pm = self.pixmap()
-        if pm is not None and not pm.isNull():
-            if ev.button() == Qt.MouseButton.LeftButton:
-                label = 1
-            elif ev.button() == Qt.MouseButton.RightButton:
-                label = 0
-            else:
-                super().mousePressEvent(ev)
-                return
-            pos = ev.position()
-            norm = _canvas_pos_to_norm(
-                pos.x(), pos.y(), self.width(), self.height(), pm.width(), pm.height()
-            )
+        if ev.button() == Qt.MouseButton.RightButton:
+            norm = self._norm_at(ev.position())
             if norm is not None:
-                self.pressed.emit(norm[0], norm[1], label)
+                self.pressed.emit(norm[0], norm[1], 0)
+        elif ev.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = ev.position()
+            self._press_norm = self._norm_at(ev.position())
         super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev: QMouseEvent) -> None:
+        if self._press_pos is not None and self._press_norm is not None:
+            cur = self._norm_at(ev.position())
+            if cur is not None:
+                self.dragging.emit((self._press_norm[0], self._press_norm[1], cur[0], cur[1]))
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev: QMouseEvent) -> None:
+        if ev.button() == Qt.MouseButton.LeftButton and self._press_pos is not None:
+            start, start_norm = self._press_pos, self._press_norm
+            self._press_pos, self._press_norm = None, None
+            self.dragging.emit(None)
+            end = ev.position()
+            end_norm = self._norm_at(end)
+            moved = abs(end.x() - start.x()) >= self._DRAG_PX or abs(end.y() - start.y()) >= self._DRAG_PX
+            if start_norm is not None:
+                if moved and end_norm is not None:
+                    x0, x1 = sorted((start_norm[0], end_norm[0]))
+                    y0, y1 = sorted((start_norm[1], end_norm[1]))
+                    self.boxed.emit(x0, y0, x1, y1)
+                else:
+                    self.pressed.emit(start_norm[0], start_norm[1], 1)
+        super().mouseReleaseEvent(ev)
 
 
 class ViewportPanel(QWidget):
@@ -133,6 +174,9 @@ class ViewportPanel(QWidget):
         # ndarray lives at `_last_composed` resolution; it's invalidated on
         # any point/frame/instance change so a stale mask never lies.
         self._preview_mask: np.ndarray | None = None
+        # Live rubber-band rect while the user drags a box, in normalized
+        # [0,1] image coords — drawn as a dashed rectangle, cleared on release.
+        self._drag_rect: tuple[float, float, float, float] | None = None
         self._mask_worker = MaskPreviewWorker()
         self._mask_worker.ready.connect(self._on_mask_preview_ready)
         self._mask_worker.failed.connect(self._on_mask_preview_failed)
@@ -178,6 +222,8 @@ class ViewportPanel(QWidget):
         self._canvas.setWordWrap(True)
         self._canvas.setText("(no shot loaded)")
         self._canvas.pressed.connect(self._on_canvas_pressed)
+        self._canvas.boxed.connect(self._on_canvas_boxed)
+        self._canvas.dragging.connect(self._on_canvas_dragging)
 
         # --- Frame scrub slider + label ---
         self._frame_slider = QSlider(Qt.Orientation.Horizontal)
@@ -360,31 +406,55 @@ class ViewportPanel(QWidget):
         self._preview_mask = None
         self._frame_status(f"Preview failed: {error[:60]}")
 
-    def _on_canvas_pressed(self, nx: float, ny: float, label: int) -> None:
+    def _can_edit_active(self) -> bool:
+        """Shared guard for point/box input. True if the armed active
+        instance can take input on the current frame — anchoring the seed
+        frame on the very first input — else False with a status hint."""
         shot = self._current
         inst = self._active_instance
         if not self._click_mode or shot is None or inst is None:
-            return
+            return False
         if shot.view_mode == "compare":
-            # Two images side by side — the mapping would be ambiguous.
             self._frame_label.setText("Frame: — (exit Compare to place points)")
-            return
+            return False
         frame = shot.current_frame or shot.frame_range[0]
         if not inst.points and inst.box is None:
-            # First click anchors the instance to the frame being viewed.
-            inst.seed_frame = frame
-        elif frame != inst.seed_frame:
-            # Points live on the seed frame; tell the user where it is
-            # rather than silently mixing frames.
-            self._frame_label.setText(f"Frame: {frame} (points live on f{inst.seed_frame})")
+            inst.seed_frame = frame  # first input anchors the seed frame
+            return True
+        if frame != inst.seed_frame:
+            self._frame_label.setText(f"Frame: {frame} (object lives on f{inst.seed_frame})")
+            return False
+        return True
+
+    def _on_canvas_pressed(self, nx: float, ny: float, label: int) -> None:
+        if not self._can_edit_active():
             return
+        shot, inst = self._current, self._active_instance
+        assert shot is not None and inst is not None
         w, h = shot.resolution
         inst.points.append((nx * float(w), ny * float(h), int(label)))
-        # The point set changed — any previewed mask is now stale.
-        self._preview_mask = None
+        self._preview_mask = None  # point set changed → previewed mask stale
         self._repaint_canvas()
-        # Let the inspector's list refresh its point count.
         self._registry.notify_updated(shot)
+
+    def _on_canvas_boxed(self, nx0: float, ny0: float, nx1: float, ny1: float) -> None:
+        if not self._can_edit_active():
+            return
+        shot, inst = self._current, self._active_instance
+        assert shot is not None and inst is not None
+        w, h = shot.resolution
+        inst.box = (nx0 * float(w), ny0 * float(h), nx1 * float(w), ny1 * float(h))
+        self._preview_mask = None
+        self._drag_rect = None
+        self._repaint_canvas()
+        self._registry.notify_updated(shot)
+
+    def _on_canvas_dragging(self, rect: object) -> None:
+        """Live rubber-band overlay while the user drags a box."""
+        if not self._click_mode or self._active_instance is None:
+            return
+        self._drag_rect = rect if isinstance(rect, tuple) else None
+        self._repaint_canvas()
 
     def _repaint_canvas(self) -> None:
         """Scale the last composed preview to the canvas and overlay the
@@ -400,19 +470,23 @@ class ViewportPanel(QWidget):
         )
         shot = self._current
         inst = self._active_instance
-        if (
+        on_seed = (
             shot is not None
             and inst is not None
             and self._click_mode
             and shot.view_mode != "compare"
             and (shot.current_frame or shot.frame_range[0]) == inst.seed_frame
-            and (inst.points or self._preview_mask is not None)
-        ):
+        )
+        has_marks = inst is not None and (
+            inst.points or inst.box is not None or self._preview_mask is not None
+        )
+        if shot is not None and inst is not None and on_seed and (has_marks or self._drag_rect):
             w, h = shot.resolution
+            sw, sh = scaled.width(), scaled.height()
             painter = QPainter(scaled)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            # Mask preview first (under the point markers): the SAM 3 result
-            # at composed-image resolution, scaled onto the canvas pixmap.
+            # Mask preview first (under markers): SAM 3 result at composed-
+            # image resolution, scaled onto the canvas pixmap.
             if self._preview_mask is not None:
                 overlay = _mask_to_overlay(self._preview_mask)
                 painter.drawImage(
@@ -423,9 +497,32 @@ class ViewportPanel(QWidget):
                         Qt.TransformationMode.SmoothTransformation,
                     ),
                 )
+            # Committed box (solid cyan).
+            if inst.box is not None:
+                bx0, by0, bx1, by1 = inst.box
+                painter.setPen(QPen(QColor(90, 200, 255), 1.5))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(
+                    int(bx0 / w * sw),
+                    int(by0 / h * sh),
+                    int((bx1 - bx0) / w * sw),
+                    int((by1 - by0) / h * sh),
+                )
+            # Live rubber-band while dragging (dashed white).
+            if self._drag_rect is not None:
+                dx0, dy0, dx1, dy1 = self._drag_rect
+                pen = QPen(QColor(255, 255, 255), 1.0, Qt.PenStyle.DashLine)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(
+                    int(min(dx0, dx1) * sw),
+                    int(min(dy0, dy1) * sh),
+                    int(abs(dx1 - dx0) * sw),
+                    int(abs(dy1 - dy0) * sh),
+                )
             for px, py, lbl in inst.points:
-                cx = (px / float(w)) * scaled.width()
-                cy = (py / float(h)) * scaled.height()
+                cx = (px / float(w)) * sw
+                cy = (py / float(h)) * sh
                 colour = QColor(80, 220, 100) if lbl == 1 else QColor(230, 80, 80)
                 painter.setPen(QPen(QColor(255, 255, 255), 1.5))
                 painter.setBrush(colour)

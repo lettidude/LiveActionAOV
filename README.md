@@ -89,6 +89,18 @@ Original plate is never modified. See [design notes](docs/architecture.md) for a
 
 ---
 
+## Interactive roto — click to a soft-edged Cryptomatte
+
+Click an element in the viewport (or drag a box around it); the SAM 3 tracker propagates it across the whole shot into a named **Cryptomatte ID**. Add the **BiRefNet** refiner and the hard mask becomes a roto-grade **soft alpha** — hair, motion blur, fine edges — written to the `matte.*` channels. Preview the mask on the seed frame before committing, refine a click at a time. All local, commercial-clean, scene-referred.
+
+<p align="center">
+  <img src="docs/img/birefnet-roto.gif" alt="BiRefNet soft matte over a live-action plate — hair and motion-blur edge detail" width="720">
+</p>
+
+> Soft alpha from the BiRefNet refiner composited over the plate — note the hair and motion-blur edge detail that SAM 3's hard masks can't give on their own. Tip: fewer clicks work better — a box or 2–6 points beats dozens.
+
+---
+
 ## The GUI
 
 Drop a plate folder onto the shot list, pick the passes you want, hit **Submit local**. Each model surfaces its license badge inline so you know up-front which combinations are commercial-safe and which require non-commercial confirmation.
