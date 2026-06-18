@@ -94,6 +94,12 @@ Original plate is never modified. See [design notes](docs/architecture.md) for a
 Click an element in the viewport (or drag a box around it); the SAM 3 tracker propagates it across the whole shot into a named **Cryptomatte ID**. Add the **BiRefNet** refiner and the hard mask becomes a roto-grade **soft alpha** — hair, motion blur, fine edges — written to the `matte.*` channels. Preview the mask on the seed frame before committing, refine a click at a time. All local, commercial-clean, scene-referred.
 
 <p align="center">
+  <img src="docs/img/click-to-mask.png" alt="LiveActionAOV Masks tab — click-to-mask: live SAM 3 mask preview with include/exclude points and a per-object list" width="900">
+</p>
+
+The Masks tab: seed objects with a box or a few clicks, preview the SAM 3 mask on the spot, and build a named per-object list — each becomes a Cryptomatte ID at submit. Add BiRefNet and those masks gain soft, roto-grade edges:
+
+<p align="center">
   <img src="docs/img/birefnet-roto.gif" alt="BiRefNet soft matte over a live-action plate — hair and motion-blur edge detail" width="720">
 </p>
 
