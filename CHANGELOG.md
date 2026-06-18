@@ -4,6 +4,22 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [0.4.1] — 2026-06-18
+
+### Fixed
+- **Install crash on machines with system Python 3.13/3.14.** With no
+  `.python-version` pin and an open-ended `requires-python = ">=3.11"`,
+  `uv sync` / `uv tool install` built the venv against the system's newer
+  Python instead of the 3.11 the installer provisions. NumPy (pinned `<2.0`,
+  i.e. 1.26) doesn't support Python 3.13+ and crashed on import with
+  `OverflowError: cannot convert longdouble infinity to integer`, which then
+  broke the torch import (surfacing as a false "CUDA not available" warning
+  and a failed `liveaov --version` smoke test). Fixed by adding a
+  `.python-version` (3.11) pin and capping `requires-python` to `>=3.11,<3.13`.
+  Lift the cap when the project migrates to NumPy 2.x.
+
+[0.4.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.4.1
+
 ## [0.4.0] — 2026-06-18
 
 ### Added
