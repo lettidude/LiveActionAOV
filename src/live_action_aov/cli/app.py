@@ -418,6 +418,10 @@ def _sniff_sequence(folder: Path) -> tuple[str, tuple[int, int], tuple[int, int]
 
 def main() -> None:
     """Console-script entry point (`liveaov`)."""
+    # Must precede any huggingface_hub import (passes import it lazily).
+    from live_action_aov.core.runtime_env import apply_hf_network_defaults
+
+    apply_hf_network_defaults()
     app()
 
 

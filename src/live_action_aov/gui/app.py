@@ -67,6 +67,10 @@ def _register_windows_taskbar_id() -> None:
 
 
 def main() -> int:
+    # Must precede any huggingface_hub import (passes import it lazily).
+    from live_action_aov.core.runtime_env import apply_hf_network_defaults
+
+    apply_hf_network_defaults()
     _register_windows_taskbar_id()
 
     # `QApplication.instance()` is typed as `QCoreApplication | None`,

@@ -48,6 +48,13 @@ REM                       a legacy cp1252 console with a UnicodeEncodeError.
 set PYTHONUNBUFFERED=1
 set PYTHONFAULTHANDLER=1
 set PYTHONUTF8=1
+REM  HF_HUB_DOWNLOAD_TIMEOUT - the 10s default aborts big cold-cache model
+REM                            downloads (BiRefNet, SAM 3) on a slow link.
+REM  HF_HUB_ETAG_TIMEOUT     - tolerate a brief network blip during warm-cache
+REM                            revalidation instead of failing a cached job.
+REM  Tip: once the cache is warm, set HF_HUB_OFFLINE=1 to run with no network.
+set HF_HUB_DOWNLOAD_TIMEOUT=120
+set HF_HUB_ETAG_TIMEOUT=30
 
 echo ----------------------------------------------------------------------
 echo  Launching: uv run liveaov-gui

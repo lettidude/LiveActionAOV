@@ -131,7 +131,9 @@ class RunLoggingSession:
         # an orphaned file undiscoverable behind the retention window.
         _prune_central_logs(central_dir, keep=_MAX_CENTRAL_LOGS)
 
-        per_run = sidecar_dir / f"submit_{self._timestamp}.log"
+        # Shot slug in the per-run filename too (not just the central log) so
+        # batch triage spots which shot a log belongs to without opening it.
+        per_run = sidecar_dir / f"submit_{self._timestamp}_{_slugify(self._shot_name)}.log"
         central = central_dir / f"submit_{self._timestamp}_{_slugify(self._shot_name)}.log"
         warnings_digest = central_dir / _WARNINGS_FILENAME
 
