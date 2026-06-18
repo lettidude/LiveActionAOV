@@ -89,6 +89,31 @@ Original plate is never modified. See [design notes](docs/architecture.md) for a
 
 ---
 
+## The passes, visualized
+
+Every pass lands as a channel in one sidecar EXR. Here's a full utility set baked from a single live-action plate — depth, camera-space normals, forward/backward motion, the matte + Cryptomatte object IDs, world position, ambient occlusion:
+
+<p align="center">
+  <img src="docs/img/aov-contact-sheet.png" alt="Full AOV set from one plate — depth, normals, motion, matte, Cryptomatte, position, AO" width="900">
+</p>
+
+Close-ups — **normals** (camera-space surface orientation, drives relight) and a **Cryptomatte** breakdown (every object gets its own ID, pickable in Nuke just like a CG render):
+
+<p align="center">
+  <img src="docs/img/pass-normals.png" alt="Normals pass — camera-space surface normals" width="430">
+  <img src="docs/img/pass-cryptomatte.png" alt="Cryptomatte pass — per-object IDs from live action" width="430">
+</p>
+
+…and a per-object matte composited back over the plate — the kind of fast, named selection the tool makes from a few clicks:
+
+<p align="center">
+  <img src="docs/img/pass-matte-comp.png" alt="Per-object matte composited over the live-action plate" width="760">
+</p>
+
+> Test plate from the [ActionVFX practice footage library](https://www.actionvfx.com/collections/free-vfx/category).
+
+---
+
 ## Interactive roto — click to a soft-edged Cryptomatte
 
 Click an element in the viewport (or drag a box around it); the SAM 3 tracker propagates it across the whole shot into a named **Cryptomatte ID**. Add the **BiRefNet** refiner and the hard mask becomes a roto-grade **soft alpha** — hair, motion blur, fine edges — written to the `matte.*` channels. Preview the mask on the seed frame before committing, refine a click at a time. All local, commercial-clean, scene-referred.
