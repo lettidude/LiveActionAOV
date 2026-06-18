@@ -4,6 +4,28 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [0.4.0] — 2026-06-18
+
+### Added
+- **BiRefNet soft-edge matte refiner** — turns SAM 3's hard masks into
+  roto-grade **soft alpha** (hair, motion blur, fine edges) in the `matte.*`
+  channels. MIT-licensed and commercial-clean (production-proven: CorridorKey
+  uses BiRefNet internally). Pick **"SAM3 + BiRefNet (soft edges)"** in the
+  Passes tab. Per-frame, so the `matte.*` channels are declared smoothable —
+  pair with the flow-guided temporal smoother on noisy plates. Reuses the RVM
+  refiner's pipeline; RVM stays the default. Verified end-to-end on a real
+  plate (5-pass batch, hair/edge detail confirmed in Nuke).
+- **Box-drag prompt** for click-to-mask — drag a rectangle around an object
+  for a strong single SAM 3 box prompt (often better than many clicks, and it
+  sidesteps the point-collapse trap). Click/right-click still add include/
+  exclude points; box and points coexist.
+
+### Notes
+- New `[birefnet]` extra (`timm` / `einops` / `kornia`, MIT), included in
+  `[all]`.
+
+[0.4.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.4.0
+
 ## [0.3.0] — 2026-06-13
 
 ### Added
