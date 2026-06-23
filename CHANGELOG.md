@@ -4,6 +4,21 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [0.5.1] — 2026-06-18
+
+### Fixed
+- **A transient NAS / network-share blip during sidecar writes no longer
+  throws away a whole multi-pass shot.** Each EXR write now retries a few
+  times (linear backoff) on `OSError` before failing — a momentary share
+  glitch recovers instead of aborting minutes of GPU work. Genuine faults
+  (disk full, permission) still surface after the retries.
+
+### Docs
+- New **Model cache** section: what's cached, that it lives on `C:`
+  (`%USERPROFILE%\.cache\huggingface` + `\.cache\torch`) by default, rough
+  sizes (~30–40 GB with everything), and how to relocate it to another drive
+  with `HF_HOME` / `TORCH_HOME`.
+
 ## [0.5.0] — 2026-06-18
 
 ### Added
@@ -41,6 +56,7 @@ uses [semantic versioning](https://semver.org/).
   alongside the `.python-version` pin from 0.4.1 — belt-and-suspenders so the
   venv is never built against an unsupported system Python.
 
+[0.5.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.1
 [0.5.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.0
 [0.4.2]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.4.2
 
