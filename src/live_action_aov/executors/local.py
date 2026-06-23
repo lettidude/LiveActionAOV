@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
+import time
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +42,32 @@ from live_action_aov.shared.optical_flow.cache import FlowCache
 METADATA_NAMESPACE = "liveaov"
 
 _log = logging.getLogger(__name__)
+
+
+def _retry_io(fn: Callable[[], Any], *, what: str, attempts: int = 3, base_delay: float = 0.5) -> Any:
+    """Run `fn`, retrying transient OS/I/O errors a few times before giving up.
+
+    Sidecars often land on a network share (NAS); a brief connection blip
+    mid-write would otherwise abort a whole multi-pass shot (minutes of GPU
+    work) over a momentary glitch. Retries only `OSError` (network-path /
+    I/O errors, incl. Windows WinError) — a genuine fault (disk full,
+    permission) still surfaces after the attempts. Linear backoff.
+    """
+    last: OSError | None = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except OSError as e:
+            last = e
+            if i < attempts - 1:
+                delay = base_delay * (i + 1)
+                _log.warning(
+                    "%s failed (attempt %d/%d): %s — retrying in %.1fs",
+                    what, i + 1, attempts, e, delay,
+                )
+                time.sleep(delay)
+    assert last is not None
+    raise last
 
 # Callers pass a function that receives `(fraction_done, label)` per
 # milestone; the GUI routes these to its progress bar + status bar,
@@ -387,11 +415,17 @@ class LocalExecutor(Executor):
                     )
                 if matte_detector_cls is not None:
                     attrs[f"{METADATA_NAMESPACE}/matte/detector"] = matte_detector_cls.name
-                writer.write_frame(
-                    out_path,
-                    channels,
-                    attrs=attrs,
-                    pixel_aspect=shot.pixel_aspect,
+                # Retry the write: sidecars usually land on a NAS, and a
+                # momentary share blip shouldn't throw away a multi-pass shot.
+                _retry_io(
+                    partial(
+                        writer.write_frame,
+                        out_path,
+                        channels,
+                        attrs=attrs,
+                        pixel_aspect=shot.pixel_aspect,
+                    ),
+                    what=f"sidecar write {out_path.name}",
                 )
                 if first_written is None:
                     first_written = out_path

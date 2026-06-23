@@ -44,6 +44,37 @@ uv run liveaov-gui          # three-panel prep GUI
 - **macOS**: MPS works for some passes but is materially slower. CPU
   is not a supported configuration — fp16 kernels don't exist there.
 
+## Model cache (where the weights live, and disk)
+
+Models download once from Hugging Face (and torch.hub) and are cached on
+disk — they are **not** re-downloaded on later runs, and each model is
+stored once. Total size depends on which passes you use:
+
+- Default commercial-safe set (Depth Anything V2, DSINE, SAM 3, RVM,
+  BiRefNet): a few GB.
+- Everything (`liveaov prefetch --all`, incl. DepthCrafter / NormalCrafter
+  which pull Stable Video Diffusion): **~30–40 GB**.
+
+**Default location is your user profile on C:** —
+`%USERPROFILE%\.cache\huggingface\hub` (Hugging Face) and
+`%USERPROFILE%\.cache\torch\hub` (torch.hub); `~/.cache/...` on Linux/macOS.
+
+**To put the cache on another drive** (a big `D:`, or a project share),
+set these before launching, then re-run `liveaov prefetch`:
+
+```powershell
+setx HF_HOME    "D:\ai-cache\huggingface"
+setx TORCH_HOME "D:\ai-cache\torch"
+```
+
+```bash
+# Linux / macOS
+export HF_HOME=/mnt/cache/huggingface
+export TORCH_HOME=/mnt/cache/torch
+```
+
+Existing downloads can be moved into the new folder, or just re-fetched.
+
 ## Why CUDA matters
 
 Every pass is a neural model:
@@ -100,15 +131,15 @@ on PyPI), so the install string is a `git+https://…@<tag>` URL.
 #   • Depth   → Depth Anything V2 (Apache-2.0)
 #   • Normals → DSINE (MIT)
 #   • Matte   → SAM 3 + RVM (SAM-License / MIT)
-uv tool install "git+https://github.com/lettidude/LiveActionAOV@v0.5.0" --torch-backend=auto
+uv tool install "git+https://github.com/lettidude/LiveActionAOV@v0.5.1" --torch-backend=auto
 
 # EVERY PASS — adds the optional backends (DepthCrafter, NormalCrafter,
 # Video Depth Anything, DepthPro, MatAnyone2). ~4 GB more for diffusers +
 # accelerate. Some of these are CC-BY-NC-4.0 (see licensing below).
-uv tool install "live-action-aov[all] @ git+https://github.com/lettidude/LiveActionAOV@v0.5.0" --torch-backend=auto
+uv tool install "live-action-aov[all] @ git+https://github.com/lettidude/LiveActionAOV@v0.5.1" --torch-backend=auto
 ```
 
-Use `@main` instead of `@v0.5.0` to track the latest development tip, or
+Use `@main` instead of `@v0.5.1` to track the latest development tip, or
 omit `--torch-backend=auto` only if you've already set up CUDA torch.
 
 > **`--torch-backend=auto` is not optional on Windows.** Without it the
@@ -132,7 +163,7 @@ you'll get a clear message telling you which extra it needs (e.g.
 `video_depth_anything`). Add it by reinstalling with that extra:
 
 ```bash
-uv tool install "live-action-aov[video_depth_anything] @ git+https://github.com/lettidude/LiveActionAOV@v0.5.0"
+uv tool install "live-action-aov[video_depth_anything] @ git+https://github.com/lettidude/LiveActionAOV@v0.5.1"
 ```
 
 > **Note on OpenCV:** the core install already includes
