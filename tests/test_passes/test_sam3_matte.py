@@ -9,8 +9,10 @@ shape of the emitted artifacts.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from live_action_aov.io.channels import MASK_PREFIX
+from live_action_aov.passes.matte import sam3 as sam3_mod
 from live_action_aov.passes.matte.sam3 import SAM3MattePass, _pick_seed_frame
 
 
@@ -83,6 +85,40 @@ def test_pick_seed_frame_keywords_and_int() -> None:
     assert _pick_seed_frame(10, -5) == 0
 
 
+def test_preflight_fails_fast_when_ram_insufficient(monkeypatch) -> None:
+    """Estimated peak > available RAM aborts before tracking, with guidance.
+
+    The fake tracker is cheap, but on a real run the track is the minutes-long
+    step — the whole point is to raise at second 0, not after the GPU churns.
+    """
+    # Pretend the box has almost no free RAM so any clip trips the check.
+    monkeypatch.setattr(sam3_mod, "_available_ram_bytes", lambda: 1024)
+
+    tracked: list[int] = []
+
+    class _GuardSAM3(_FakeSAM3):
+        def _track_instance(self, frames, seed_frame_idx, seed_mask):  # type: ignore[override]
+            tracked.append(1)  # must never run — we abort before this
+            return super()._track_instance(frames, seed_frame_idx, seed_mask)
+
+    pass_ = _GuardSAM3(_small_params())
+    with pytest.raises(MemoryError) as exc:
+        pass_.run_shot(_FakeReader(_plate_frames(5)), frame_range=(1, 5))
+
+    msg = str(exc.value)
+    assert "host RAM" in msg
+    assert "proxy" in msg  # actionable lever is named
+    assert not tracked  # failed fast, before any tracking
+
+
+def test_preflight_passes_when_ram_ample(monkeypatch) -> None:
+    """A normal clip with plenty of RAM tracks and emits as usual."""
+    monkeypatch.setattr(sam3_mod, "_available_ram_bytes", lambda: 64 * 2**30)
+    pass_ = _FakeSAM3(_small_params())
+    out = pass_.run_shot(_FakeReader(_plate_frames(5)), frame_range=(1, 5))
+    assert f"{MASK_PREFIX}person" in out[1]
+
+
 def test_run_shot_emits_mask_channels_per_detected_concept() -> None:
     frames = _plate_frames(5)
     pass_ = _FakeSAM3(_small_params())
@@ -151,7 +187,11 @@ def test_emit_artifacts_shape_for_downstream_refiner() -> None:
         assert isinstance(data["label"], str)
         assert isinstance(data["frames"], list)
         assert data["stack"].ndim == 3
-        assert data["stack"].dtype == np.float32
+        # Hard masks ship as uint8 (0/1), not float32: the whole-clip stack for
+        # every instance is held at once, so float32 was the dominant host-RAM
+        # cost on long/high-detection clips. Consumers cast per-instance.
+        assert data["stack"].dtype == np.uint8
+        assert set(np.unique(data["stack"])) <= {0, 1}
 
     # sam3_instances: ranked hero dicts sorted by slot order.
     heroes = next(iter(artifacts["sam3_instances"].values()))

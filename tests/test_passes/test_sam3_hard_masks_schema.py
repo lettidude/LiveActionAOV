@@ -157,21 +157,24 @@ def test_frames_is_sorted_list_of_plain_ints(_artifacts) -> None:
         assert min(frames) >= 10, f"Track {tid} frames leaked local indexing: {frames[:3]}..."
 
 
-def test_stack_is_float32_3d_aligned_with_frames(_artifacts) -> None:
+def test_stack_is_uint8_3d_aligned_with_frames(_artifacts) -> None:
     inner = next(iter(_artifacts["sam3_hard_masks"].values()))
     for tid, data in inner.items():
         stack = data["stack"]
         assert isinstance(stack, np.ndarray), f"Track {tid} stack is {type(stack)}, want np.ndarray"
         assert stack.ndim == 3, f"Track {tid} stack.ndim = {stack.ndim}, want 3"
-        # T dimension must match len(frames) exactly — CorridorKey does
+        # T dimension must match len(frames) exactly — a consumer does
         # `stack[i]` → mask at `frames[i]`, so mismatched lengths are fatal.
         assert stack.shape[0] == len(data["frames"]), (
             f"Track {tid} stack has {stack.shape[0]} frames but frames list "
             f"has {len(data['frames'])}"
         )
-        assert stack.dtype == np.float32, (
-            f"Track {tid} stack dtype is {stack.dtype}, want float32 "
-            f"(CorridorKey assumes f32 for in-place memory reuse)"
+        # Hard masks ship uint8 (0/1), not float32: holding every instance's
+        # whole-clip stack at once made float32 the dominant host-RAM cost and
+        # OOM'd long/high-detection clips. Binary masks lose nothing in uint8;
+        # consumers cast to float32 one instance at a time.
+        assert stack.dtype == np.uint8, (
+            f"Track {tid} stack dtype is {stack.dtype}, want uint8"
         )
 
 

@@ -22,8 +22,11 @@ Outputs (spec §5.1, channels.py):
   channel order.
 
 Artifacts:
-- `sam3_hard_masks`: `dict[int, {"label": str, "stack": (T, H, W) float32}]`
-  keyed by `track_id`. Raw per-instance hard masks across the clip. This
+- `sam3_hard_masks`: `dict[int, {"label": str, "stack": (T, H, W) uint8}]`
+  keyed by `track_id`. Raw per-instance hard masks (0/1) across the clip;
+  uint8, not float32 — mattes are binary, and holding every instance's
+  whole-clip stack at once made float32 the dominant host-RAM cost.
+  Consumers cast to float32 one instance at a time. This
   is the same structure CorridorKey (v2c) will consume, so we ship it in
   the shape the spec §21.8 locks in — don't simplify later.
 - `sam3_instances`: a list of `HeroSlot` objects from `rank.py`, sorted
@@ -42,6 +45,7 @@ rectangles without downloading 2 GB of weights.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Any
@@ -61,6 +65,37 @@ from live_action_aov.passes.matte.rank import (
     RankWeights,
     rank_and_assign,
 )
+
+_log = logging.getLogger(__name__)
+
+
+def _available_ram_bytes() -> int | None:
+    """Free host RAM in bytes, or ``None`` if it can't be measured.
+
+    Uses ``psutil`` when present (a transitive dep already in the env). The
+    pre-flight check degrades to estimate-only logging if it's missing, so
+    this is never a hard dependency.
+    """
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        return None
+
+
+def _mask_ram_message(n_inst: int, n_frames: int, h: int, w: int, peak_bytes: int) -> str:
+    """Actionable OOM guidance — what's needed, and the levers to fit it."""
+    need_gib = peak_bytes / 2**30
+    avail = _available_ram_bytes()
+    avail_str = f"{avail / 2**30:.1f} GiB free" if avail is not None else "free RAM unknown"
+    return (
+        f"SAM3 matte needs ~{need_gib:.1f} GiB of host RAM to hold {n_inst} "
+        f"instance(s) of {w}x{h} masks over {n_frames} frames ({avail_str}). "
+        "Reduce the number of detected instances (tighten the concepts list / "
+        "raise min_area_fraction / set max_heroes), run the matte at a lower "
+        "proxy resolution, or process the shot in a shorter frame range."
+    )
 
 
 def _wrap_if_gated_repo(repo: str, exc: BaseException) -> RuntimeError | None:
@@ -531,6 +566,33 @@ class SAM3MattePass(UtilityPass):
         concepts = [str(c) for c in self.params["concepts"]]
         seeds = self._detect_seed(seed_rgb, concepts)
 
+        # Pre-flight host-RAM check (fail fast, before the minutes-long track).
+        # Peak host RAM is dominated by holding every instance's whole-clip mask
+        # stack at once (here in _instances, then again in emit_artifacts) — so
+        # ~2x the uint8 footprint. We know the instance count now, right after
+        # detection, so abort at second 0 with a clear reason instead of dying
+        # on a raw MemoryError after the GPU has churned for minutes.
+        n_clicks = sum(
+            1
+            for s in (self.params.get("prompt_instances") or [])
+            if (s.get("points") or s.get("box"))
+        )
+        n_inst_est = len(seeds) + n_clicks
+        per_inst_bytes = n_frames * plate_h * plate_w  # uint8 = 1 byte/px
+        peak_bytes = 2 * n_inst_est * per_inst_bytes
+        if n_inst_est:
+            _log.info(
+                "SAM3 matte: %d instance(s), %dx%d, %d frames -> ~%.1f GiB peak host RAM",
+                n_inst_est,
+                plate_w,
+                plate_h,
+                n_frames,
+                peak_bytes / 2**30,
+            )
+        avail = _available_ram_bytes()
+        if avail is not None and peak_bytes > 0.9 * avail:
+            raise MemoryError(_mask_ram_message(n_inst_est, n_frames, plate_h, plate_w, peak_bytes))
+
         # Track each seed across the clip; accumulate _DetectedInstance.
         self._instances = []
         for track_id, label, seed_mask in seeds:
@@ -545,8 +607,15 @@ class SAM3MattePass(UtilityPass):
                     f"Track stack for {track_id} has shape {stack.shape}, "
                     f"expected ({n_frames}, {plate_h}, {plate_w})"
                 )
+            # Store binary masks as uint8 (0/1), not float32: mattes are
+            # already hard-edged (binarize=True), so float32 is a 4x waste of
+            # host RAM. The whole-clip stack for every instance is held at once
+            # (here + emit_artifacts), so peak scales N_inst x F x H x W x dtype;
+            # uint8 keeps a long high-detection clip from OOMing the box.
+            # Consumers (cryptomatte / rvm / birefnet) cast back to float32 one
+            # instance at a time, where the cost is bounded.
             masks = {
-                first + k: stack[k].astype(np.float32, copy=False) for k in range(stack.shape[0])
+                first + k: (stack[k] > 0.5).astype(np.uint8) for k in range(stack.shape[0])
             }
             # Drop instances that fall below the area floor everywhere.
             area_floor = float(self.params["min_area_fraction"]) * plate_h * plate_w
@@ -600,8 +669,9 @@ class SAM3MattePass(UtilityPass):
                     f"Click track stack for {name!r} has shape {stack.shape}, "
                     f"expected ({n_frames}, {plate_h}, {plate_w})"
                 )
+            # uint8 binary masks — see the concept path above.
             masks = {
-                first + k: stack[k].astype(np.float32, copy=False) for k in range(stack.shape[0])
+                first + k: (stack[k] > 0.5).astype(np.uint8) for k in range(stack.shape[0])
             }
             area_floor = float(self.params["min_area_fraction"]) * plate_h * plate_w
             if all(m.sum() < area_floor for m in masks.values()):
@@ -717,16 +787,29 @@ class SAM3MattePass(UtilityPass):
         # CorridorKey will consume (design §21.8).
         plate_h, plate_w = self._plate_shape
         hard_masks: dict[int, dict[str, Any]] = {}
-        for inst in self._instances:
-            frames_sorted = sorted(inst.masks)
-            if not frames_sorted:
-                continue
-            stack = np.stack([inst.masks[f] for f in frames_sorted], axis=0)
-            hard_masks[inst.track_id] = {
-                "label": inst.label,
-                "frames": frames_sorted,
-                "stack": stack.astype(np.float32, copy=False),
-            }
+        try:
+            for inst in self._instances:
+                frames_sorted = sorted(inst.masks)
+                if not frames_sorted:
+                    continue
+                # Keep the stack uint8 (0/1) — consumers cast per-instance. See
+                # the storage note in run_shot; this is the second of the two
+                # whole-clip materializations, and the one that peaked ~70 GB in
+                # float32.
+                stack = np.stack([inst.masks[f] for f in frames_sorted], axis=0)
+                hard_masks[inst.track_id] = {
+                    "label": inst.label,
+                    "frames": frames_sorted,
+                    "stack": stack,
+                }
+        except MemoryError as exc:
+            # The pre-flight in run_shot should catch this first, but if the
+            # estimate was optimistic, surface the same actionable guidance
+            # instead of a raw traceback.
+            n = len(self._instances)
+            n_frames = max((len(i.masks) for i in self._instances), default=0)
+            peak = 2 * n * n_frames * plate_h * plate_w
+            raise MemoryError(_mask_ram_message(n, n_frames, plate_h, plate_w, peak)) from exc
 
         # sam3_instances — the ranked+slotted hero list, as serializable dicts
         # so downstream consumers don't have to import rank.py just to unpack.

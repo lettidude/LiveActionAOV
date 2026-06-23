@@ -122,7 +122,10 @@ class CryptomattePass(UtilityPass):
                 frames = list(info.get("frames") or [])
                 if f not in frames:
                     continue
-                m = np.asarray(info["stack"], dtype=np.float32)[frames.index(f)]
+                # Index first, then cast just this frame — casting the whole
+                # (T,H,W) stack to float32 per frame is O(F) wasted work (and
+                # the stack is uint8 now). One (H,W) slice is all we need.
+                m = np.asarray(info["stack"][frames.index(f)], dtype=np.float32)
                 if feather > 0:
                     m = _feather(m, feather)
                 if float(m.sum()) > 0:
