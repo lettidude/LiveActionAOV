@@ -4,6 +4,35 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [0.5.2] — 2026-06-23
+
+### Fixed
+- **SAM 3 matte no longer OOM-crashes the box on long / high-detection
+  clips.** The pass held *every* tracked instance's whole-clip mask stack in
+  host RAM at once, in **float32** — peak scaled `N_instances x frames x H x W
+  x 4 bytes`. A real shot (573 frames, 1080p, ~16 detected instances) peaked
+  ~70 GB and died on a raw `MemoryError` after ~15 min of GPU work. Fixes:
+  - **Hard masks are stored as `uint8` (0/1), not float32** — mattes are
+    binary, so float32 was a 4x waste. The same shot now peaks ~17.5 GB.
+    Consumers (Cryptomatte / RVM / BiRefNet refiner) cast to float32 one
+    instance at a time, where the cost is bounded.
+  - **Pre-flight RAM check (fail fast).** The pass estimates peak host RAM
+    right after detection — *before* the minutes-long track — and aborts at
+    second 0 with an actionable message ("needs ~X GiB for N instances at WxH
+    over F frames; Y GiB free — reduce instances, lower proxy, or shorten the
+    range") instead of crashing late and throwing the work away.
+  - **Graceful `MemoryError`** at artifact emission surfaces the same guidance
+    rather than a raw NumPy traceback, if the estimate was optimistic.
+- **Cryptomatte: stop re-expanding the whole mask stack per frame.** The
+  encoder cast each instance's entire `(T, H, W)` stack to float32 on *every*
+  frame just to read one slice — `O(frames)` wasted work. It now indexes the
+  single frame first, then casts.
+
+### Notes
+- The `sam3_hard_masks` artifact's `stack` is now `uint8` (was `float32`).
+  Anything reading it directly should cast as needed; the bundled consumers
+  already do.
+
 ## [0.5.1] — 2026-06-18
 
 ### Fixed
@@ -56,6 +85,7 @@ uses [semantic versioning](https://semver.org/).
   alongside the `.python-version` pin from 0.4.1 — belt-and-suspenders so the
   venv is never built against an unsupported system Python.
 
+[0.5.2]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.2
 [0.5.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.1
 [0.5.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.0
 [0.4.2]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.4.2
