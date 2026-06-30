@@ -101,6 +101,14 @@ class Shot(BaseModel):
     # plates. Pixel aspect is preserved. GUI Output tab flips it.
     proxy_long_edge: int | None = None
 
+    # Sidecar delivery: codec + bit depth. Defaults match the historic
+    # lossless float32 output. Bandwidth-bound jobs pick a compact lossy
+    # delivery (e.g. `dwab:45` + `float16`) in the GUI Output tab — ~5-20x
+    # smaller. Cryptomatte is auto-split to a lossless float32 sibling when
+    # the delivery would corrupt its exact hash IDs (the writer handles it).
+    delivery_compression: str = "zip"
+    delivery_dtype: str = "float32"
+
     status: ShotStatus = "new"
     notes: str = ""
 
@@ -127,6 +135,22 @@ class Shot(BaseModel):
     def _coerce_tuple(cls, v: Any) -> tuple[int, int]:
         if isinstance(v, list):
             return tuple(v)
+        return v
+
+    @field_validator("delivery_compression")
+    @classmethod
+    def _check_compression(cls, v: str) -> str:
+        allowed = {"none", "rle", "zip", "zips", "piz", "pxr24", "b44", "b44a", "dwaa", "dwab"}
+        base = v.split(":", 1)[0].strip().lower()
+        if base not in allowed:
+            raise ValueError(f"unknown EXR compression {v!r}; use one of {sorted(allowed)}")
+        return v
+
+    @field_validator("delivery_dtype")
+    @classmethod
+    def _check_dtype(cls, v: str) -> str:
+        if v not in ("float16", "float32"):
+            raise ValueError(f"delivery_dtype must be 'float16' or 'float32', got {v!r}")
         return v
 
     @field_serializer("folder")

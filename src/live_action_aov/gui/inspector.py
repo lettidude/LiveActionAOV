@@ -222,6 +222,26 @@ class InspectorPanel(QWidget):
         )
         self._proxy_combo.currentIndexChanged.connect(self._on_proxy_changed)
 
+        # Delivery: EXR codec + bit depth. Bandwidth-bound jobs (separate
+        # machines, limited share) need compact sidecars. Item data is a
+        # (compression, dtype) tuple. Cryptomatte is auto-split to a lossless
+        # float32 sibling by the writer when a lossy/half delivery is chosen,
+        # so its hash IDs always survive.
+        self._delivery_combo = QComboBox()
+        self._delivery_combo.addItem("Lossless 32-bit (ZIP) - largest", ("zip", "float32"))
+        self._delivery_combo.addItem("Lossless 16-bit half (ZIP)", ("zip", "float16"))
+        self._delivery_combo.addItem(
+            "Compact - DWAB 16-bit (recommended for delivery)", ("dwab:45", "float16")
+        )
+        self._delivery_combo.addItem("Compact max - DWAB high 16-bit", ("dwab:120", "float16"))
+        self._delivery_combo.setToolTip(
+            "How sidecar EXRs are compressed. DWAB is lossy but ~5-20x smaller "
+            "on depth/normals/flow/mattes (fine for utility passes and temp "
+            "roto). Cryptomatte is automatically split into a lossless .crypto "
+            "EXR so its IDs are never corrupted."
+        )
+        self._delivery_combo.currentIndexChanged.connect(self._on_delivery_changed)
+
         # --- Reset button ---
         # One-click rollback to the auto-detected colorspace + auto-
         # seeded exposure. Users experimenting with overrides want a
@@ -490,6 +510,17 @@ class InspectorPanel(QWidget):
         proxy_hint.setWordWrap(True)
         output_layout.addWidget(proxy_hint)
         output_layout.addWidget(self._proxy_combo)
+        output_layout.addSpacing(16)
+        output_layout.addWidget(_section_label("Delivery (size vs fidelity)"))
+        delivery_hint = QLabel(
+            "EXR compression + bit depth. DWAB is lossy but far smaller - "
+            "use it for bandwidth-bound delivery between machines. "
+            "Cryptomatte is auto-split to a lossless sidecar so its IDs survive."
+        )
+        delivery_hint.setStyleSheet("color: #888; font-size: 9pt;")
+        delivery_hint.setWordWrap(True)
+        output_layout.addWidget(delivery_hint)
+        output_layout.addWidget(self._delivery_combo)
         output_layout.addStretch()
         output_tab = _scrollable(output_layout)
 
@@ -678,6 +709,16 @@ class InspectorPanel(QWidget):
             self._proxy_combo.blockSignals(True)
             self._proxy_combo.setCurrentIndex(proxy_index)
             self._proxy_combo.blockSignals(False)
+            # Match the delivery combo to the shot's (compression, dtype).
+            delivery_index = 0
+            want = (shot.delivery_compression, shot.delivery_dtype)
+            for i in range(self._delivery_combo.count()):
+                if self._delivery_combo.itemData(i) == want:
+                    delivery_index = i
+                    break
+            self._delivery_combo.blockSignals(True)
+            self._delivery_combo.setCurrentIndex(delivery_index)
+            self._delivery_combo.blockSignals(False)
             self._rebuild_resolved_out_label()
 
             # Pass radios reflect the stored enabled_models. The single-
@@ -950,6 +991,14 @@ class InspectorPanel(QWidget):
         self._current.proxy_long_edge = self._proxy_combo.itemData(idx)
         self._broadcast_output_to_all_shots()
 
+    def _on_delivery_changed(self, idx: int) -> None:
+        if self._building or self._current is None:
+            return
+        comp, dtype = self._delivery_combo.itemData(idx)
+        self._current.delivery_compression = comp
+        self._current.delivery_dtype = dtype
+        self._broadcast_output_to_all_shots()
+
     def _on_pick_external_root(self) -> None:
         if self._current is None:
             return
@@ -980,6 +1029,8 @@ class InspectorPanel(QWidget):
             shot.output_external_root = active.output_external_root
             shot.output_external_name = active.output_external_name
             shot.proxy_long_edge = active.proxy_long_edge
+            shot.delivery_compression = active.delivery_compression
+            shot.delivery_dtype = active.delivery_dtype
             self._registry.notify_updated(shot)
 
     def _rebuild_resolved_out_label(self) -> None:
