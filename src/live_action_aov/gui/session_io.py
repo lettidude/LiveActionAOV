@@ -67,6 +67,7 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
         "sampled_luma": None if s.sampled_luma is None else float(s.sampled_luma),
         "enabled_models": list(s.enabled_models),
         "sam3_concepts": s.sam3_concepts,
+        "refine_all_masks": bool(s.refine_all_masks),
         "click_instances": [
             {
                 "name": ci.name,
@@ -127,6 +128,7 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         sampled_luma=(None if d.get("sampled_luma") is None else float(d["sampled_luma"])),
         enabled_models=[str(m) for m in (d.get("enabled_models") or [])],
         sam3_concepts=str(d.get("sam3_concepts", "")),
+        refine_all_masks=bool(d.get("refine_all_masks", False)),
         click_instances=clicks,
         output_mode=str(d.get("output_mode", "inplace")),
         output_external_root=(None if ext_root is None else Path(str(ext_root))),

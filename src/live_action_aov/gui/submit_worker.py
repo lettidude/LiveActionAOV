@@ -293,9 +293,17 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
     for n in plugin_names:
         if n == "sam3_matte" and sam3_params:
             out.append(PassConfig(name=n, params=sam3_params))
+        elif n in _REFINER_PLUGINS and state.refine_all_masks:
+            # Refine every tracked object's edges into soft `mask.<label>`
+            # channels, not just the 4 hero slots (premium all-objects soft).
+            out.append(PassConfig(name=n, params={"refine_all_masks": True}))
         else:
             out.append(PassConfig(name=n))
     return out
+
+
+#: Soft-matte refiner plugins that accept the `refine_all_masks` param.
+_REFINER_PLUGINS = frozenset({"rvm_refiner", "birefnet_refiner", "matanyone2"})
 
 
 __all__ = ["SubmitResult", "SubmitWorker"]

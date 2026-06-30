@@ -105,6 +105,13 @@ class ShotState:
     # text-concept path only. Both can coexist (named clicks + concepts).
     click_instances: list[ClickInstance] = field(default_factory=list)
 
+    # Refine EVERY tracked object's edges into soft alpha (not just the 4 hero
+    # matte slots): the active refiner emits soft `mask.<label>` channels that
+    # replace SAM 3's hard ones. Premium "all-objects soft" delivery; slower
+    # (one refine per object). Injected as the refiner's `refine_all_masks`
+    # param at submit time.
+    refine_all_masks: bool = False
+
     # --- Legacy M2 surface kept as properties below ---
     # Other code that still references `enabled_passes` / `pass_backends`
     # will need to migrate to `enabled_models` over time. The Inspector

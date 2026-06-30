@@ -519,6 +519,17 @@ class InspectorPanel(QWidget):
         )
         self._mask_mode_check.toggled.connect(self._on_mask_mode_toggled)
 
+        # Premium delivery: run the soft-edge refiner on EVERY tracked object,
+        # not just the 4 hero matte slots. Each mask.<name> becomes soft alpha
+        # instead of a hard SAM 3 edge. Slower (one refine per object).
+        self._refine_all_check = QCheckBox("Soft edges on ALL masks (slower)")
+        self._refine_all_check.setToolTip(
+            "Run BiRefNet on every detected/clicked object so each mask.<name> "
+            "has roto-grade soft edges, not just the 4 hero matte slots. Costs "
+            "one refinement per object — use it for premium delivery."
+        )
+        self._refine_all_check.toggled.connect(self._on_refine_all_toggled)
+
         self._mask_list = QListWidget()
         self._mask_list.setFixedHeight(140)
         self._mask_list.currentRowChanged.connect(self._on_mask_selected)
@@ -577,6 +588,8 @@ class InspectorPanel(QWidget):
         masks_layout.addWidget(self._mask_points_warn)
         masks_layout.addWidget(QLabel("Name:"))
         masks_layout.addWidget(self._mask_name_edit)
+        masks_layout.addSpacing(12)
+        masks_layout.addWidget(self._refine_all_check)
         masks_layout.addStretch()
         masks_tab = _scrollable(masks_layout)
 
@@ -707,6 +720,10 @@ class InspectorPanel(QWidget):
 
             # SAM 3 concepts free-text (drives Matte + Cryptomatte).
             self._sam3_concepts_edit.setText(shot.sam3_concepts)
+
+            self._refine_all_check.blockSignals(True)
+            self._refine_all_check.setChecked(bool(shot.refine_all_masks))
+            self._refine_all_check.blockSignals(False)
 
             # Click-to-mask object list (Masks tab).
             self._refresh_mask_list()
@@ -868,6 +885,11 @@ class InspectorPanel(QWidget):
 
     def _on_mask_mode_toggled(self, checked: bool) -> None:
         self.click_mode_changed.emit(bool(checked))
+
+    def _on_refine_all_toggled(self, checked: bool) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.refine_all_masks = bool(checked)
 
     def _on_mask_new(self) -> None:
         if self._current is None:

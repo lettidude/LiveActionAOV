@@ -52,6 +52,7 @@ from live_action_aov.io.channels import (
     CH_MATTE_B,
     CH_MATTE_G,
     CH_MATTE_R,
+    MASK_PREFIX,
 )
 
 # Canonical slot -> channel name mapping. Kept here (not in channels.py) so
@@ -110,6 +111,11 @@ class RVMRefinerPass(UtilityPass):
         # before multiplying the plate —
         # gives RVM a little context around
         # the hard boundary to refine.
+        # Refine EVERY tracked object's edges (not just the 4 hero slots) and
+        # emit soft `mask.<label>` channels that replace SAM 3's hard ones.
+        # Off by default — it costs one refine per track, so a 12-object shot
+        # is ~3x the hero-only cost. The premium "all-objects soft" delivery.
+        "refine_all_masks": False,
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -284,6 +290,47 @@ class RVMRefinerPass(UtilityPass):
     # Shot-level: loop heroes × frames, pack into matte.r/g/b/a
     # ------------------------------------------------------------------
 
+    def _refine_track(
+        self,
+        track: dict[str, Any],
+        frames: np.ndarray,
+        frame_to_local: dict[int, int],
+        n_frames: int,
+        plate_h: int,
+        plate_w: int,
+        track_id: int,
+    ) -> tuple[np.ndarray, list[int]]:
+        """Build a track's dense hard-mask stack, refine it to soft alpha,
+        and zero frames where the instance is absent. Returns (soft, frames)."""
+        track_frames: list[int] = list(track.get("frames") or [])
+        track_stack: np.ndarray = np.asarray(track.get("stack"), dtype=np.float32)
+        if track_stack.ndim != 3 or track_stack.shape[0] != len(track_frames):
+            raise ValueError(
+                f"sam3_hard_masks[{track_id}] stack has shape {track_stack.shape}, "
+                f"expected (T={len(track_frames)}, H, W)"
+            )
+        dense_hard = np.zeros((n_frames, plate_h, plate_w), dtype=np.float32)
+        for k, f in enumerate(track_frames):
+            local = frame_to_local.get(int(f))
+            if local is None:
+                continue
+            dense_hard[local] = track_stack[k]
+
+        soft = self._refine_instance(frames, dense_hard)
+        if soft.shape != dense_hard.shape:
+            raise ValueError(
+                f"_refine_instance({track_id}) returned shape {soft.shape}, "
+                f"expected {dense_hard.shape}"
+            )
+        soft = np.clip(soft.astype(np.float32, copy=False), 0.0, 1.0)
+        # Zero frames where the original hard mask was absent — the refiner can
+        # hallucinate alpha in bordering frames; the per-clip slot lock says
+        # "if the instance isn't there, the slot is zero".
+        present = dense_hard.sum(axis=(1, 2)) > 0.0
+        soft[~present] = 0.0
+        refined_frames = sorted(int(f) for f in track_frames if int(f) in frame_to_local)
+        return soft, refined_frames
+
     def run_shot(
         self,
         reader: Any,
@@ -295,89 +342,84 @@ class RVMRefinerPass(UtilityPass):
             np.float32, copy=False
         )
         plate_h, plate_w = int(frames.shape[1]), int(frames.shape[2])
+        frame_to_local = {f: i for i, f in enumerate(range(first, last + 1))}
 
-        # Initialize all four matte channels with zeros — any slot that
-        # doesn't receive a hero (e.g. clip has only 2 instances) stays
-        # transparent.
+        # Hero slots → matte.r/g/b/a. Any slot without a hero stays transparent.
         channel_stacks: dict[str, np.ndarray] = {
             ch: np.zeros((n_frames, plate_h, plate_w), dtype=np.float32)
             for ch in _SLOT_TO_CHANNEL.values()
         }
+        refine_all = bool(self.params.get("refine_all_masks", False))
+        # `mask.<label>` soft accumulators (union-by-label), only in all-masks
+        # mode. Built one track at a time so peak host RAM is bounded by the
+        # number of distinct labels, not the number of tracks.
+        label_soft: dict[str, np.ndarray] = {}
+
+        hero_slot = {int(h["track_id"]): str(h.get("slot", "")) for h in self._heroes}
+        hero_meta = {int(h["track_id"]): h for h in self._heroes}
+
+        # Which tracks to refine: heroes always (for matte.rgba); every tracked
+        # object too when refine_all. Heroes first so matte.rgba is deterministic.
+        hero_ids = [int(h["track_id"]) for h in self._heroes]
+        if refine_all:
+            seen = set(hero_ids)
+            order = hero_ids + [t for t in self._hard_masks if t not in seen]
+        else:
+            order = hero_ids
 
         self._refined = []
-        for hero in self._heroes:
-            slot = str(hero.get("slot", ""))
-            channel = _SLOT_TO_CHANNEL.get(slot)
-            if channel is None:
-                # Slot not in r/g/b/a — silently skip. (ranker guarantees
-                # valid slots; this is belt-and-braces.)
-                continue
-            track_id = int(hero["track_id"])
+        # Heroes whose hard-mask artifact is missing: record for QC, leave zeros.
+        for h in self._heroes:
+            if self._hard_masks.get(int(h["track_id"])) is None:
+                self._refined.append({**h, "refined_frames": [], "missing_hard_mask": True})
+
+        for track_id in order:
             track = self._hard_masks.get(track_id)
             if track is None:
-                # Ranker saw the track but the hard-mask artifact is
-                # missing. Leave zeros; record for metadata so QC can
-                # spot it.
-                self._refined.append({**hero, "refined_frames": [], "missing_hard_mask": True})
                 continue
-
-            # Build the dense (n_frames, H, W) hard-mask stack for this track.
-            # The track's native stack only covers frames where the instance
-            # was present; frames before/after get zeros so the refiner sees
-            # a consistent-length video (required by RVM's recurrent loop).
-            track_frames: list[int] = list(track.get("frames") or [])
-            track_stack: np.ndarray = np.asarray(track.get("stack"), dtype=np.float32)
-            if track_stack.ndim != 3 or track_stack.shape[0] != len(track_frames):
-                raise ValueError(
-                    f"sam3_hard_masks[{track_id}] stack has shape {track_stack.shape}, "
-                    f"expected (T={len(track_frames)}, H, W)"
-                )
-            dense_hard = np.zeros((n_frames, plate_h, plate_w), dtype=np.float32)
-            frame_to_local = {f: i for i, f in enumerate(range(first, last + 1))}
-            for k, f in enumerate(track_frames):
-                local = frame_to_local.get(int(f))
-                if local is None:
-                    continue
-                dense_hard[local] = track_stack[k]
-
-            soft = self._refine_instance(frames, dense_hard)
-            if soft.shape != dense_hard.shape:
-                raise ValueError(
-                    f"_refine_instance({track_id}) returned shape {soft.shape}, "
-                    f"expected {dense_hard.shape}"
-                )
-            soft = np.clip(soft.astype(np.float32, copy=False), 0.0, 1.0)
-
-            # Zero out frames where the original hard mask was absent — the
-            # refiner can hallucinate alpha in bordering frames (RVM bleeds
-            # across its memory bank); the per-clip slot lock says "if the
-            # instance isn't there, the slot is zero".
-            present_mask = dense_hard.sum(axis=(1, 2)) > 0.0
-            soft[~present_mask] = 0.0
-
-            channel_stacks[channel] = soft
-            refined_frames = sorted(int(f) for f in track_frames if int(f) in frame_to_local)
-            self._refined.append(
-                {
-                    "track_id": track_id,
-                    "slot": slot,
-                    "label": hero.get("label", ""),
-                    "score": float(hero.get("score", 0.0)),
-                    "refined_frames": refined_frames,
-                    "missing_hard_mask": False,
-                }
+            soft, refined_frames = self._refine_track(
+                track, frames, frame_to_local, n_frames, plate_h, plate_w, track_id
             )
+            label = str(track.get("label", "") or "")
+            slot = hero_slot.get(track_id, "")
+            channel = _SLOT_TO_CHANNEL.get(slot)
+            is_hero = channel is not None
+            if channel is not None:
+                channel_stacks[channel] = soft
+                h = hero_meta[track_id]
+                self._refined.append(
+                    {
+                        "track_id": track_id,
+                        "slot": slot,
+                        "label": h.get("label", label),
+                        "score": float(h.get("score", 0.0)),
+                        "refined_frames": refined_frames,
+                        "missing_hard_mask": False,
+                    }
+                )
+            if refine_all and label:
+                if label in label_soft:
+                    label_soft[label] = np.maximum(label_soft[label], soft)
+                else:
+                    # Copy when this soft is also retained as a hero channel, so
+                    # a later union max() doesn't mutate the hero's array.
+                    label_soft[label] = soft.copy() if is_hero else soft
 
-        # Emit per-frame channel dicts keyed by absolute frame index.
+        # Emit per-frame channel dicts keyed by absolute frame index. Soft
+        # `mask.<label>` channels (all-masks mode) override SAM 3's hard ones
+        # downstream via the executor's per-pass channel merge.
         out: dict[int, dict[str, np.ndarray]] = {}
         for i in range(n_frames):
             f = first + i
-            out[f] = {
+            d: dict[str, np.ndarray] = {
                 CH_MATTE_R: channel_stacks[CH_MATTE_R][i],
                 CH_MATTE_G: channel_stacks[CH_MATTE_G][i],
                 CH_MATTE_B: channel_stacks[CH_MATTE_B][i],
                 CH_MATTE_A: channel_stacks[CH_MATTE_A][i],
             }
+            for label, acc in label_soft.items():
+                d[f"{MASK_PREFIX}{label}"] = acc[i]
+            out[f] = d
         return out
 
     # ------------------------------------------------------------------
