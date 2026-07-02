@@ -392,15 +392,16 @@ class ViewportPanel(QWidget):
             if inst.box is not None
             else None
         )
-        # If the shot asks for soft edges, the preview refines the SAM mask
-        # with BiRefNet too — so "Soft edges on ALL masks" is visible here,
-        # not only after a full submit. Empty model_id → the refiner default.
+        # The preview ALWAYS shows the refined (soft) mask with the shot's
+        # chosen refiner weights — one extra ~0.3s pass, and what you see is
+        # what the submit produces. Model comparison = change the Refiner
+        # dropdown and re-preview.
         self._mask_worker.request(
             image,
             pts,
             lbls,
             box,
-            refine=bool(shot.refine_all_masks),
+            refine=True,
             model_id=str(shot.refiner_model or ""),
         )
 
