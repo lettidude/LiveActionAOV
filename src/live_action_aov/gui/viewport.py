@@ -63,7 +63,10 @@ def _mask_to_overlay(mask: np.ndarray) -> QImage:
     rgba[..., 0] = 80
     rgba[..., 1] = 220
     rgba[..., 2] = 100
-    rgba[..., 3] = (m * 140.0).astype(np.uint8)  # alpha ∝ coverage → soft edges read
+    # Gamma-lifted alpha: proportional to coverage so soft edges read as
+    # soft, but lifted (m^0.45) so semi-transparent regions (motion-blurred
+    # hands, hair) stay clearly visible instead of looking "eroded".
+    rgba[..., 3] = (np.power(m, 0.45) * 140.0).astype(np.uint8)
     img = QImage(rgba.data, w, h, 4 * w, QImage.Format.Format_RGBA8888)
     return img.copy()  # detach from the numpy buffer before it goes away
 
