@@ -524,10 +524,16 @@ class InspectorPanel(QWidget):
         # share the BiRefNet arch (same speed); they differ in edge
         # character + licence.
         self._refiner_model_combo = QComboBox()
-        self._refiner_model_combo.addItem("Portrait - people/hair (default)", "")
-        self._refiner_model_combo.addItem("Matting - general soft", "ZhengPeng7/BiRefNet-matting")
-        self._refiner_model_combo.addItem("General - hard, cleanest licence", "ZhengPeng7/BiRefNet")
-        self._refiner_model_combo.addItem("RMBG-2.0 - paid licence for commercial", "briaai/RMBG-2.0")
+        self._refiner_model_combo.addItem("BiRefNet Portrait - people/hair (default)", "")
+        self._refiner_model_combo.addItem(
+            "BiRefNet Matting - general soft", "ZhengPeng7/BiRefNet-matting"
+        )
+        self._refiner_model_combo.addItem(
+            "BiRefNet General - hard, cleanest licence", "ZhengPeng7/BiRefNet"
+        )
+        self._refiner_model_combo.addItem(
+            "RMBG-2.0 (BiRefNet arch) - paid licence for commercial", "briaai/RMBG-2.0"
+        )
         self._refiner_model_combo.setToolTip(
             "Soft-edge refiner weights for this shot. Used by 'Preview mask' "
             "AND by the submit. Same speed for all; they differ in edge "
