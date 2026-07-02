@@ -372,6 +372,19 @@ class InspectorPanel(QWidget):
         passes_block.addWidget(self._sam3_concepts_edit)
         passes_block.addWidget(concepts_hint)
 
+        # Refiner option - soft edges on EVERY mask, not just the 4 hero matte
+        # slots. Created + placed here (with the matte model choice), not on
+        # the Masks tab which only seeds click-to-mask objects.
+        self._refine_all_check = QCheckBox("Soft edges on ALL masks (slower)")
+        self._refine_all_check.setToolTip(
+            "Run BiRefNet on every detected/clicked object so each mask.<name> "
+            "has roto-grade soft edges, not just the 4 hero matte slots. Costs "
+            "one refinement per object - use it for premium delivery."
+        )
+        self._refine_all_check.toggled.connect(self._on_refine_all_toggled)
+        passes_block.addSpacing(10)
+        passes_block.addWidget(self._refine_all_check)
+
         # "Apply to all shots" — one-click broadcast of the active
         # shot's pass selections to every other shot in the queue.
         # Unlike Output (which is always session-wide), Passes stay
@@ -519,17 +532,6 @@ class InspectorPanel(QWidget):
         )
         self._mask_mode_check.toggled.connect(self._on_mask_mode_toggled)
 
-        # Premium delivery: run the soft-edge refiner on EVERY tracked object,
-        # not just the 4 hero matte slots. Each mask.<name> becomes soft alpha
-        # instead of a hard SAM 3 edge. Slower (one refine per object).
-        self._refine_all_check = QCheckBox("Soft edges on ALL masks (slower)")
-        self._refine_all_check.setToolTip(
-            "Run BiRefNet on every detected/clicked object so each mask.<name> "
-            "has roto-grade soft edges, not just the 4 hero matte slots. Costs "
-            "one refinement per object — use it for premium delivery."
-        )
-        self._refine_all_check.toggled.connect(self._on_refine_all_toggled)
-
         self._mask_list = QListWidget()
         self._mask_list.setFixedHeight(140)
         self._mask_list.currentRowChanged.connect(self._on_mask_selected)
@@ -588,8 +590,6 @@ class InspectorPanel(QWidget):
         masks_layout.addWidget(self._mask_points_warn)
         masks_layout.addWidget(QLabel("Name:"))
         masks_layout.addWidget(self._mask_name_edit)
-        masks_layout.addSpacing(12)
-        masks_layout.addWidget(self._refine_all_check)
         masks_layout.addStretch()
         masks_tab = _scrollable(masks_layout)
 
