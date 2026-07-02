@@ -51,10 +51,19 @@ def _pixmap_to_rgb_float(pm: QPixmap) -> np.ndarray:
 
 
 def _mask_to_overlay(mask: np.ndarray) -> QImage:
-    """(H, W) float mask → semi-transparent green RGBA image for overlay."""
+    """(H, W) float mask → semi-transparent green RGBA image for overlay.
+
+    Alpha is proportional to the mask value (not thresholded) so a SOFT
+    refined matte shows its fading edges here, not a hard cutout — that's
+    the whole point of previewing the refined result.
+    """
     h, w = mask.shape
+    m = np.clip(mask.astype(np.float32), 0.0, 1.0)
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
-    rgba[mask > 0.5] = (80, 220, 100, 110)
+    rgba[..., 0] = 80
+    rgba[..., 1] = 220
+    rgba[..., 2] = 100
+    rgba[..., 3] = (m * 140.0).astype(np.uint8)  # alpha ∝ coverage → soft edges read
     img = QImage(rgba.data, w, h, 4 * w, QImage.Format.Format_RGBA8888)
     return img.copy()  # detach from the numpy buffer before it goes away
 
@@ -383,7 +392,12 @@ class ViewportPanel(QWidget):
             if inst.box is not None
             else None
         )
-        self._mask_worker.request(image, pts, lbls, box)
+        # If the shot asks for soft edges, the preview refines the SAM mask
+        # with BiRefNet too — so "Soft edges on ALL masks" is visible here,
+        # not only after a full submit. Empty model_id → the refiner default.
+        self._mask_worker.request(
+            image, pts, lbls, box, refine=bool(shot.refine_all_masks), model_id=""
+        )
 
     def release_mask_preview(self) -> None:
         """Drop the overlay and free the resident preview model — called
