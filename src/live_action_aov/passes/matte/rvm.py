@@ -270,6 +270,17 @@ class RVMRefinerPass(UtilityPass):
             pha = (pha * mask_t).clamp_(0.0, 1.0)
             out_alpha[t] = pha.squeeze(0).squeeze(0).float().cpu().numpy()
 
+        # Inward guarantee (trimap-style, mirrors birefnet.py): the refiner
+        # only shapes the EDGE BAND. The eroded hard core stays solid 1.0 so
+        # an under-segmenting model can't eat the interior of SAM's mask.
+        import cv2
+
+        k = np.ones((2 * dilate_px + 1, 2 * dilate_px + 1), np.uint8) if dilate_px > 0 else None
+        for t in range(T):
+            binm = (hard_stack[t] > 0.5).astype(np.uint8)
+            core = cv2.erode(binm, k) if k is not None else binm
+            out_alpha[t] = np.maximum(out_alpha[t], core.astype(np.float32))
+
         return out_alpha
 
     # ------------------------------------------------------------------

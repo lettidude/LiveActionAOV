@@ -182,8 +182,19 @@ class BiRefNetRefinerPass(RVMRefinerPass):
             alpha_crop = self._birefnet_alpha(crop)
             full = np.zeros((H, W), dtype=np.float32)
             full[y0:y1, x0:x1] = alpha_crop
-            # Bound to our object so BiRefNet can't leak onto a neighbour.
-            out[t] = np.clip(full * dil.astype(np.float32), 0.0, 1.0)
+            # Trimap-style combine: the refiner only decides the EDGE BAND.
+            # - Outward bound: multiply by the dilated hard mask so BiRefNet
+            #   can't leak onto a neighbouring object.
+            # - Inward guarantee: the eroded hard core stays solid 1.0 — if
+            #   BiRefNet under-segments (misses a limb, dims the interior),
+            #   the final mask must NOT erode inside SAM's silhouette. Users
+            #   saw exactly that: every model "ate" the mask interior.
+            core = cv2.erode(binm, kernel) if kernel is not None else binm
+            out[t] = np.clip(
+                np.maximum(full * dil.astype(np.float32), core.astype(np.float32)),
+                0.0,
+                1.0,
+            )
         return out
 
 
