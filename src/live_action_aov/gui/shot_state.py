@@ -112,6 +112,11 @@ class ShotState:
     # param at submit time.
     refine_all_masks: bool = False
 
+    # Which soft-edge refiner weights to use, per shot — drives BOTH the
+    # Masks-tab preview and the submit. Empty = the pass default (portrait).
+    # HF model id string (e.g. "ZhengPeng7/BiRefNet-matting").
+    refiner_model: str = ""
+
     # --- Legacy M2 surface kept as properties below ---
     # Other code that still references `enabled_passes` / `pass_backends`
     # will need to migrate to `enabled_models` over time. The Inspector

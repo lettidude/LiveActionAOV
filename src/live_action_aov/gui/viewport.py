@@ -396,7 +396,12 @@ class ViewportPanel(QWidget):
         # with BiRefNet too — so "Soft edges on ALL masks" is visible here,
         # not only after a full submit. Empty model_id → the refiner default.
         self._mask_worker.request(
-            image, pts, lbls, box, refine=bool(shot.refine_all_masks), model_id=""
+            image,
+            pts,
+            lbls,
+            box,
+            refine=bool(shot.refine_all_masks),
+            model_id=str(shot.refiner_model or ""),
         )
 
     def release_mask_preview(self) -> None:

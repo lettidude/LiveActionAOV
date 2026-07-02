@@ -532,6 +532,22 @@ class InspectorPanel(QWidget):
         )
         self._mask_mode_check.toggled.connect(self._on_mask_mode_toggled)
 
+        # Per-shot refiner weights — drives BOTH the preview below and the
+        # submit, so you can eye-compare which model suits each mask type
+        # before committing to a run. All entries share the BiRefNet arch
+        # (same speed); they differ in edge character + licence.
+        self._refiner_model_combo = QComboBox()
+        self._refiner_model_combo.addItem("Portrait - people/hair (default)", "")
+        self._refiner_model_combo.addItem("Matting - general soft", "ZhengPeng7/BiRefNet-matting")
+        self._refiner_model_combo.addItem("General - hard, cleanest licence", "ZhengPeng7/BiRefNet")
+        self._refiner_model_combo.addItem("RMBG-2.0 - paid licence for commercial", "briaai/RMBG-2.0")
+        self._refiner_model_combo.setToolTip(
+            "Soft-edge refiner weights for this shot. Used by 'Preview mask' "
+            "AND by the submit. Same speed for all; they differ in edge "
+            "softness (Portrait best on hair) and licence terms."
+        )
+        self._refiner_model_combo.currentIndexChanged.connect(self._on_refiner_model_changed)
+
         self._mask_list = QListWidget()
         self._mask_list.setFixedHeight(140)
         self._mask_list.currentRowChanged.connect(self._on_mask_selected)
@@ -585,6 +601,10 @@ class InspectorPanel(QWidget):
         self._mask_points_warn.setWordWrap(True)
         self._mask_points_warn.setVisible(False)
 
+        refiner_row = QHBoxLayout()
+        refiner_row.addWidget(QLabel("Refiner:"))
+        refiner_row.addWidget(self._refiner_model_combo, stretch=1)
+        masks_layout.addLayout(refiner_row)
         masks_layout.addWidget(self._mask_preview_btn)
         masks_layout.addWidget(self._mask_list)
         masks_layout.addWidget(self._mask_points_warn)
@@ -724,6 +744,15 @@ class InspectorPanel(QWidget):
             self._refine_all_check.blockSignals(True)
             self._refine_all_check.setChecked(bool(shot.refine_all_masks))
             self._refine_all_check.blockSignals(False)
+
+            rm_index = 0
+            for i in range(self._refiner_model_combo.count()):
+                if self._refiner_model_combo.itemData(i) == shot.refiner_model:
+                    rm_index = i
+                    break
+            self._refiner_model_combo.blockSignals(True)
+            self._refiner_model_combo.setCurrentIndex(rm_index)
+            self._refiner_model_combo.blockSignals(False)
 
             # Click-to-mask object list (Masks tab).
             self._refresh_mask_list()
@@ -890,6 +919,11 @@ class InspectorPanel(QWidget):
         if self._building or self._current is None:
             return
         self._current.refine_all_masks = bool(checked)
+
+    def _on_refiner_model_changed(self, idx: int) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.refiner_model = str(self._refiner_model_combo.itemData(idx) or "")
 
     def _on_mask_new(self) -> None:
         if self._current is None:
