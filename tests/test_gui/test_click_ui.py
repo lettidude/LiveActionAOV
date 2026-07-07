@@ -17,7 +17,21 @@ pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication
 
 from live_action_aov.gui.shot_state import ClickInstance, ShotRegistry, ShotState
-from live_action_aov.gui.viewport import ViewportPanel, _canvas_pos_to_norm
+from live_action_aov.gui.viewport import ViewportPanel, _canvas_pos_to_norm, _mask_to_overlay
+
+
+def test_mask_overlay_alpha_is_proportional_for_soft_edges() -> None:
+    """A soft matte must render with graduated alpha, not a hard cutout —
+    otherwise previewing the refined result would look identical to hard."""
+    import numpy as np
+
+    mask = np.array([[0.0, 0.5, 1.0]], dtype=np.float32)  # (1, 3)
+    img = _mask_to_overlay(mask)
+    a_zero = img.pixelColor(0, 0).alpha()
+    a_half = img.pixelColor(1, 0).alpha()
+    a_full = img.pixelColor(2, 0).alpha()
+    assert a_zero == 0
+    assert a_full > a_half > 0  # intermediate value → intermediate alpha (soft)
 
 
 @pytest.fixture(scope="module")

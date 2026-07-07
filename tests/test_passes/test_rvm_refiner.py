@@ -20,6 +20,7 @@ from live_action_aov.io.channels import (
     CH_MATTE_B,
     CH_MATTE_G,
     CH_MATTE_R,
+    MASK_PREFIX,
 )
 from live_action_aov.passes.matte.rvm import RVMRefinerPass
 
@@ -176,6 +177,71 @@ def test_instance_absent_frames_zeroed() -> None:
     # Frames 3, 4, 5: matte.r must be zero (per-clip slot lock: track absent).
     for f in (3, 4, 5):
         assert np.all(out[f][CH_MATTE_R] == 0.0), f"Frame {f} leaked non-zero matte.r"
+
+
+def _artifacts_many(n: int, h: int, w: int):
+    """Two heroes (person r, vehicle g) PLUS three non-hero tracks: two share
+    the label 'car' (union test), one is 'dog'."""
+    art = _artifacts_two_heroes(n, h, w)
+    hard = art["sam3_hard_masks"][0]
+    # Two 'car' tracks in different quadrants → mask.car must union them.
+    hard[10] = {"label": "car", "frames": list(range(1, n + 1)),
+                "stack": _rect_stack(n, h, w, 0, h // 4, 0, w // 4)}
+    hard[11] = {"label": "car", "frames": list(range(1, n + 1)),
+                "stack": _rect_stack(n, h, w, 3 * h // 4, h, 3 * w // 4, w)}
+    hard[12] = {"label": "dog", "frames": list(range(1, n + 1)),
+                "stack": _rect_stack(n, h, w, h // 2, h // 2 + 2, w // 2, w // 2 + 2)}
+    return art
+
+
+def test_refine_all_masks_off_emits_no_mask_channels() -> None:
+    """Default: only matte.rgba, never a dynamic mask.<label>."""
+    pass_ = _FakeRVM()  # default refine_all_masks=False
+    pass_.ingest_artifacts(_artifacts_many(3, 16, 24))
+    out = pass_.run_shot(_FakeReader(_plate_frames(3, 16, 24)), frame_range=(1, 3))
+    assert not any(c.startswith(MASK_PREFIX) for c in out[1])
+
+
+def test_refine_all_masks_emits_soft_mask_per_label_with_union() -> None:
+    n, h, w = 3, 16, 24
+    pass_ = _FakeRVM({"refine_all_masks": True})
+    pass_.ingest_artifacts(_artifacts_many(n, h, w))
+    out = pass_.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, n))
+
+    ch = out[1]
+    # Every tracked label gets a soft mask channel — including non-heroes.
+    for label in ("person", "vehicle", "car", "dog"):
+        assert f"{MASK_PREFIX}{label}" in ch, f"missing mask.{label}"
+    # Heroes still packed into matte.rgba.
+    assert CH_MATTE_R in ch and CH_MATTE_G in ch
+
+    # Soft, not hard: the fake halves the mask, so values are 0.5 not 1.0.
+    car = ch[f"{MASK_PREFIX}car"]
+    assert 0.0 < car.max() <= 0.5 + 1e-6
+    # Union: BOTH car quadrants are present in the single mask.car channel.
+    assert car[0, 0] > 0.0  # track 10 (top-left)
+    assert car[-1, -1] > 0.0  # track 11 (bottom-right)
+    # And the gap between them stays empty.
+    assert car[h // 2, w // 2] == 0.0
+
+
+def test_refine_all_masks_does_not_mutate_hero_array() -> None:
+    """The 'person' hero (matte.r) and its mask.person union must be
+    independent arrays — a later union max() must not corrupt the hero."""
+    n, h, w = 3, 16, 24
+    art = _artifacts_two_heroes(n, h, w)
+    # Add a second 'person' track so mask.person unions after the hero is set.
+    art["sam3_hard_masks"][0][20] = {
+        "label": "person", "frames": list(range(1, n + 1)),
+        "stack": _rect_stack(n, h, w, 0, 2, 0, 2),
+    }
+    pass_ = _FakeRVM({"refine_all_masks": True})
+    pass_.ingest_artifacts(art)
+    out = pass_.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, n))
+    # matte.r is the hero person only; mask.person also covers the extra track's
+    # corner (0,0). They must differ there — proving no aliasing.
+    assert out[1][CH_MATTE_R][0, 0] == 0.0  # hero person rect doesn't cover (0,0)
+    assert out[1][f"{MASK_PREFIX}person"][0, 0] > 0.0  # union does
 
 
 def test_emit_artifacts_publishes_matte_heroes_for_metadata() -> None:

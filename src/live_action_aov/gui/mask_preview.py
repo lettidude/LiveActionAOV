@@ -52,13 +52,19 @@ class MaskPreviewWorker(QObject):
         points: list[list[float]],
         labels: list[int],
         box: list[float] | None,
+        refine: bool = False,
+        model_id: str = "",
     ) -> None:
         """Compute the mask for `image_rgb` (H, W, 3 float32 [0,1]) seeded
-        by `points` (image px) / `labels` (1=fg, 0=bg) / optional `box`."""
+        by `points` (image px) / `labels` (1=fg, 0=bg) / optional `box`.
+
+        When `refine` is set, the hard SAM 3 mask is passed through the
+        BiRefNet refiner (`model_id`, or the pass default) so the overlay
+        shows the SOFT result the submit would produce."""
         if self._busy:
             return
         self._busy = True
-        task = _PreviewTask(self, image_rgb, points, labels, box)
+        task = _PreviewTask(self, image_rgb, points, labels, box, refine, model_id)
         self._pool.start(task)
 
     def unload(self) -> None:
@@ -95,6 +101,8 @@ class _PreviewTask(QRunnable):
         points: list[list[float]],
         labels: list[int],
         box: list[float] | None,
+        refine: bool = False,
+        model_id: str = "",
     ) -> None:
         super().__init__()
         self._owner = owner
@@ -102,6 +110,8 @@ class _PreviewTask(QRunnable):
         self._points = points
         self._labels = labels
         self._box = box
+        self._refine = refine
+        self._model_id = model_id
 
     def run(self) -> None:
         try:
@@ -172,6 +182,25 @@ class _PreviewTask(QRunnable):
             while arr.ndim > 2:
                 arr = arr[0]
             out = arr.astype(np.float32, copy=False)
+
+        # Optional soft-edge refinement — run BiRefNet on the seed frame so the
+        # overlay previews the SOFT matte a full submit would produce, not the
+        # hard SAM 3 mask. The refiner instance (and its resident model) is
+        # cached in the engine so re-previews are fast; unload() frees it.
+        if self._refine and float(out.sum()) > 0.0:
+            owner.status.emit("Refining edges (BiRefNet)…")
+            model_id = self._model_id or "ZhengPeng7/BiRefNet-portrait"
+            refiner = eng.get("refiner")
+            if refiner is None or eng.get("refiner_model_id") != model_id:
+                from live_action_aov.passes.matte.birefnet import BiRefNetRefinerPass
+
+                refiner = BiRefNetRefinerPass({"model_id": model_id})
+                eng["refiner"] = refiner
+                eng["refiner_model_id"] = model_id
+            plate = self._image[None].astype(np.float32, copy=False)  # (1, H, W, 3)
+            hard = out[None].astype(np.float32, copy=False)  # (1, H, W)
+            soft = refiner._refine_instance(plate, hard)[0]
+            out = np.clip(soft.astype(np.float32, copy=False), 0.0, 1.0)
         return out
 
 

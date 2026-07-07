@@ -295,9 +295,24 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
     for n in plugin_names:
         if n == "sam3_matte" and sam3_params:
             out.append(PassConfig(name=n, params=sam3_params))
+        elif n in _REFINER_PLUGINS:
+            # Per-shot refiner options: all-masks soft mode + weight choice.
+            rp: dict[str, object] = {}
+            if state.refine_all_masks:
+                rp["refine_all_masks"] = True
+            # Weight choice only applies to the BiRefNet-family pass — RVM /
+            # MatAnyone have their own model_id defaults that must not be
+            # overwritten with a BiRefNet HF id.
+            if state.refiner_model and n == "birefnet_refiner":
+                rp["model_id"] = state.refiner_model
+            out.append(PassConfig(name=n, params=rp) if rp else PassConfig(name=n))
         else:
             out.append(PassConfig(name=n))
     return out
+
+
+#: Soft-matte refiner plugins that accept the `refine_all_masks` param.
+_REFINER_PLUGINS = frozenset({"rvm_refiner", "birefnet_refiner", "matanyone2"})
 
 
 __all__ = ["SubmitResult", "SubmitWorker"]

@@ -55,10 +55,15 @@ class BiRefNetRefinerPass(RVMRefinerPass):
         commercial_use=True,
         commercial_tool_resale=True,
         notes=(
-            "BiRefNet (ZhengPeng7/BiRefNet) is MIT-licensed — inference and "
-            "outputs are commercial-safe, no usage gate. Produces soft alpha "
-            "(roto-grade edges); per-frame, so pair with temporal_smooth on "
-            "noisy plates."
+            "BiRefNet (ZhengPeng7/BiRefNet*) weights are MIT-licensed — "
+            "commercial use granted, no usage gate. CAVEAT for strict client "
+            "provenance review: the default 'portrait' weights (and 'matting') "
+            "are fine-tuned on research/non-commercial datasets (P3M-10k, and "
+            "for matting also Distinctions-646 / AIM-500 / PPM-100). Whether NC "
+            "training data encumbers MIT-tagged weights is legally unsettled; "
+            "industry ships on the weight licence. The general 'ZhengPeng7/"
+            "BiRefNet' (DIS5K) is the most provenance-clean fallback but gives "
+            "harder edges. Soft alpha, per-frame — pair with temporal_smooth."
         ),
     )
 
@@ -67,10 +72,15 @@ class BiRefNetRefinerPass(RVMRefinerPass):
     smoothable_channels = [CH_MATTE_R, CH_MATTE_G, CH_MATTE_B, CH_MATTE_A]
 
     DEFAULT_PARAMS: dict[str, Any] = {
-        # Default to the general BiRefNet weights (definitely present, soft
-        # sigmoid output). Matting-specialised weights (e.g. a *-matting
-        # repo) can be set here for hair-grade alpha once verified.
-        "model_id": "ZhengPeng7/BiRefNet",
+        # Portrait-matting weights by default. Measured A/B on a real plate
+        # (woman, fine blonde hair vs dark car): the general 'ZhengPeng7/
+        # BiRefNet' (DIS5K) gives a HARD blob (~14% soft in the hair band);
+        # 'BiRefNet-portrait' resolves visible soft strands (~21%). Portrait is
+        # tuned for people; for rigid objects 'BiRefNet-matting' is the
+        # general-purpose soft choice, and 'ZhengPeng7/BiRefNet' is the
+        # provenance-clean (but hard) fallback. See the license note re: NC
+        # training data before strict client delivery.
+        "model_id": "ZhengPeng7/BiRefNet-portrait",
         "infer_size": 1024,  # BiRefNet's native inference resolution
         "precision": "fp16",
         "hard_mask_dilate": 5,  # grow the seed before bounding the alpha
@@ -172,8 +182,19 @@ class BiRefNetRefinerPass(RVMRefinerPass):
             alpha_crop = self._birefnet_alpha(crop)
             full = np.zeros((H, W), dtype=np.float32)
             full[y0:y1, x0:x1] = alpha_crop
-            # Bound to our object so BiRefNet can't leak onto a neighbour.
-            out[t] = np.clip(full * dil.astype(np.float32), 0.0, 1.0)
+            # Trimap-style combine: the refiner only decides the EDGE BAND.
+            # - Outward bound: multiply by the dilated hard mask so BiRefNet
+            #   can't leak onto a neighbouring object.
+            # - Inward guarantee: the eroded hard core stays solid 1.0 — if
+            #   BiRefNet under-segments (misses a limb, dims the interior),
+            #   the final mask must NOT erode inside SAM's silhouette. Users
+            #   saw exactly that: every model "ate" the mask interior.
+            core = cv2.erode(binm, kernel) if kernel is not None else binm
+            out[t] = np.clip(
+                np.maximum(full * dil.astype(np.float32), core.astype(np.float32)),
+                0.0,
+                1.0,
+            )
         return out
 
 
