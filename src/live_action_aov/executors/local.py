@@ -173,7 +173,10 @@ class LocalExecutor(Executor):
             reader = wrapped
         else:
             reader = raw_reader
-        writer = ExrSidecarWriter()
+        writer = ExrSidecarWriter(
+            compression=shot.delivery_compression,
+            dtype=shot.delivery_dtype,
+        )
 
         # Shared state published between passes and post-processors.
         artifacts: dict[str, dict[int, Any]] = {}
