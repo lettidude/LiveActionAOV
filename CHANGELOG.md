@@ -4,6 +4,42 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [0.6.0] — 2026-07-07
+
+### Added
+- **Compact EXR delivery** (Output tab): per-shot codec + bit depth. The
+  "Compact - DWAB 16-bit" preset measured ~3.5x smaller on a real 6-pass 2K
+  shot — built for moving sidecars between machines on limited bandwidth.
+  **Cryptomatte auto-splits** into a lossless float32 `.crypto.exr` sibling
+  whenever the chosen delivery would corrupt its exact hash IDs (measured:
+  even a lossless float16 cast breaks the id->name match in Nuke). Defaults
+  unchanged (single lossless float32 file).
+- **Soft edges on ALL masks** (Masks tab): the refiner runs on every
+  detected/clicked object — each `mask.<name>` channel becomes roto-grade
+  soft alpha instead of SAM 3's hard edge (union-by-label preserved). Off by
+  default; costs one refinement per object.
+- **Per-shot refiner model choice** (Masks tab), drives BOTH the seed-frame
+  preview and the submit: BiRefNet Portrait (new default — measured visibly
+  softer hair than the general weights), BiRefNet Matting, BiRefNet General
+  (cleanest training-data provenance), RMBG-2.0 (labelled: paid licence for
+  commercial use). Benchmarked reproducibly in
+  `scripts/benchmark_refiner_weights.py`.
+- **Mask preview is always soft** and gamma-lifted, so semi-transparent
+  regions (motion-blurred hands, hair) read correctly instead of looking
+  eroded.
+
+### Fixed
+- **Refiners can no longer erode the mask interior.** Trimap-style combine:
+  the model only shapes the edge band between erode and dilate; the eroded
+  hard core stays solid 1.0 even if the model under-segments.
+- **Refiner memory: hard-mask stacks stay uint8** end-to-end — the refiner
+  was re-expanding every track's whole-clip stack to float32 on ingest,
+  undoing the v0.5.2 saving (~1.2 GB vs 0.3 GB per 129-frame 1920 track).
+
+### Changed
+- GUI polish: refiner controls consolidated on the Masks tab, "Preview" tab
+  renamed "Colour", Output tab marked session-wide, hint text trimmed.
+
 ## [0.5.2] — 2026-06-23
 
 ### Fixed
@@ -85,6 +121,7 @@ uses [semantic versioning](https://semver.org/).
   alongside the `.python-version` pin from 0.4.1 — belt-and-suspenders so the
   venv is never built against an unsupported system Python.
 
+[0.6.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.6.0
 [0.5.2]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.2
 [0.5.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.1
 [0.5.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.0
