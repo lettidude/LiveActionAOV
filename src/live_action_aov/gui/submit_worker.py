@@ -217,6 +217,8 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
         passes_enabled=list(state.enabled_models),
         output_dir=output_dir,
         proxy_long_edge=state.proxy_long_edge,
+        delivery_compression=state.delivery_compression,
+        delivery_dtype=state.delivery_dtype,
     )
 
 

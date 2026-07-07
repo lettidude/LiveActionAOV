@@ -165,6 +165,13 @@ class ShotState:
     # savings on 4K / 6K plates).
     proxy_long_edge: int | None = None
 
+    # Sidecar delivery: EXR codec + bit depth. Defaults = lossless float32
+    # (historic output). Bandwidth-bound jobs pick a compact lossy delivery
+    # (e.g. dwab:45 + float16) in the Output tab. Cryptomatte is auto-split
+    # to a lossless float32 sibling by the writer when needed.
+    delivery_compression: str = "zip"
+    delivery_dtype: str = "float32"
+
     # Per-shot queue flag. The list panel renders a checkbox beside
     # each shot; Submit local iterates every queued shot in order.
     queued: bool = True

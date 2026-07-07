@@ -85,6 +85,8 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
         "output_subfolder_name": s.output_subfolder_name,
         "output_external_name": s.output_external_name,
         "proxy_long_edge": s.proxy_long_edge,
+        "delivery_compression": s.delivery_compression,
+        "delivery_dtype": s.delivery_dtype,
         "queued": bool(s.queued),
     }
 
@@ -137,6 +139,8 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         output_subfolder_name=str(d.get("output_subfolder_name", "utility")),
         output_external_name=str(d.get("output_external_name", "")),
         proxy_long_edge=d.get("proxy_long_edge"),
+        delivery_compression=str(d.get("delivery_compression", "zip")),
+        delivery_dtype=str(d.get("delivery_dtype", "float32")),
         queued=bool(d.get("queued", True)),
     )
 
