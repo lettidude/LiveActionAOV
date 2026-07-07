@@ -275,10 +275,10 @@ class RVMRefinerPass(UtilityPass):
         # an under-segmenting model can't eat the interior of SAM's mask.
         import cv2
 
-        k = np.ones((2 * dilate_px + 1, 2 * dilate_px + 1), np.uint8) if dilate_px > 0 else None
+        er_k = np.ones((2 * dilate_px + 1, 2 * dilate_px + 1), np.uint8) if dilate_px > 0 else None
         for t in range(T):
             binm = (hard_stack[t] > 0.5).astype(np.uint8)
-            core = cv2.erode(binm, k) if k is not None else binm
+            core = cv2.erode(binm, er_k) if er_k is not None else binm
             out_alpha[t] = np.maximum(out_alpha[t], core.astype(np.float32))
 
         return out_alpha
@@ -314,13 +314,18 @@ class RVMRefinerPass(UtilityPass):
         """Build a track's dense hard-mask stack, refine it to soft alpha,
         and zero frames where the instance is absent. Returns (soft, frames)."""
         track_frames: list[int] = list(track.get("frames") or [])
-        track_stack: np.ndarray = np.asarray(track.get("stack"), dtype=np.float32)
+        # Keep the track's native dtype — SAM 3 ships uint8 (0/1) since
+        # v0.5.2 precisely so consumers don't balloon host RAM; casting the
+        # whole (T, H, W) stack to float32 here would 4x it again (a real
+        # 129-frame 1920-proxy track is ~1.2 GB in float32 vs 0.3 GB uint8).
+        # Torch/cv2 downstream cast per-frame where needed.
+        track_stack: np.ndarray = np.asarray(track.get("stack"))
         if track_stack.ndim != 3 or track_stack.shape[0] != len(track_frames):
             raise ValueError(
                 f"sam3_hard_masks[{track_id}] stack has shape {track_stack.shape}, "
                 f"expected (T={len(track_frames)}, H, W)"
             )
-        dense_hard = np.zeros((n_frames, plate_h, plate_w), dtype=np.float32)
+        dense_hard = np.zeros((n_frames, plate_h, plate_w), dtype=track_stack.dtype)
         for k, f in enumerate(track_frames):
             local = frame_to_local.get(int(f))
             if local is None:
