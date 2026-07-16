@@ -424,17 +424,30 @@ class RVMRefinerPass(UtilityPass):
         # Emit per-frame channel dicts keyed by absolute frame index. Soft
         # `mask.<label>` channels (all-masks mode) override SAM 3's hard ones
         # downstream via the executor's per-pass channel merge.
+        #
+        # `channel_suffix` (e.g. "_vitmatte") renames the emitted layers to
+        # `matte_vitmatte.*` / `mask_vitmatte.<label>` — the compare mode
+        # where several refiners run side by side in one sidecar and must
+        # not overwrite each other. Empty (default) = canonical names.
+        sfx = str(self.params.get("channel_suffix", "") or "")
+
+        def _ch(name: str) -> str:
+            if not sfx:
+                return name
+            layer, chan = name.split(".", 1)
+            return f"{layer}{sfx}.{chan}"
+
         out: dict[int, dict[str, np.ndarray]] = {}
         for i in range(n_frames):
             f = first + i
             d: dict[str, np.ndarray] = {
-                CH_MATTE_R: channel_stacks[CH_MATTE_R][i],
-                CH_MATTE_G: channel_stacks[CH_MATTE_G][i],
-                CH_MATTE_B: channel_stacks[CH_MATTE_B][i],
-                CH_MATTE_A: channel_stacks[CH_MATTE_A][i],
+                _ch(CH_MATTE_R): channel_stacks[CH_MATTE_R][i],
+                _ch(CH_MATTE_G): channel_stacks[CH_MATTE_G][i],
+                _ch(CH_MATTE_B): channel_stacks[CH_MATTE_B][i],
+                _ch(CH_MATTE_A): channel_stacks[CH_MATTE_A][i],
             }
             for label, acc in label_soft.items():
-                d[f"{MASK_PREFIX}{label}"] = acc[i]
+                d[_ch(f"{MASK_PREFIX}{label}")] = acc[i]
             out[f] = d
         return out
 

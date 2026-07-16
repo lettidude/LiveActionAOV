@@ -244,6 +244,20 @@ def test_refine_all_masks_does_not_mutate_hero_array() -> None:
     assert out[1][f"{MASK_PREFIX}person"][0, 0] > 0.0  # union does
 
 
+def test_channel_suffix_renames_layers_for_compare_mode() -> None:
+    """channel_suffix='_rvm' -> matte_rvm.* + mask_rvm.<label>, so several
+    refiners can coexist in one sidecar without overwriting each other."""
+    n, h, w = 3, 16, 24
+    pass_ = _FakeRVM({"refine_all_masks": True, "channel_suffix": "_rvm"})
+    pass_.ingest_artifacts(_artifacts_two_heroes(n, h, w))
+    out = pass_.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, n))
+    ch = out[1]
+    assert "matte_rvm.r" in ch and "matte_rvm.a" in ch
+    assert CH_MATTE_R not in ch  # canonical names NOT emitted in compare mode
+    assert "mask_rvm.person" in ch
+    assert f"{MASK_PREFIX}person" not in ch
+
+
 def test_emit_artifacts_publishes_matte_heroes_for_metadata() -> None:
     n = 4
     h, w = 16, 24

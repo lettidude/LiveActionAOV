@@ -305,6 +305,10 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
             # overwritten with a BiRefNet HF id.
             if state.refiner_model and n == "birefnet_refiner":
                 rp["model_id"] = state.refiner_model
+            # Compare mode: several refiners run side by side — each writes
+            # its own layer so they don't overwrite each other in the EXR.
+            if "sam3_all_refiners" in state.enabled_models:
+                rp["channel_suffix"] = _COMPARE_SUFFIX.get(n, "")
             out.append(PassConfig(name=n, params=rp) if rp else PassConfig(name=n))
         else:
             out.append(PassConfig(name=n))
@@ -312,7 +316,18 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
 
 
 #: Soft-matte refiner plugins that accept the `refine_all_masks` param.
-_REFINER_PLUGINS = frozenset({"rvm_refiner", "birefnet_refiner", "matanyone2"})
+_REFINER_PLUGINS = frozenset(
+    {"rvm_refiner", "birefnet_refiner", "vitmatte_refiner", "matanyone2"}
+)
+
+#: Layer suffix per refiner in compare mode (sam3_all_refiners) — each
+#: engine's output lands in matte_<engine>.* / mask_<engine>.<name>.
+_COMPARE_SUFFIX = {
+    "rvm_refiner": "_rvm",
+    "birefnet_refiner": "_birefnet",
+    "vitmatte_refiner": "_vitmatte",
+    "matanyone2": "_matanyone",
+}
 
 
 __all__ = ["SubmitResult", "SubmitWorker"]
