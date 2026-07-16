@@ -106,6 +106,17 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             True,
             ("sam3_matte", "vitmatte_refiner"),
         ),
+        # Compare mode: run ALL refiners side by side. Each lands in its own
+        # layer (matte_rvm.* / matte_birefnet.* / matte_vitmatte.*, and
+        # mask_<engine>.<name> in all-masks mode) so the comper picks the
+        # best algorithm per shot in Nuke. ~3x refiner time.
+        ModelEntry(
+            "sam3_all_refiners",
+            "SAM3 + ALL refiners (compare, 3x slower)",
+            "SAM-License / MIT",
+            True,
+            ("sam3_matte", "rvm_refiner", "birefnet_refiner", "vitmatte_refiner"),
+        ),
         # SAM3 + MatAnyone2 intentionally withheld from the GUI
         # catalog until the MatAnyone2 refiner's `_refine_instance`
         # is implemented (currently a stub that raises
