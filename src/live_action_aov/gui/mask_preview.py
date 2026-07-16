@@ -54,6 +54,7 @@ class MaskPreviewWorker(QObject):
         box: list[float] | None,
         refine: bool = False,
         model_id: str = "",
+        refiner_kind: str = "birefnet",
     ) -> None:
         """Compute the mask for `image_rgb` (H, W, 3 float32 [0,1]) seeded
         by `points` (image px) / `labels` (1=fg, 0=bg) / optional `box`.
@@ -64,7 +65,7 @@ class MaskPreviewWorker(QObject):
         if self._busy:
             return
         self._busy = True
-        task = _PreviewTask(self, image_rgb, points, labels, box, refine, model_id)
+        task = _PreviewTask(self, image_rgb, points, labels, box, refine, model_id, refiner_kind)
         self._pool.start(task)
 
     def unload(self) -> None:
@@ -103,6 +104,7 @@ class _PreviewTask(QRunnable):
         box: list[float] | None,
         refine: bool = False,
         model_id: str = "",
+        refiner_kind: str = "birefnet",
     ) -> None:
         super().__init__()
         self._owner = owner
@@ -112,6 +114,7 @@ class _PreviewTask(QRunnable):
         self._box = box
         self._refine = refine
         self._model_id = model_id
+        self._refiner_kind = refiner_kind
 
     def run(self) -> None:
         try:
@@ -188,15 +191,27 @@ class _PreviewTask(QRunnable):
         # hard SAM 3 mask. The refiner instance (and its resident model) is
         # cached in the engine so re-previews are fast; unload() frees it.
         if self._refine and float(out.sum()) > 0.0:
-            owner.status.emit("Refining edges (BiRefNet)…")
-            model_id = self._model_id or "ZhengPeng7/BiRefNet-portrait"
+            kind = self._refiner_kind
+            if kind == "vitmatte":
+                # Trimap-guided ViTMatte — model_id is the pass default.
+                owner.status.emit("Refining edges (ViTMatte)…")
+                model_id = "hustvl/vitmatte-base-composition-1k"
+            else:
+                owner.status.emit("Refining edges (BiRefNet)…")
+                model_id = self._model_id or "ZhengPeng7/BiRefNet-portrait"
+            cache_key = f"{kind}:{model_id}"
             refiner = eng.get("refiner")
-            if refiner is None or eng.get("refiner_model_id") != model_id:
-                from live_action_aov.passes.matte.birefnet import BiRefNetRefinerPass
+            if refiner is None or eng.get("refiner_key") != cache_key:
+                if kind == "vitmatte":
+                    from live_action_aov.passes.matte.vitmatte import ViTMatteRefinerPass
 
-                refiner = BiRefNetRefinerPass({"model_id": model_id})
+                    refiner = ViTMatteRefinerPass({})
+                else:
+                    from live_action_aov.passes.matte.birefnet import BiRefNetRefinerPass
+
+                    refiner = BiRefNetRefinerPass({"model_id": model_id})
                 eng["refiner"] = refiner
-                eng["refiner_model_id"] = model_id
+                eng["refiner_key"] = cache_key
             plate = self._image[None].astype(np.float32, copy=False)  # (1, H, W, 3)
             hard = out[None].astype(np.float32, copy=False)  # (1, H, W)
             soft = refiner._refine_instance(plate, hard)[0]

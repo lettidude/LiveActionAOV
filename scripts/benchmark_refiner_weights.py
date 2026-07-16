@@ -83,6 +83,28 @@ def _is_gated_error(exc: BaseException) -> bool:
     return any(k in s for k in ("gated", "401", "restricted", "awaiting", "access to model", "403"))
 
 
+def _run_vitmatte(crop: np.ndarray, hard_crop: np.ndarray) -> np.ndarray:
+    """ViTMatte through the shipping pass: trimap from the hard mask,
+    single-frame stacks, full _refine_instance path."""
+    from live_action_aov.passes.matte.vitmatte import ViTMatteRefinerPass
+
+    p = ViTMatteRefinerPass({})
+    p._model = None
+    alpha = p._refine_instance(crop[None, ...], hard_crop[None, ...].astype(np.float32))[0]
+    p._model = None
+    try:
+        import gc
+
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    return alpha
+
+
 def _run_model(model_id: str, crop: np.ndarray, infer_size: int) -> np.ndarray:
     """Refine one crop through the shipping inference path."""
     from live_action_aov.passes.matte.birefnet import BiRefNetRefinerPass
@@ -160,7 +182,12 @@ def main() -> int:
     for key in [m.strip() for m in args.models.split(",") if m.strip()]:
         model_id = MODELS.get(key, key)
         try:
-            a = _run_model(model_id, crop, args.infer_size)
+            if key == "vitmatte":
+                # Different arch: trimap-guided, native HF (MIT code+weights).
+                model_id = "hustvl/vitmatte-base-composition-1k"
+                a = _run_vitmatte(crop, hard_crop)
+            else:
+                a = _run_model(model_id, crop, args.infer_size)
         except Exception as exc:
             if _is_gated_error(exc):
                 print(f"{key:<12}{model_id:<30}  GATED - accept the licence at "

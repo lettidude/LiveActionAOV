@@ -392,6 +392,44 @@ class InspectorPanel(QWidget):
         passes_block.addWidget(self._sam3_concepts_edit)
         passes_block.addWidget(concepts_hint)
 
+        # Refiner options live HERE with the model choice — what gets
+        # created belongs on the Passes tab. The Masks tab only previews
+        # (it shows a note with the current refiner — the tabs communicate).
+        # BiRefNet weights dropdown: used by the BiRefNet combo; ignored by
+        # ViTMatte (trimap, fixed weights) and RVM.
+        self._refiner_model_combo = QComboBox()
+        self._refiner_model_combo.addItem("BiRefNet Portrait - people/hair (default)", "")
+        self._refiner_model_combo.addItem(
+            "BiRefNet Matting - general soft", "ZhengPeng7/BiRefNet-matting"
+        )
+        self._refiner_model_combo.addItem(
+            "BiRefNet General - hard, cleanest licence", "ZhengPeng7/BiRefNet"
+        )
+        self._refiner_model_combo.addItem(
+            "RMBG-2.0 (BiRefNet arch) - paid licence for commercial", "briaai/RMBG-2.0"
+        )
+        self._refiner_model_combo.setToolTip(
+            "Soft-edge refiner weights for this shot (BiRefNet combos only). "
+            "Used by the Masks-tab preview AND by the submit. Same speed; "
+            "they differ in edge softness (Portrait best on hair) + licence."
+        )
+        self._refiner_model_combo.currentIndexChanged.connect(self._on_refiner_model_changed)
+
+        self._refine_all_check = QCheckBox("Soft edges on ALL masks (slower)")
+        self._refine_all_check.setToolTip(
+            "Refine every detected/clicked object at submit so each mask.<name> "
+            "gets roto-grade soft edges, not just the 4 hero matte slots. "
+            "Costs one refinement per object. The preview is always soft."
+        )
+        self._refine_all_check.toggled.connect(self._on_refine_all_toggled)
+
+        refiner_weights_row = QHBoxLayout()
+        refiner_weights_row.addWidget(QLabel("Refiner weights:"))
+        refiner_weights_row.addWidget(self._refiner_model_combo, stretch=1)
+        passes_block.addSpacing(8)
+        passes_block.addLayout(refiner_weights_row)
+        passes_block.addWidget(self._refine_all_check)
+
         # "Apply to all shots" — one-click broadcast of the active
         # shot's pass selections to every other shot in the queue.
         # Unlike Output (which is always session-wide), Passes stay
@@ -548,38 +586,6 @@ class InspectorPanel(QWidget):
         )
         self._mask_mode_check.toggled.connect(self._on_mask_mode_toggled)
 
-        # Refiner controls live together HERE (not on Passes): everything
-        # about what the masks become — weights choice + all-masks mode —
-        # sits next to the preview that shows the result. The dropdown
-        # drives BOTH the seed-frame preview and the submit. All entries
-        # share the BiRefNet arch (same speed); they differ in edge
-        # character + licence.
-        self._refiner_model_combo = QComboBox()
-        self._refiner_model_combo.addItem("BiRefNet Portrait - people/hair (default)", "")
-        self._refiner_model_combo.addItem(
-            "BiRefNet Matting - general soft", "ZhengPeng7/BiRefNet-matting"
-        )
-        self._refiner_model_combo.addItem(
-            "BiRefNet General - hard, cleanest licence", "ZhengPeng7/BiRefNet"
-        )
-        self._refiner_model_combo.addItem(
-            "RMBG-2.0 (BiRefNet arch) - paid licence for commercial", "briaai/RMBG-2.0"
-        )
-        self._refiner_model_combo.setToolTip(
-            "Soft-edge refiner weights for this shot. Used by 'Preview mask' "
-            "AND by the submit. Same speed for all; they differ in edge "
-            "softness (Portrait best on hair) and licence terms."
-        )
-        self._refiner_model_combo.currentIndexChanged.connect(self._on_refiner_model_changed)
-
-        self._refine_all_check = QCheckBox("Soft edges on ALL masks (slower)")
-        self._refine_all_check.setToolTip(
-            "Refine every detected/clicked object at submit so each mask.<name> "
-            "gets roto-grade soft edges, not just the 4 hero matte slots. "
-            "Costs one refinement per object. The preview is always soft."
-        )
-        self._refine_all_check.toggled.connect(self._on_refine_all_toggled)
-
         self._mask_list = QListWidget()
         self._mask_list.setFixedHeight(140)
         self._mask_list.currentRowChanged.connect(self._on_mask_selected)
@@ -633,14 +639,14 @@ class InspectorPanel(QWidget):
         self._mask_points_warn.setWordWrap(True)
         self._mask_points_warn.setVisible(False)
 
-        masks_layout.addSpacing(10)
-        masks_layout.addWidget(_section_label("Refiner (soft edges)"))
-        refiner_row = QHBoxLayout()
-        refiner_row.addWidget(QLabel("Model:"))
-        refiner_row.addWidget(self._refiner_model_combo, stretch=1)
-        masks_layout.addLayout(refiner_row)
-        masks_layout.addWidget(self._refine_all_check)
         masks_layout.addSpacing(6)
+        # The refiner MODEL choice lives on the Passes tab (what gets
+        # created belongs with the models); this note is how the two tabs
+        # communicate — it always shows what the preview will apply.
+        self._preview_refiner_note = QLabel("")
+        self._preview_refiner_note.setStyleSheet("color: #888; font-size: 8pt;")
+        self._preview_refiner_note.setWordWrap(True)
+        masks_layout.addWidget(self._preview_refiner_note)
         masks_layout.addWidget(self._mask_preview_btn)
         masks_layout.addWidget(self._mask_list)
         masks_layout.addWidget(self._mask_points_warn)
@@ -799,6 +805,7 @@ class InspectorPanel(QWidget):
             self._refiner_model_combo.blockSignals(True)
             self._refiner_model_combo.setCurrentIndex(rm_index)
             self._refiner_model_combo.blockSignals(False)
+            self._update_preview_refiner_note()
 
             # Click-to-mask object list (Masks tab).
             self._refresh_mask_list()
@@ -970,6 +977,28 @@ class InspectorPanel(QWidget):
         if self._building or self._current is None:
             return
         self._current.refiner_model = str(self._refiner_model_combo.itemData(idx) or "")
+        self._update_preview_refiner_note()
+
+    def _update_preview_refiner_note(self) -> None:
+        """Masks-tab note mirroring the Passes-tab refiner choice — how the
+        two tabs communicate without duplicating the control."""
+        shot = self._current
+        if shot is None:
+            self._preview_refiner_note.setText("")
+            return
+        enabled = shot.enabled_models or []
+        if "sam3_vitmatte" in enabled:
+            what = "ViTMatte (trimap)"
+        elif "sam3_birefnet" in enabled:
+            what = self._refiner_model_combo.currentText().split(" - ")[0]
+        elif "sam3_rvm" in enabled:
+            what = "RVM"
+        else:
+            self._preview_refiner_note.setText("No matte model selected (Passes tab).")
+            return
+        self._preview_refiner_note.setText(
+            f"Preview & submit refine with: {what}  (set in Passes tab)"
+        )
 
     def _on_mask_new(self) -> None:
         if self._current is None:
@@ -1123,6 +1152,7 @@ class InspectorPanel(QWidget):
         enabled = [k for k in self._current.enabled_models if k not in category_keys]
         enabled.append(key)
         self._current.enabled_models = enabled
+        self._update_preview_refiner_note()
         self._registry.notify_updated(self._current)
 
     def _on_category_off(self, category: str) -> None:
@@ -1134,6 +1164,7 @@ class InspectorPanel(QWidget):
         self._current.enabled_models = [
             k for k in self._current.enabled_models if k not in category_keys
         ]
+        self._update_preview_refiner_note()
         self._registry.notify_updated(self._current)
 
     def _on_apply_passes_to_all(self) -> None:
