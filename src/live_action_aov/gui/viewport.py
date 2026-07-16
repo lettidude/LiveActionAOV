@@ -399,6 +399,10 @@ class ViewportPanel(QWidget):
         # chosen refiner weights — one extra ~0.3s pass, and what you see is
         # what the submit produces. Model comparison = change the Refiner
         # dropdown and re-preview.
+        # The refiner KIND follows the matte model chosen on the Passes tab
+        # (the tabs "communicate"): ViTMatte combo -> trimap preview,
+        # otherwise BiRefNet with the shot's weight choice.
+        kind = "vitmatte" if "sam3_vitmatte" in (shot.enabled_models or []) else "birefnet"
         self._mask_worker.request(
             image,
             pts,
@@ -406,6 +410,7 @@ class ViewportPanel(QWidget):
             box,
             refine=True,
             model_id=str(shot.refiner_model or ""),
+            refiner_kind=kind,
         )
 
     def release_mask_preview(self) -> None:

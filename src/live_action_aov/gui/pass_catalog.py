@@ -99,6 +99,13 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             True,
             ("sam3_matte", "birefnet_refiner"),
         ),
+        ModelEntry(
+            "sam3_vitmatte",
+            "SAM3 + ViTMatte (trimap soft edges)",
+            "SAM-License / MIT",
+            True,
+            ("sam3_matte", "vitmatte_refiner"),
+        ),
         # SAM3 + MatAnyone2 intentionally withheld from the GUI
         # catalog until the MatAnyone2 refiner's `_refine_instance`
         # is implemented (currently a stub that raises
