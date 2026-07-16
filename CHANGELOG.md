@@ -4,6 +4,36 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [0.7.0] — 2026-07-10
+
+### Added
+- **ViTMatte trimap-guided refiner** ("SAM3 + ViTMatte" in Passes). MIT code
+  AND weights, native HF transformers loader. The trimap is built per frame
+  from SAM 3's hard mask (erode → fg, dilate band → unknown); the model only
+  estimates alpha inside the band, so known regions are respected **by
+  construction** — interior erosion is structurally impossible. Benchmarked
+  on a real plate vs BiRefNet-portrait with the in-repo harness: **+20%
+  soft-edge detail in the hair band** (25.5% vs 21.3%) and cleaner outside it.
+- **"Preview with" selector** (Masks tab): preview the seed-frame mask with
+  ANY refiner engine — ViTMatte / BiRefNet Portrait-Matting-General /
+  RMBG-2.0 / RVM — independently of the run choice, to eye-compare
+  algorithms per shot before committing. Preview-only; "Same as run"
+  mirrors the Passes choice.
+- **Compare mode** ("SAM3 + ALL refiners"): RVM, BiRefNet and ViTMatte all
+  run on the same SAM 3 tracks, each writing its own layer
+  (`matte_rvm.*` / `matte_birefnet.*` / `matte_vitmatte.*`, plus
+  `mask_<engine>.<name>` in all-masks mode) — pick the best algorithm per
+  shot in Nuke. ~3x refiner time.
+
+### Fixed
+- `vitmatte_refiner` was missing from the refiner-params injection set, so
+  the "Refine ALL mask channels" toggle never reached it.
+
+### Changed
+- Passes tab: the BiRefNet weights dropdown is disabled when the selected
+  matte combo doesn't use it; the all-masks checkbox is relabelled to say
+  what it does. The Masks tab notes which engine the run will use.
+
 ## [0.6.0] — 2026-07-07
 
 ### Added
@@ -121,6 +151,7 @@ uses [semantic versioning](https://semver.org/).
   alongside the `.python-version` pin from 0.4.1 — belt-and-suspenders so the
   venv is never built against an unsupported system Python.
 
+[0.7.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.7.0
 [0.6.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.6.0
 [0.5.2]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.2
 [0.5.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.1
