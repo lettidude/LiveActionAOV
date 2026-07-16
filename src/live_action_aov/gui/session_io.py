@@ -69,6 +69,7 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
         "sam3_concepts": s.sam3_concepts,
         "refine_all_masks": bool(s.refine_all_masks),
         "refiner_model": s.refiner_model,
+        "preview_refiner": s.preview_refiner,
         "click_instances": [
             {
                 "name": ci.name,
@@ -133,6 +134,7 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         sam3_concepts=str(d.get("sam3_concepts", "")),
         refine_all_masks=bool(d.get("refine_all_masks", False)),
         refiner_model=str(d.get("refiner_model", "")),
+        preview_refiner=str(d.get("preview_refiner", "auto")),
         click_instances=clicks,
         output_mode=str(d.get("output_mode", "inplace")),
         output_external_root=(None if ext_root is None else Path(str(ext_root))),

@@ -117,6 +117,13 @@ class ShotState:
     # HF model id string (e.g. "ZhengPeng7/BiRefNet-matting").
     refiner_model: str = ""
 
+    # Masks-tab PREVIEW override: which refiner engine the seed-frame
+    # preview applies, independent of the run choice on the Passes tab —
+    # so you can eye-compare algorithms per shot before committing.
+    # "auto" = mirror the run setting. Other values: "vitmatte", "rvm",
+    # "birefnet:<model_id-or-empty-for-default>".
+    preview_refiner: str = "auto"
+
     # --- Legacy M2 surface kept as properties below ---
     # Other code that still references `enabled_passes` / `pass_backends`
     # will need to migrate to `enabled_models` over time. The Inspector
