@@ -17,7 +17,7 @@ of truth (design §2, principle 5).
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from live_action_aov.core.cancel import CancelledError, CancelToken
 from live_action_aov.core.job import Job, PassConfig, Shot, Task
