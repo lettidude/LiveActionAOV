@@ -415,7 +415,7 @@ class InspectorPanel(QWidget):
         )
         self._refiner_model_combo.currentIndexChanged.connect(self._on_refiner_model_changed)
 
-        self._refine_all_check = QCheckBox("Soft edges on ALL masks (slower)")
+        self._refine_all_check = QCheckBox("Refine ALL mask.<name> channels at submit (slower)")
         self._refine_all_check.setToolTip(
             "Refine every detected/clicked object at submit so each mask.<name> "
             "gets roto-grade soft edges, not just the 4 hero matte slots. "
@@ -424,7 +424,8 @@ class InspectorPanel(QWidget):
         self._refine_all_check.toggled.connect(self._on_refine_all_toggled)
 
         refiner_weights_row = QHBoxLayout()
-        refiner_weights_row.addWidget(QLabel("Refiner weights:"))
+        self._refiner_weights_label = QLabel("BiRefNet weights:")
+        refiner_weights_row.addWidget(self._refiner_weights_label)
         refiner_weights_row.addWidget(self._refiner_model_combo, stretch=1)
         passes_block.addSpacing(8)
         passes_block.addLayout(refiner_weights_row)
@@ -640,9 +641,32 @@ class InspectorPanel(QWidget):
         self._mask_points_warn.setVisible(False)
 
         masks_layout.addSpacing(6)
-        # The refiner MODEL choice lives on the Passes tab (what gets
-        # created belongs with the models); this note is how the two tabs
-        # communicate — it always shows what the preview will apply.
+        # PREVIEW engine override — the run refiner is chosen on the Passes
+        # tab; here you can preview with ANY engine to eye-compare per shot
+        # before committing. "Same as run" mirrors the Passes choice.
+        self._preview_refiner_combo = QComboBox()
+        self._preview_refiner_combo.addItem("Same as run (Passes tab)", "auto")
+        self._preview_refiner_combo.addItem("ViTMatte (trimap)", "vitmatte")
+        self._preview_refiner_combo.addItem("BiRefNet Portrait", "birefnet:")
+        self._preview_refiner_combo.addItem(
+            "BiRefNet Matting", "birefnet:ZhengPeng7/BiRefNet-matting"
+        )
+        self._preview_refiner_combo.addItem("BiRefNet General", "birefnet:ZhengPeng7/BiRefNet")
+        self._preview_refiner_combo.addItem("RMBG-2.0", "birefnet:briaai/RMBG-2.0")
+        self._preview_refiner_combo.addItem("RVM", "rvm")
+        self._preview_refiner_combo.setToolTip(
+            "Which refiner the 'Preview mask' button applies — preview-only, "
+            "does NOT change what the submit runs (that's the Passes tab). "
+            "Use it to eye-compare algorithms on this shot, then pick the "
+            "final one in Passes."
+        )
+        self._preview_refiner_combo.currentIndexChanged.connect(self._on_preview_refiner_changed)
+        preview_with_row = QHBoxLayout()
+        preview_with_row.addWidget(QLabel("Preview with:"))
+        preview_with_row.addWidget(self._preview_refiner_combo, stretch=1)
+        masks_layout.addLayout(preview_with_row)
+
+        # Note mirroring what the RUN will use — how the two tabs communicate.
         self._preview_refiner_note = QLabel("")
         self._preview_refiner_note.setStyleSheet("color: #888; font-size: 8pt;")
         self._preview_refiner_note.setWordWrap(True)
@@ -805,6 +829,14 @@ class InspectorPanel(QWidget):
             self._refiner_model_combo.blockSignals(True)
             self._refiner_model_combo.setCurrentIndex(rm_index)
             self._refiner_model_combo.blockSignals(False)
+            pr_index = 0
+            for i in range(self._preview_refiner_combo.count()):
+                if self._preview_refiner_combo.itemData(i) == shot.preview_refiner:
+                    pr_index = i
+                    break
+            self._preview_refiner_combo.blockSignals(True)
+            self._preview_refiner_combo.setCurrentIndex(pr_index)
+            self._preview_refiner_combo.blockSignals(False)
             self._update_preview_refiner_note()
 
             # Click-to-mask object list (Masks tab).
@@ -979,26 +1011,43 @@ class InspectorPanel(QWidget):
         self._current.refiner_model = str(self._refiner_model_combo.itemData(idx) or "")
         self._update_preview_refiner_note()
 
+    def _on_preview_refiner_changed(self, idx: int) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.preview_refiner = str(self._preview_refiner_combo.itemData(idx) or "auto")
+        self._update_preview_refiner_note()
+
     def _update_preview_refiner_note(self) -> None:
-        """Masks-tab note mirroring the Passes-tab refiner choice — how the
-        two tabs communicate without duplicating the control."""
+        """Masks-tab note mirroring the Passes-tab RUN choice, and Passes-tab
+        weights-dropdown enablement — how the two tabs communicate without
+        duplicating controls."""
         shot = self._current
         if shot is None:
             self._preview_refiner_note.setText("")
             return
         enabled = shot.enabled_models or []
+        # The BiRefNet weights dropdown only applies to the BiRefNet combo —
+        # grey it out otherwise so it can't mislead.
+        is_brn = "sam3_birefnet" in enabled
+        self._refiner_model_combo.setEnabled(is_brn)
+        self._refiner_weights_label.setEnabled(is_brn)
+
         if "sam3_vitmatte" in enabled:
             what = "ViTMatte (trimap)"
-        elif "sam3_birefnet" in enabled:
+        elif is_brn:
             what = self._refiner_model_combo.currentText().split(" - ")[0]
         elif "sam3_rvm" in enabled:
             what = "RVM"
         else:
             self._preview_refiner_note.setText("No matte model selected (Passes tab).")
             return
-        self._preview_refiner_note.setText(
-            f"Preview & submit refine with: {what}  (set in Passes tab)"
-        )
+        override = str(shot.preview_refiner or "auto")
+        if override == "auto":
+            self._preview_refiner_note.setText(f"Run refines with: {what}  (set in Passes tab)")
+        else:
+            self._preview_refiner_note.setText(
+                f"Run refines with: {what}  —  preview overridden above"
+            )
 
     def _on_mask_new(self) -> None:
         if self._current is None:

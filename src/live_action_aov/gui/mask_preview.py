@@ -196,6 +196,9 @@ class _PreviewTask(QRunnable):
                 # Trimap-guided ViTMatte — model_id is the pass default.
                 owner.status.emit("Refining edges (ViTMatte)…")
                 model_id = "hustvl/vitmatte-base-composition-1k"
+            elif kind == "rvm":
+                owner.status.emit("Refining edges (RVM)…")
+                model_id = "PeterL1n/RobustVideoMatting"
             else:
                 owner.status.emit("Refining edges (BiRefNet)…")
                 model_id = self._model_id or "ZhengPeng7/BiRefNet-portrait"
@@ -206,6 +209,10 @@ class _PreviewTask(QRunnable):
                     from live_action_aov.passes.matte.vitmatte import ViTMatteRefinerPass
 
                     refiner = ViTMatteRefinerPass({})
+                elif kind == "rvm":
+                    from live_action_aov.passes.matte.rvm import RVMRefinerPass
+
+                    refiner = RVMRefinerPass({})
                 else:
                     from live_action_aov.passes.matte.birefnet import BiRefNetRefinerPass
 

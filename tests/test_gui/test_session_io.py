@@ -47,6 +47,7 @@ def _full_shot(folder: Path) -> ShotState:
         sam3_concepts="person, red car",
         refine_all_masks=True,
         refiner_model="ZhengPeng7/BiRefNet-matting",
+        preview_refiner="vitmatte",
         click_instances=[
             ClickInstance(
                 name="hero",
@@ -92,6 +93,7 @@ def test_shot_dict_roundtrip_preserves_everything(tmp_path: Path) -> None:
     assert restored.sam3_concepts == "person, red car"
     assert restored.refine_all_masks is True
     assert restored.refiner_model == "ZhengPeng7/BiRefNet-matting"
+    assert restored.preview_refiner == "vitmatte"
     assert restored.output_mode == "subfolder"
     assert restored.output_external_root == Path("X:/renders")
     assert restored.output_subfolder_name == "CryptoUpdate"

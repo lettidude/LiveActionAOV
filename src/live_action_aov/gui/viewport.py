@@ -399,17 +399,28 @@ class ViewportPanel(QWidget):
         # chosen refiner weights — one extra ~0.3s pass, and what you see is
         # what the submit produces. Model comparison = change the Refiner
         # dropdown and re-preview.
-        # The refiner KIND follows the matte model chosen on the Passes tab
-        # (the tabs "communicate"): ViTMatte combo -> trimap preview,
-        # otherwise BiRefNet with the shot's weight choice.
-        kind = "vitmatte" if "sam3_vitmatte" in (shot.enabled_models or []) else "birefnet"
+        # Preview engine: the Masks-tab "Preview with" override wins; "auto"
+        # mirrors the run choice from the Passes tab (the tabs communicate).
+        override = str(getattr(shot, "preview_refiner", "auto") or "auto")
+        if override == "auto":
+            enabled = shot.enabled_models or []
+            if "sam3_vitmatte" in enabled:
+                kind, model_id = "vitmatte", ""
+            elif "sam3_rvm" in enabled:
+                kind, model_id = "rvm", ""
+            else:
+                kind, model_id = "birefnet", str(shot.refiner_model or "")
+        elif override.startswith("birefnet:"):
+            kind, model_id = "birefnet", override.split(":", 1)[1]
+        else:
+            kind, model_id = override, ""
         self._mask_worker.request(
             image,
             pts,
             lbls,
             box,
             refine=True,
-            model_id=str(shot.refiner_model or ""),
+            model_id=model_id,
             refiner_kind=kind,
         )
 
