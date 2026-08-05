@@ -184,13 +184,16 @@ def _artifacts_many(n: int, h: int, w: int):
     the label 'car' (union test), one is 'dog'."""
     art = _artifacts_two_heroes(n, h, w)
     hard = art["sam3_hard_masks"][0]
-    # Two 'car' tracks in different quadrants → mask.car must union them.
+    # Two 'car' tracks in different corners -> mask.car must union them.
+    # Placed in the bottom strip, clear of the person (centre) and vehicle
+    # (top-left) rects: overlapping another track would (correctly) trigger
+    # the inter-object exclusion and hide what this fixture wants to test.
     hard[10] = {"label": "car", "frames": list(range(1, n + 1)),
-                "stack": _rect_stack(n, h, w, 0, h // 4, 0, w // 4)}
+                "stack": _rect_stack(n, h, w, 3 * h // 4 + 1, h, 0, w // 4)}
     hard[11] = {"label": "car", "frames": list(range(1, n + 1)),
-                "stack": _rect_stack(n, h, w, 3 * h // 4, h, 3 * w // 4, w)}
+                "stack": _rect_stack(n, h, w, 3 * h // 4 + 1, h, 3 * w // 4, w)}
     hard[12] = {"label": "dog", "frames": list(range(1, n + 1)),
-                "stack": _rect_stack(n, h, w, h // 2, h // 2 + 2, w // 2, w // 2 + 2)}
+                "stack": _rect_stack(n, h, w, 0, 2, 3 * w // 4, w)}
     return art
 
 
@@ -218,8 +221,8 @@ def test_refine_all_masks_emits_soft_mask_per_label_with_union() -> None:
     # Soft, not hard: the fake halves the mask, so values are 0.5 not 1.0.
     car = ch[f"{MASK_PREFIX}car"]
     assert 0.0 < car.max() <= 0.5 + 1e-6
-    # Union: BOTH car quadrants are present in the single mask.car channel.
-    assert car[0, 0] > 0.0  # track 10 (top-left)
+    # Union: BOTH car corners are present in the single mask.car channel.
+    assert car[-1, 2] > 0.0  # track 10 (bottom-left)
     assert car[-1, -1] > 0.0  # track 11 (bottom-right)
     # And the gap between them stays empty.
     assert car[h // 2, w // 2] == 0.0
@@ -231,17 +234,19 @@ def test_refine_all_masks_does_not_mutate_hero_array() -> None:
     n, h, w = 3, 16, 24
     art = _artifacts_two_heroes(n, h, w)
     # Add a second 'person' track so mask.person unions after the hero is set.
+    # Bottom-left corner — clear of the vehicle/person rects, so the
+    # inter-object exclusion doesn't (correctly) zero it out.
     art["sam3_hard_masks"][0][20] = {
         "label": "person", "frames": list(range(1, n + 1)),
-        "stack": _rect_stack(n, h, w, 0, 2, 0, 2),
+        "stack": _rect_stack(n, h, w, 13, 16, 0, 4),
     }
     pass_ = _FakeRVM({"refine_all_masks": True})
     pass_.ingest_artifacts(art)
     out = pass_.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, n))
     # matte.r is the hero person only; mask.person also covers the extra track's
     # corner (0,0). They must differ there — proving no aliasing.
-    assert out[1][CH_MATTE_R][0, 0] == 0.0  # hero person rect doesn't cover (0,0)
-    assert out[1][f"{MASK_PREFIX}person"][0, 0] > 0.0  # union does
+    assert out[1][CH_MATTE_R][15, 2] == 0.0  # hero person rect doesn't cover it
+    assert out[1][f"{MASK_PREFIX}person"][15, 2] > 0.0  # union does
 
 
 def test_channel_suffix_renames_layers_for_compare_mode() -> None:
@@ -256,6 +261,66 @@ def test_channel_suffix_renames_layers_for_compare_mode() -> None:
     assert CH_MATTE_R not in ch  # canonical names NOT emitted in compare mode
     assert "mask_rvm.person" in ch
     assert f"{MASK_PREFIX}person" not in ch
+
+
+def test_inter_object_exclusion_prevents_roto_overlap() -> None:
+    """Field bug: object A's dilated refine band reached over object B, the
+    refiner claimed B's pixels for A too, and the overlapping alphas broke
+    the roto where objects touch. Each object's soft must be ZERO on the
+    other object's (eroded) core — even with a refiner that claims the
+    whole frame."""
+    n, h, w = 2, 32, 48
+    # Two touching rectangles: A left half, B right half.
+    a_stack = _rect_stack(n, h, w, 8, 24, 4, 24)
+    b_stack = _rect_stack(n, h, w, 8, 24, 24, 44)
+    art = {
+        "sam3_hard_masks": {0: {
+            1: {"label": "a", "frames": [1, 2], "stack": a_stack},
+            2: {"label": "b", "frames": [1, 2], "stack": b_stack},
+        }},
+        "sam3_instances": {0: [
+            {"track_id": 1, "slot": "r", "label": "a", "score": 0.9, "frames": [1, 2]},
+            {"track_id": 2, "slot": "g", "label": "b", "score": 0.8, "frames": [1, 2]},
+        ]},
+    }
+
+    class _GreedyRVM(_FakeRVM):
+        def _refine_instance(self, plate_stack, hard_stack):  # type: ignore[override]
+            return np.full(hard_stack.shape, 0.8, np.float32)  # claims EVERYTHING
+
+    p = _GreedyRVM({"refine_all_masks": True})
+    p.ingest_artifacts(art)
+    out = p.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, 2))
+
+    a = out[1][f"{MASK_PREFIX}a"]
+    b = out[1][f"{MASK_PREFIX}b"]
+    # Each object keeps alpha on its own core...
+    assert a[16, 10] > 0.0 and b[16, 40] > 0.0
+    # ...and is ZERO on the other object's core (deep inside, past the seam).
+    assert a[16, 40] == 0.0, "A's matte leaked over B — overlap bug"
+    assert b[16, 10] == 0.0, "B's matte leaked over A — overlap bug"
+
+
+def test_exclusion_can_be_disabled() -> None:
+    n, h, w = 1, 16, 32
+    art = {
+        "sam3_hard_masks": {0: {
+            1: {"label": "a", "frames": [1], "stack": _rect_stack(n, h, w, 4, 12, 2, 14)},
+            2: {"label": "b", "frames": [1], "stack": _rect_stack(n, h, w, 4, 12, 18, 30)},
+        }},
+        "sam3_instances": {0: [
+            {"track_id": 1, "slot": "r", "label": "a", "score": 0.9, "frames": [1]},
+        ]},
+    }
+
+    class _GreedyRVM(_FakeRVM):
+        def _refine_instance(self, plate_stack, hard_stack):  # type: ignore[override]
+            return np.full(hard_stack.shape, 0.8, np.float32)
+
+    p = _GreedyRVM({"refine_all_masks": True, "exclude_other_instances": False})
+    p.ingest_artifacts(art)
+    out = p.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, 1))
+    assert out[1][f"{MASK_PREFIX}a"][8, 24] > 0.0  # old behaviour when opted out
 
 
 def test_emit_artifacts_publishes_matte_heroes_for_metadata() -> None:
