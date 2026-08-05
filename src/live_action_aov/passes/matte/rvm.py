@@ -389,6 +389,44 @@ class RVMRefinerPass(UtilityPass):
             if self._hard_masks.get(int(h["track_id"])) is None:
                 self._refined.append({**h, "refined_frames": [], "missing_hard_mask": True})
 
+        # --- Inter-object exclusion (overlap fix) -------------------------
+        # Each object is refined independently, and its dilated context band
+        # can reach OVER a neighbouring object's hard mask. The refiner then
+        # sees the neighbour's foreground-looking pixels and claims them too
+        # -> two mattes carry alpha in the same region and the roto breaks
+        # exactly where objects touch (field report). Fix: pixels that
+        # confidently belong to ANOTHER tracked object are zeroed out of this
+        # object's soft alpha. A small erode on the neighbour mask leaves a
+        # 1-2px mixing seam so genuinely shared edge pixels can still blend.
+        # `occupancy` counts, per pixel, how many tracks' (eroded) hard masks
+        # cover it; "other objects" for track A = occupancy minus A's own.
+        exclude_others = bool(self.params.get("exclude_other_instances", True))
+        neighbor_erode = max(int(self.params.get("neighbor_exclude_erode", 2)), 0)
+        occupancy: np.ndarray | None = None
+        if exclude_others and len(self._hard_masks) > 1:
+            import cv2
+
+            nk = (
+                np.ones((2 * neighbor_erode + 1, 2 * neighbor_erode + 1), np.uint8)
+                if neighbor_erode
+                else None
+            )
+
+            def _dense_core(tr: dict[str, Any]) -> np.ndarray:
+                dense = np.zeros((n_frames, plate_h, plate_w), dtype=np.uint8)
+                st = np.asarray(tr.get("stack"))
+                for k_i, fr in enumerate(tr.get("frames") or []):
+                    li = frame_to_local.get(int(fr))
+                    if li is None:
+                        continue
+                    b = (st[k_i] > 0.5).astype(np.uint8)
+                    dense[li] = cv2.erode(b, nk) if nk is not None else b
+                return dense
+
+            occupancy = np.zeros((n_frames, plate_h, plate_w), dtype=np.uint8)
+            for tr in self._hard_masks.values():
+                occupancy += _dense_core(tr)
+
         for track_id in order:
             track = self._hard_masks.get(track_id)
             if track is None:
@@ -396,6 +434,9 @@ class RVMRefinerPass(UtilityPass):
             soft, refined_frames = self._refine_track(
                 track, frames, frame_to_local, n_frames, plate_h, plate_w, track_id
             )
+            if occupancy is not None:
+                own = _dense_core(track)
+                soft[(occupancy - own) > 0] = 0.0
             label = str(track.get("label", "") or "")
             slot = hero_slot.get(track_id, "")
             channel = _SLOT_TO_CHANNEL.get(slot)

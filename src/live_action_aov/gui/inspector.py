@@ -439,8 +439,9 @@ class InspectorPanel(QWidget):
         # don't.
         self._apply_passes_btn = QPushButton("Apply passes to all shots")
         self._apply_passes_btn.setToolTip(
-            "Copy the currently-selected model in each category "
-            "(incl. Off choices) to every other shot in the list."
+            "Copy the currently-selected model in each category (incl. Off "
+            "choices), the SAM 3 concepts, the refiner weights choice and "
+            "the 'soft edges on all masks' toggle to every other shot."
         )
         self._apply_passes_btn.clicked.connect(self._on_apply_passes_to_all)
         passes_block.addSpacing(8)
@@ -1217,20 +1218,26 @@ class InspectorPanel(QWidget):
         self._registry.notify_updated(self._current)
 
     def _on_apply_passes_to_all(self) -> None:
-        """Broadcast the active shot's enabled_models list (and the SAM 3
-        concepts that drive Matte + Cryptomatte) to every other shot in
-        the registry. Non-destructive wrt Output etc. — only the pass
-        selection and its concepts are copied."""
+        """Broadcast the active shot's pass selection AND its refiner
+        settings (weights choice, all-masks soft toggle) to every other shot.
+        Field feedback: the refiner options are shot-based, so a user who set
+        "soft edges on all masks" on one shot expected the propagate button
+        to carry it to the batch — it silently didn't. Non-destructive wrt
+        Output etc."""
         if self._current is None:
             return
         source = list(self._current.enabled_models)
         source_concepts = self._current.sam3_concepts
+        src_refine_all = bool(self._current.refine_all_masks)
+        src_refiner_model = self._current.refiner_model
         count = 0
         for shot in self._registry.shots():
             if shot is self._current:
                 continue
             shot.enabled_models = list(source)
             shot.sam3_concepts = source_concepts
+            shot.refine_all_masks = src_refine_all
+            shot.refiner_model = src_refiner_model
             self._registry.notify_updated(shot)
             count += 1
         # Tiny feedback — tooltip-style text in the button so the user
