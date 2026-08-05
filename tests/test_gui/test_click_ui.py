@@ -378,3 +378,17 @@ def test_pixmap_and_overlay_conversions(qapp: QApplication) -> None:
     assert overlay.size().width() == 16
     assert overlay.pixelColor(5, 3).alpha() > 0
     assert overlay.pixelColor(0, 0).alpha() == 0
+
+
+def test_preview_loader_is_serialized_single_thread() -> None:
+    """Scrub crash-proofing: preview decodes MUST run one at a time on a
+    private pool. Concurrent OIIO/OCIO decodes from fast scrubbing raced in
+    native code and hard-crashed (Windows access violation)."""
+    from live_action_aov.gui.preview_loader import PreviewLoader
+
+    loader = PreviewLoader(long_edge=256)
+    assert loader._pool.maxThreadCount() == 1
+    # And it must NOT be the shared global pool.
+    from PySide6.QtCore import QThreadPool
+
+    assert loader._pool is not QThreadPool.globalInstance()

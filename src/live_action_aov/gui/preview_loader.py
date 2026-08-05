@@ -62,7 +62,14 @@ class PreviewLoader(QObject):
         super().__init__()
         self._long_edge = int(long_edge)
         self._next_id = 0
-        self._pool = QThreadPool.globalInstance()
+        # PRIVATE single-thread pool, deliberately. Scrubbing used to fan one
+        # decode task per slider tick onto the GLOBAL pool — N concurrent
+        # OIIO reads + OCIO transforms raced in native code and hard-crashed
+        # on Windows ("access violation") on fast back-and-forth scrubs.
+        # Serialized decoding is also cheaper: the viewport only ever renders
+        # the latest request, so parallel decodes were pure wasted work.
+        self._pool = QThreadPool(self)
+        self._pool.setMaxThreadCount(1)
 
     def request(self, shot: ShotState, frame: int, mode: ViewMode) -> int:
         self._next_id += 1
@@ -74,6 +81,10 @@ class PreviewLoader(QObject):
             mode=mode,
             long_edge=self._long_edge,
             emit_result=self._emit,
+            # Stale check: a queued task whose id is no longer the newest
+            # skips its decode entirely (a fresher scrub position superseded
+            # it while it sat in the queue).
+            is_stale=lambda rid: rid != self._next_id,
         )
         self._pool.start(task)
         return req_id
@@ -93,6 +104,7 @@ class _PreviewTask(QRunnable):
         mode: ViewMode,
         long_edge: int,
         emit_result: Any,
+        is_stale: Any = None,
     ) -> None:
         super().__init__()
         self.request_id = request_id
@@ -101,8 +113,11 @@ class _PreviewTask(QRunnable):
         self.mode = mode
         self.long_edge = long_edge
         self._emit = emit_result
+        self._is_stale = is_stale
 
     def run(self) -> None:
+        if self._is_stale is not None and self._is_stale(self.request_id):
+            return  # superseded while queued — skip the decode entirely
         try:
             result = self._build_result()
         except Exception as e:  # pragma: no cover — reported via result.error
