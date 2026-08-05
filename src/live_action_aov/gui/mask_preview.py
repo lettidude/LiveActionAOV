@@ -203,8 +203,13 @@ class _PreviewTask(QRunnable):
                 owner.status.emit("Refining edges (BiRefNet)…")
                 model_id = self._model_id or "ZhengPeng7/BiRefNet-portrait"
             cache_key = f"{kind}:{model_id}"
-            refiner = eng.get("refiner")
-            if refiner is None or eng.get("refiner_key") != cache_key:
+            # Cache one refiner PER engine/weights key — comparing engines is
+            # the whole point of the "Preview with" dropdown, and a single-slot
+            # cache reloaded weights on every switch (seconds-long hangs that
+            # read as a broken preview). unload() frees them all before Submit.
+            refiners = eng.setdefault("refiners", {})
+            refiner = refiners.get(cache_key)
+            if refiner is None:
                 if kind == "vitmatte":
                     from live_action_aov.passes.matte.vitmatte import ViTMatteRefinerPass
 
@@ -217,8 +222,7 @@ class _PreviewTask(QRunnable):
                     from live_action_aov.passes.matte.birefnet import BiRefNetRefinerPass
 
                     refiner = BiRefNetRefinerPass({"model_id": model_id})
-                eng["refiner"] = refiner
-                eng["refiner_key"] = cache_key
+                refiners[cache_key] = refiner
             plate = self._image[None].astype(np.float32, copy=False)  # (1, H, W, 3)
             hard = out[None].astype(np.float32, copy=False)  # (1, H, W)
             soft = refiner._refine_instance(plate, hard)[0]
