@@ -339,6 +339,22 @@ class ViewportPanel(QWidget):
         if pixmap is None:
             self._canvas.setText("(nothing to show)")
             return
+        # Display-only desqueeze for anamorphic plates: stretch the composed
+        # pixmap horizontally by the pixel aspect so the viewer shows correct
+        # proportions. The PIPELINE stays in pixel space (design §8.2 — we
+        # never desqueeze data); and click->plate mapping is normalized
+        # against this displayed pixmap, so a uniform stretch keeps click
+        # coordinates exact.
+        pa = 1.0
+        if self._current is not None:
+            pa = float(self._current.pixel_aspect or 1.0)
+        if abs(pa - 1.0) > 1e-3:
+            pixmap = pixmap.scaled(
+                max(1, round(pixmap.width() * pa)),
+                pixmap.height(),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
         self._last_composed = pixmap
         self._repaint_canvas()
 
