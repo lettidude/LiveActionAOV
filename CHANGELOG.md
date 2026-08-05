@@ -4,6 +4,20 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [0.7.1] — 2026-07-14
+
+### Fixed
+- **Fast scrubbing no longer hard-crashes the GUI** (Windows access
+  violation). The preview loader started one decode per slider tick on the
+  shared global thread pool — concurrent OIIO/OCIO decodes raced in native
+  code. Decodes are now serialized on a private single-thread pool and
+  superseded queued requests skip their decode entirely.
+- **Anamorphic plates now display desqueezed.** Pixel aspect was detected
+  from the EXR header but the viewer never applied it. Display-only: the
+  pipeline stays in pixel space, and click-to-mask coordinates are
+  unaffected. (If a scan's header carries PixelAspectRatio=1.0 there is
+  nothing to detect — say so and we'll add a manual override.)
+
 ## [0.7.0] — 2026-07-10
 
 ### Added
@@ -151,6 +165,7 @@ uses [semantic versioning](https://semver.org/).
   alongside the `.python-version` pin from 0.4.1 — belt-and-suspenders so the
   venv is never built against an unsupported system Python.
 
+[0.7.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.7.1
 [0.7.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.7.0
 [0.6.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.6.0
 [0.5.2]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.2
