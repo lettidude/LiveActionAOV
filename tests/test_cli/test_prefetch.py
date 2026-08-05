@@ -92,3 +92,52 @@ def test_offline_flag_sets_env(monkeypatch) -> None:
     assert result.exit_code == 0
     assert os.environ.get("HF_HUB_OFFLINE") == "1"
     assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
+
+
+def test_default_prefetch_covers_all_commercial_weight_passes() -> None:
+    """The invariant behind FlamingFrames' BUGREPORT_prefetch: every
+    registered commercial-safe pass that loads weights must be in the
+    default prefetch set, or a plain `liveaov prefetch` prints "all
+    cached" while an --offline run using the missing pass dies — the
+    exact failure prefetch exists to prevent. (vitmatte_refiner and
+    video_depth_anything were both missing when this was reported.)"""
+    from live_action_aov.cli.app import _DEFAULT_PREFETCH, _PREFETCH_EXEMPT
+    from live_action_aov.core.pass_base import UtilityPass
+    from live_action_aov.core.registry import get_registry
+
+    registry = get_registry()
+    uncovered = []
+    for name in registry.list_passes():
+        if name in _DEFAULT_PREFETCH or name in _PREFETCH_EXEMPT:
+            continue
+        if name.startswith("fake_"):  # test fixtures polluting the singleton
+            continue
+        cls = registry.get_pass(name)
+        has_weights = any(
+            "_load_model" in c.__dict__ for c in cls.__mro__ if c is not UtilityPass
+        )
+        if has_weights and cls.declared_license().commercial_use:
+            uncovered.append(name)
+    assert not uncovered, (
+        f"Commercial-safe weight-loading passes missing from _DEFAULT_PREFETCH: "
+        f"{uncovered} — add them (or to _PREFETCH_EXEMPT if truly weight-free)."
+    )
+
+
+def test_warn_uncovered_passes_fires_on_gap(capsys) -> None:
+    from live_action_aov.cli.app import _DEFAULT_PREFETCH, _warn_uncovered_passes
+
+    _warn_uncovered_passes([n for n in _DEFAULT_PREFETCH if n != "vitmatte_refiner"])
+    out = capsys.readouterr().out
+    assert "vitmatte_refiner" in out and "--passes" in out
+
+
+def test_warn_uncovered_passes_silent_when_covered(capsys) -> None:
+    from live_action_aov.cli.app import _DEFAULT_PREFETCH, _warn_uncovered_passes
+    from live_action_aov.core.registry import get_registry
+
+    # Treat this module's fake fixture passes as covered — they pollute the
+    # singleton registry but don't exist in real runs.
+    fakes = [n for n in get_registry().list_passes() if n.startswith("fake_")]
+    _warn_uncovered_passes(list(_DEFAULT_PREFETCH) + fakes)
+    assert capsys.readouterr().out.strip() == ""

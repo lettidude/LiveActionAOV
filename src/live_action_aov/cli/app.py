@@ -91,12 +91,47 @@ def main_callback(
 # when no explicit list is given.
 _DEFAULT_PREFETCH = [
     "depth_anything_v2",
+    "video_depth_anything",
     "dsine",
     "sam3_matte",
     "rvm_refiner",
     "birefnet_refiner",
+    "vitmatte_refiner",
     "flow",
 ]
+
+#: Registered passes that intentionally have no weights to prefetch (no
+#: `_load_model` work) or are known stubs. Used by the coverage warning.
+_PREFETCH_EXEMPT = {"cryptomatte", "matanyone2"}
+
+
+def _warn_uncovered_passes(covered: list[str]) -> None:
+    """Warn when a registered, commercial-safe, weight-loading pass is not in
+    the default prefetch set. This is the anti-regression guard: the default
+    list drifts every time a pass is added (vitmatte_refiner in 0.7.0,
+    video_depth_anything before it), and the gap only ever surfaced later as
+    a failed --offline run - the exact failure prefetch exists to prevent.
+    """
+    from live_action_aov.core.pass_base import UtilityPass
+
+    registry = get_registry()
+    missing: list[str] = []
+    for name in registry.list_passes():
+        if name in covered or name in _PREFETCH_EXEMPT:
+            continue
+        cls = registry.get_pass(name)
+        has_weights = any(
+            "_load_model" in c.__dict__ for c in cls.__mro__ if c is not UtilityPass
+        )
+        if has_weights and cls.declared_license().commercial_use:
+            missing.append(name)
+    if missing:
+        console.print(
+            "[yellow]Warning:[/yellow] these commercial-safe passes are NOT in "
+            f"the default prefetch set and were not fetched: {', '.join(missing)}.\n"
+            f"An --offline run using them will fail. Fetch them with:\n"
+            f"  liveaov prefetch --passes {','.join(missing)}"
+        )
 
 
 @app.command("prefetch")
@@ -129,11 +164,20 @@ def prefetch(
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     registry = get_registry()
     if all_passes:
-        names = [n for n in registry.list_passes() if n != "matanyone2"]  # stub
+        names = [
+            n
+            for n in registry.list_passes()
+            if not getattr(registry.get_pass(n), "stub", False)
+        ]
     elif passes:
         names = [p.strip() for p in passes.split(",") if p.strip()]
     else:
         names = list(_DEFAULT_PREFETCH)
+        # Coverage guard: surface any commercial-safe weight-loading pass the
+        # default set forgot, BEFORE the user trusts "all cached" and goes
+        # offline. (Only for the default set - explicit --passes/--all are
+        # the user's own selection.)
+        _warn_uncovered_passes(names)
 
     ok: list[str] = []
     failed: list[tuple[str, str]] = []

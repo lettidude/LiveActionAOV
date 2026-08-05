@@ -64,6 +64,10 @@ _SLOT_TO_CHANNEL: dict[str, str] = {
 
 class MatAnyone2RefinerPass(UtilityPass):
     name = "matanyone2"
+    #: Real inference not implemented yet (`_refine_instance` raises).
+    #: Prefetch's --all skips stubs via this attribute instead of matching
+    #: on names, so new stubs can't silently drift the skip list.
+    stub = True
     version = "0.1.0"
     license = License(
         spdx="NTU-S-Lab-1.0",
