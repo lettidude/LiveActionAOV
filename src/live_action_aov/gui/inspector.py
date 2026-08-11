@@ -655,6 +655,7 @@ class InspectorPanel(QWidget):
         self._preview_refiner_combo.addItem("BiRefNet General", "birefnet:ZhengPeng7/BiRefNet")
         self._preview_refiner_combo.addItem("RMBG-2.0", "birefnet:briaai/RMBG-2.0")
         self._preview_refiner_combo.addItem("RVM", "rvm")
+        self._preview_refiner_combo.addItem("Chroma Key (green/blue)", "chromakey")
         self._preview_refiner_combo.setToolTip(
             "Which refiner the 'Preview mask' button applies — preview-only, "
             "does NOT change what the submit runs (that's the Passes tab). "
@@ -1033,7 +1034,9 @@ class InspectorPanel(QWidget):
         self._refiner_model_combo.setEnabled(is_brn)
         self._refiner_weights_label.setEnabled(is_brn)
 
-        if "sam3_vitmatte" in enabled:
+        if "sam3_chromakey" in enabled:
+            what = "Chroma Key"
+        elif "sam3_vitmatte" in enabled:
             what = "ViTMatte (trimap)"
         elif is_brn:
             what = self._refiner_model_combo.currentText().split(" - ")[0]
