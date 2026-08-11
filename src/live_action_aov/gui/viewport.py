@@ -420,7 +420,9 @@ class ViewportPanel(QWidget):
         override = str(getattr(shot, "preview_refiner", "auto") or "auto")
         if override == "auto":
             enabled = shot.enabled_models or []
-            if "sam3_vitmatte" in enabled:
+            if "sam3_chromakey" in enabled:
+                kind, model_id = "chromakey", ""
+            elif "sam3_vitmatte" in enabled:
                 kind, model_id = "vitmatte", ""
             elif "sam3_rvm" in enabled:
                 kind, model_id = "rvm", ""

@@ -317,7 +317,7 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
 
 #: Soft-matte refiner plugins that accept the `refine_all_masks` param.
 _REFINER_PLUGINS = frozenset(
-    {"rvm_refiner", "birefnet_refiner", "vitmatte_refiner", "matanyone2"}
+    {"rvm_refiner", "birefnet_refiner", "vitmatte_refiner", "chroma_key", "matanyone2"}
 )
 
 #: Layer suffix per refiner in compare mode (sam3_all_refiners) — each
@@ -326,6 +326,7 @@ _COMPARE_SUFFIX = {
     "rvm_refiner": "_rvm",
     "birefnet_refiner": "_birefnet",
     "vitmatte_refiner": "_vitmatte",
+    "chroma_key": "_key",
     "matanyone2": "_matanyone",
 }
 

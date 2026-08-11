@@ -102,7 +102,7 @@ _DEFAULT_PREFETCH = [
 
 #: Registered passes that intentionally have no weights to prefetch (no
 #: `_load_model` work) or are known stubs. Used by the coverage warning.
-_PREFETCH_EXEMPT = {"cryptomatte", "matanyone2"}
+_PREFETCH_EXEMPT = {"cryptomatte", "matanyone2", "chroma_key"}  # chroma_key: pure maths, no weights
 
 
 def _warn_uncovered_passes(covered: list[str]) -> None:
