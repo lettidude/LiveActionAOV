@@ -73,6 +73,17 @@ FLOW_CHANNELS = (
     CH_BACKWARD_V,
 )
 
+# --- Screen pull (classic chroma key: premult RGBA + alpha) ---
+# The `screen_pull` pass keys the WHOLE plate against the green/blue
+# screen (no SAM involvement): key.a = 1 everywhere that is not screen,
+# key.rgb = despilled plate premultiplied by key.a. A comper drops this
+# straight over a background.
+CH_KEY_R = "key.r"
+CH_KEY_G = "key.g"
+CH_KEY_B = "key.b"
+CH_KEY_A = "key.a"
+KEY_CHANNELS = (CH_KEY_R, CH_KEY_G, CH_KEY_B, CH_KEY_A)
+
 # --- Hero mattes (top-4 soft alpha) ---
 CH_MATTE_R = "matte.r"
 CH_MATTE_G = "matte.g"
@@ -152,6 +163,7 @@ CANONICAL_CHANNEL_ORDER: tuple[str, ...] = (
     *IRRADIANCE_CHANNELS,
     *FLOW_CHANNELS,
     *MATTE_CHANNELS,
+    *KEY_CHANNELS,
     *CRYPTOMATTE_CHANNELS,
 )
 
@@ -176,6 +188,10 @@ __all__ = [
     "CH_IRRADIANCE_B",
     "CH_IRRADIANCE_G",
     "CH_IRRADIANCE_R",
+    "CH_KEY_A",
+    "CH_KEY_B",
+    "CH_KEY_G",
+    "CH_KEY_R",
     "CH_MATTE_A",
     "CH_MATTE_B",
     "CH_MATTE_G",
@@ -197,6 +213,7 @@ __all__ = [
     "DEPTH_CHANNELS",
     "FLOW_CHANNELS",
     "IRRADIANCE_CHANNELS",
+    "KEY_CHANNELS",
     "MASK_PREFIX",
     "MATTE_CHANNELS",
     "NORMAL_CHANNELS",

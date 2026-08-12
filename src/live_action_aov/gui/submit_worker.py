@@ -291,6 +291,12 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
     """
     plugin_names = expand_models(state.enabled_models)
     sam3_params = _sam3_matte_params(state)
+    # Multi-engine mode: when MORE THAN ONE matte refiner is selected
+    # (Matte is multi-select), each engine's layers are auto-namespaced
+    # (matte_<engine>.* / mask_<engine>.<name>) so they can't overwrite
+    # each other. A single engine keeps the canonical names.
+    n_refiners = sum(1 for n in plugin_names if n in _COMPARE_SUFFIX)
+    multi_engine = n_refiners > 1 or "sam3_all_refiners" in state.enabled_models
     out: list[PassConfig] = []
     for n in plugin_names:
         if n == "sam3_matte" and sam3_params:
@@ -307,7 +313,7 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
                 rp["model_id"] = state.refiner_model
             # Compare mode: several refiners run side by side — each writes
             # its own layer so they don't overwrite each other in the EXR.
-            if "sam3_all_refiners" in state.enabled_models:
+            if multi_engine:
                 rp["channel_suffix"] = _COMPARE_SUFFIX.get(n, "")
             out.append(PassConfig(name=n, params=rp) if rp else PassConfig(name=n))
         else:
