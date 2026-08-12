@@ -163,6 +163,7 @@ class RVMRefinerPass(UtilityPass):
             "PeterL1n/RobustVideoMatting",
             variant,
             trust_repo=True,
+            skip_validation=True,
         )
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._dtype = (

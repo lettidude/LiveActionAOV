@@ -80,6 +80,7 @@ from live_action_aov.core.pass_base import (
     TemporalMode,
     UtilityPass,
 )
+from live_action_aov.core.runtime_env import load_local_first
 from live_action_aov.io.channels import CH_N_X, CH_N_Y, CH_N_Z
 from live_action_aov.passes.normals.dsine import _convert_axes
 
@@ -185,19 +186,19 @@ class NormalCrafterPass(UtilityPass):
         # The custom UNet subclass adds NormalCrafter-specific overrides;
         # HF's auto-loader would otherwise instantiate the vanilla
         # `UNetSpatioTemporalConditionModel` and miss them.
-        unet = DiffusersUNetSpatioTemporalConditionModelNormalCrafter.from_pretrained(
+        unet = load_local_first(DiffusersUNetSpatioTemporalConditionModelNormalCrafter.from_pretrained,
             model_id,
             subfolder="unet",
             low_cpu_mem_usage=True,
         )
-        vae = AutoencoderKLTemporalDecoder.from_pretrained(
+        vae = load_local_first(AutoencoderKLTemporalDecoder.from_pretrained,
             model_id,
             subfolder="vae",
         )
         unet.to(dtype=weight_dtype)
         vae.to(dtype=weight_dtype)
 
-        pipe = NormalCrafterPipeline.from_pretrained(
+        pipe = load_local_first(NormalCrafterPipeline.from_pretrained,
             model_id,
             unet=unet,
             vae=vae,

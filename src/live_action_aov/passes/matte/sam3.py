@@ -58,6 +58,7 @@ from live_action_aov.core.pass_base import (
     TemporalMode,
     UtilityPass,
 )
+from live_action_aov.core.runtime_env import load_local_first
 from live_action_aov.io.channels import MASK_PREFIX
 from live_action_aov.passes.matte.rank import (
     HeroOverride,
@@ -279,14 +280,14 @@ class SAM3MattePass(UtilityPass):
         # calls and translate gated-repo / 401 errors into actionable
         # guidance pointing at `docs/install.md`.
         try:
-            self._det_processor = Sam3Processor.from_pretrained(repo)
-            det_model = Sam3Model.from_pretrained(repo)
+            self._det_processor = load_local_first(Sam3Processor.from_pretrained, repo)
+            det_model = load_local_first(Sam3Model.from_pretrained, repo)
             det_model.to(self._device).eval()
             self._det_model = det_model
 
-            self._trk_processor = Sam3TrackerVideoProcessor.from_pretrained(repo)
+            self._trk_processor = load_local_first(Sam3TrackerVideoProcessor.from_pretrained, repo)
             trk_dtype = torch.bfloat16 if self._device.type == "cuda" else torch.float32
-            trk_model = Sam3TrackerVideoModel.from_pretrained(repo, dtype=trk_dtype)
+            trk_model = load_local_first(Sam3TrackerVideoModel.from_pretrained, repo, dtype=trk_dtype)
             trk_model.to(self._device).eval()
             self._trk_model = trk_model
             self._trk_dtype = trk_dtype

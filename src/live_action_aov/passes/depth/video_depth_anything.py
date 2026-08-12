@@ -183,7 +183,9 @@ class VideoDepthAnythingPass(UtilityPass):
                 "mapping and a different checkpoint filename."
             )
 
-        ckpt = hf_hub_download(repo_id=repo, filename=weights_name)
+        from live_action_aov.core.runtime_env import load_local_first
+
+        ckpt = load_local_first(hf_hub_download, repo_id=repo, filename=weights_name)
 
         model = VideoDepthAnything(**cfg, metric=False)
         state = torch.load(ckpt, map_location="cpu", weights_only=False)

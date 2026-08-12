@@ -38,6 +38,7 @@ from typing import Any
 import numpy as np
 
 from live_action_aov.core.pass_base import License
+from live_action_aov.core.runtime_env import load_local_first
 from live_action_aov.io.channels import (
     CH_MATTE_A,
     CH_MATTE_B,
@@ -98,7 +99,7 @@ class BiRefNetRefinerPass(RVMRefinerPass):
             import torch
             from transformers import AutoModelForImageSegmentation
 
-            model = AutoModelForImageSegmentation.from_pretrained(
+            model = load_local_first(AutoModelForImageSegmentation.from_pretrained,
                 str(self.params["model_id"]), trust_remote_code=True
             )
         except ImportError as e:

@@ -25,6 +25,8 @@ from typing import Any
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
+from live_action_aov.core.runtime_env import load_local_first
+
 
 class MaskPreviewWorker(QObject):
     """Async single-frame mask preview. One in-flight request at a time;
@@ -133,8 +135,8 @@ class _PreviewTask(QRunnable):
 
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
-            eng["processor"] = Sam3TrackerVideoProcessor.from_pretrained("facebook/sam3")
-            model: Any = Sam3TrackerVideoModel.from_pretrained("facebook/sam3", dtype=dtype)
+            eng["processor"] = load_local_first(Sam3TrackerVideoProcessor.from_pretrained, "facebook/sam3")
+            model: Any = load_local_first(Sam3TrackerVideoModel.from_pretrained, "facebook/sam3", dtype=dtype)
             model.to(device).eval()
             eng["model"] = model
             eng["device"] = device
