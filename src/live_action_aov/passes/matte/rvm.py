@@ -118,7 +118,11 @@ def clean_mask_specks(mask: np.ndarray, min_frac: float = 0.02, min_px: int = 12
     if n <= 1:
         return binm
     areas = stats[1:, cv2.CC_STAT_AREA]
-    thr = max(int(float(areas.max()) * min_frac), min_px)
+    # Relative threshold with an ABSOLUTE CAP: on a frame-filling object
+    # (a car, ~500k px) an uncapped 2% is ~10k px and starts eating
+    # legitimate structures. Specks are small in absolute terms too.
+    main = float(areas.max())
+    thr = int(np.clip(main * min_frac, min_px, 400))
     keep = np.zeros_like(binm)
     for i in range(1, n):
         if int(stats[i, cv2.CC_STAT_AREA]) >= thr:
@@ -128,8 +132,12 @@ def clean_mask_specks(mask: np.ndarray, min_frac: float = 0.02, min_px: int = 12
     h, w = keep.shape
     inv = (1 - keep).astype(np.uint8)
     n2, lab2, stats2, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
+    # Holes get an even tighter cap: filling a "hole" the size of a car
+    # window or the gap between an arm and the body destroys real
+    # structure (field regression). Only true pinholes are noise.
+    hole_thr = min(thr, 200)
     for i in range(1, n2):
-        if int(stats2[i, cv2.CC_STAT_AREA]) < thr:
+        if int(stats2[i, cv2.CC_STAT_AREA]) < hole_thr:
             x = int(stats2[i, cv2.CC_STAT_LEFT])
             y = int(stats2[i, cv2.CC_STAT_TOP])
             ww = int(stats2[i, cv2.CC_STAT_WIDTH])
