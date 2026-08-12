@@ -677,6 +677,7 @@ class InspectorPanel(QWidget):
         # before committing. "Same as run" mirrors the Passes choice.
         self._preview_refiner_combo = QComboBox()
         self._preview_refiner_combo.addItem("Same as run (Passes tab)", "auto")
+        self._preview_refiner_combo.addItem("SAM3 hard mask (no refiner)", "none")
         self._preview_refiner_combo.addItem("ViTMatte (trimap)", "vitmatte")
         self._preview_refiner_combo.addItem("BiRefNet Portrait", "birefnet:")
         self._preview_refiner_combo.addItem(
