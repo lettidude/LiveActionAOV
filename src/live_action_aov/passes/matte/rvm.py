@@ -91,6 +91,8 @@ def apply_edge_guardrail(
         return soft, False
     # Tight fallback edge: a few px of feather, NOT band-sized mush.
     feathered = cv2.GaussianBlur(binm.astype(np.float32), (0, 0), 3.0)
+    if threshold < 0:  # forced: caller wants the feathered edge regardless
+        return np.clip(np.maximum(feathered, core_m.astype(np.float32)), 0.0, 1.0), True
     tripped = False
     # Engine erased the object? (near-zero where SAM is confidently solid)
     if core_m.any() and float(soft[core_m > 0].mean()) < 0.6:
@@ -456,19 +458,43 @@ class RVMRefinerPass(UtilityPass):
         # soft instead of random. Trimap/chroma engines rarely trip this.
         if bool(self.params.get("fallback_feather", True)):
             thresh = float(self.params.get("fallback_threshold", 0.40))
+            # Decide per TRACK, not per frame: a per-frame decision made the
+            # edge FLIP between engine output and feathered fallback across
+            # frames (visible boiling) and spammed one warning per frame.
+            # First measure which frames would trip, then apply ONE
+            # consistent treatment to the whole track.
+            tripped_frames: list[int] = []
+            candidates: dict[int, np.ndarray] = {}
             for i in range(n_frames):
                 if not present[i]:
                     continue
-                soft[i], tripped = apply_edge_guardrail(soft[i], dense_hard[i], thresh)
+                fixed, tripped = apply_edge_guardrail(soft[i], dense_hard[i], thresh)
+                candidates[i] = fixed
                 if tripped:
-                    _log.warning(
-                        "refiner output diverged from the hard edge on track "
-                        "%d frame-idx %d — falling back to a feathered hard "
-                        "edge (engine likely does not understand this object; "
-                        "try ViTMatte or the chroma key for non-person "
-                        "objects).",
-                        track_id, i,
-                    )
+                    tripped_frames.append(i)
+            n_present = int(present.sum())
+            if tripped_frames and n_present:
+                frac = len(tripped_frames) / n_present
+                if frac >= 0.25:
+                    # The engine is unreliable on this object: feather EVERY
+                    # frame for a temporally consistent (if plainer) edge.
+                    for i in range(n_frames):
+                        if present[i]:
+                            soft[i], _ = apply_edge_guardrail(
+                                soft[i], dense_hard[i], threshold=-1.0
+                            )
+                    treatment = "feathered hard edge on ALL frames"
+                else:
+                    for i in tripped_frames:
+                        soft[i] = candidates[i]
+                    treatment = "feathered those frames"
+                _log.warning(
+                    "refiner diverged from the hard edge on track %d for "
+                    "%d/%d frames — %s (engine likely does not understand "
+                    "this object; try ViTMatte or the chroma key for "
+                    "non-person objects).",
+                    track_id, len(tripped_frames), n_present, treatment,
+                )
         refined_frames = sorted(int(f) for f in track_frames if int(f) in frame_to_local)
         return soft, refined_frames
 
@@ -628,12 +654,16 @@ class RVMRefinerPass(UtilityPass):
         out: dict[int, dict[str, np.ndarray]] = {}
         for i in range(n_frames):
             f = first + i
-            d: dict[str, np.ndarray] = {
-                _ch(CH_MATTE_R): channel_stacks[CH_MATTE_R][i],
-                _ch(CH_MATTE_G): channel_stacks[CH_MATTE_G][i],
-                _ch(CH_MATTE_B): channel_stacks[CH_MATTE_B][i],
-                _ch(CH_MATTE_A): channel_stacks[CH_MATTE_A][i],
-            }
+            d: dict[str, np.ndarray] = {}
+            if pack_heroes:
+                d[_ch(CH_MATTE_R)] = channel_stacks[CH_MATTE_R][i]
+                d[_ch(CH_MATTE_G)] = channel_stacks[CH_MATTE_G][i]
+                d[_ch(CH_MATTE_B)] = channel_stacks[CH_MATTE_B][i]
+                d[_ch(CH_MATTE_A)] = channel_stacks[CH_MATTE_A][i]
+            # pack_heroes=False (a dedicated per-object engine pass): emit
+            # ONLY this pass's mask.<label> channels. Emitting zero matte.*
+            # clobbered the main engine's hero slots in the executor's
+            # channel merge (field bug: matte came out black).
             for label, acc in label_soft.items():
                 d[_ch(f"{MASK_PREFIX}{label}")] = acc[i]
             out[f] = d

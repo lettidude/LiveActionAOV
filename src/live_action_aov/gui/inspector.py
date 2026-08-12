@@ -1031,7 +1031,15 @@ class InspectorPanel(QWidget):
     def _mask_item_text(inst: ClickInstance) -> str:
         n = len(inst.points)
         box = "  ·  box" if inst.box is not None else ""
-        return f"{inst.name}  ·  f{inst.seed_frame}  ·  {n} pt{'s' if n != 1 else ''}{box}"
+        # The engine ON the row: every layer's model visible at a glance
+        # (field feedback — the whole point of per-layer engines).
+        eng_names = {"vitmatte": "ViTMatte", "birefnet": "BiRefNet",
+                     "chromakey": "ChromaKey", "rvm": "RVM"}
+        eng = f"  ·  [{eng_names.get(inst.refiner, inst.refiner)}]" if inst.refiner else ""
+        return (
+            f"{inst.name}  ·  f{inst.seed_frame}  ·  "
+            f"{n} pt{'s' if n != 1 else ''}{box}{eng}"
+        )
 
     def _refresh_mask_list(self) -> None:
         """Repopulate the Masks list from the current shot, preserving the
@@ -1212,6 +1220,9 @@ class InspectorPanel(QWidget):
         else:
             engine = mapping.get(pv, "")  # auto / none -> back to default
         inst.refiner = engine
+        item = self._mask_list.currentItem()
+        if item is not None:
+            item.setText(self._mask_item_text(inst))
         # Mirror in the Engine dropdown below.
         for i in range(self._mask_engine_combo.count()):
             if self._mask_engine_combo.itemData(i) == engine:
@@ -1227,6 +1238,9 @@ class InspectorPanel(QWidget):
         if inst is None:
             return
         inst.refiner = str(self._mask_engine_combo.itemData(idx) or "")
+        item = self._mask_list.currentItem()
+        if item is not None:
+            item.setText(self._mask_item_text(inst))
 
     def _on_mask_name_edited(self, text: str) -> None:
         """Rename the selected object. The name becomes the mask.<name>

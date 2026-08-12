@@ -431,8 +431,9 @@ def test_only_and_skip_labels_route_objects_between_engines() -> None:
     out_b = b.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, n))
     assert f"{MASK_PREFIX}vehicle" in out_b[1]
     assert f"{MASK_PREFIX}person" not in out_b[1]
-    # pack_heroes=False: matte slots stay zero (the main engine owns them).
-    assert float(out_b[1][CH_MATTE_G].sum()) == 0.0
+    # pack_heroes=False: NO matte.* channels emitted at all — zeros would
+    # clobber the main engine's hero slots in the executor merge.
+    assert CH_MATTE_G not in out_b[1] and CH_MATTE_R not in out_b[1]
 
 
 def test_clean_mask_specks_drops_islands_and_fills_holes() -> None:
