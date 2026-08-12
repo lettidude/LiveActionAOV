@@ -98,7 +98,10 @@ def test_catalog_combo_expands_to_sam3_plus_birefnet() -> None:
 
 def test_refine_instance_crops_pastes_and_bounds() -> None:
     n, h, w = 2, 40, 60
-    pass_ = _FakeBiRefNet()
+    # Explicit small band: this test checks the crop/paste/bound mechanics
+    # on a tiny plate — the production default (20px, sized for flying hair)
+    # would reach the corners here and hide what's under test.
+    pass_ = _FakeBiRefNet({"hard_mask_dilate": 5})
     # A central rectangle as the hard mask.
     hard = _rect_stack(n, h, w, 12, 28, 20, 40)
     plate = np.full((n, h, w, 3), 0.5, dtype=np.float32)
