@@ -1036,6 +1036,13 @@ class InspectorPanel(QWidget):
 
         if "sam3_chromakey" in enabled:
             what = "Chroma Key"
+            # The #1 field confusion: users click the SCREEN. Say it here.
+            self._preview_refiner_note.setText(
+                "Chroma Key: seed the SUBJECT (person/object) - the key "
+                "removes the screen around it automatically. Do NOT click "
+                "the green/blue screen itself."
+            )
+            return
         elif "sam3_vitmatte" in enabled:
             what = "ViTMatte (trimap)"
         elif is_brn:
