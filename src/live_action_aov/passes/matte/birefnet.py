@@ -84,7 +84,7 @@ class BiRefNetRefinerPass(RVMRefinerPass):
         "model_id": "ZhengPeng7/BiRefNet-portrait",
         "infer_size": 1024,  # BiRefNet's native inference resolution
         "precision": "fp16",
-        "hard_mask_dilate": 20,  # band reach beyond the SAM edge - must contain flying hair
+        "hard_mask_dilate": "auto",  # adaptive: fraction of object bbox diag (resolution-independent)
         "crop_pad_fraction": 0.12,  # pad the mask bbox before cropping
     }
 
@@ -158,16 +158,23 @@ class BiRefNetRefinerPass(RVMRefinerPass):
 
         self._load_model()
         assert self._model is not None
+        from live_action_aov.passes.matte.rvm import adaptive_band_px
+
         T, H, W, _ = plate_stack.shape
-        dilate = max(int(self.params.get("hard_mask_dilate", 5)), 0)
+        dilate_param = self.params.get("hard_mask_dilate", "auto")
         pad_frac = float(self.params.get("crop_pad_fraction", 0.12))
-        kernel = np.ones((2 * dilate + 1, 2 * dilate + 1), np.uint8) if dilate > 0 else None
 
         out = np.zeros((T, H, W), dtype=np.float32)
         for t in range(T):
             binm = (hard_stack[t] > 0.5).astype(np.uint8)
             if int(binm.sum()) == 0:
                 continue
+            dilate = (
+                adaptive_band_px(binm, 0.06, 8, 64)
+                if dilate_param == "auto"
+                else max(int(dilate_param), 0)
+            )
+            kernel = np.ones((2 * dilate + 1, 2 * dilate + 1), np.uint8) if dilate > 0 else None
             dil = cv2.dilate(binm, kernel) if kernel is not None else binm
             ys, xs = np.nonzero(dil)
             if xs.size == 0:

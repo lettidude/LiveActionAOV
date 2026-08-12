@@ -74,7 +74,7 @@ class ViTMatteRefinerPass(RVMRefinerPass):
         "precision": "fp32",  # ViTMatte is light; fp32 avoids edge banding
         # Trimap construction from the SAM hard mask, in pixels at plate res.
         "fg_erode": 5,  # certain-foreground core
-        "band_dilate": 28,  # unknown band reach - must contain flying hair beyond the SAM edge
+        "band_dilate": "auto",  # adaptive: fraction of object bbox diag (resolution-independent)
         "crop_pad_fraction": 0.12,  # pad the band bbox before cropping
         "max_infer_long_edge": 1600,  # downscale huge crops before the ViT
     }
@@ -148,17 +148,24 @@ class ViTMatteRefinerPass(RVMRefinerPass):
         self._load_model()
         assert self._model is not None
         T, H, W, _ = plate_stack.shape
+        from live_action_aov.passes.matte.rvm import adaptive_band_px
+
         fg_erode = max(int(self.params.get("fg_erode", 5)), 0)
-        band = max(int(self.params.get("band_dilate", 15)), 1)
+        band_param = self.params.get("band_dilate", "auto")
         pad_frac = float(self.params.get("crop_pad_fraction", 0.12))
         k_fg = np.ones((2 * fg_erode + 1, 2 * fg_erode + 1), np.uint8) if fg_erode else None
-        k_band = np.ones((2 * band + 1, 2 * band + 1), np.uint8)
 
         out = np.zeros((T, H, W), dtype=np.float32)
         for t in range(T):
             binm = (hard_stack[t] > 0.5).astype(np.uint8)
             if int(binm.sum()) == 0:
                 continue
+            band = (
+                adaptive_band_px(binm, 0.07, 8, 72)
+                if band_param == "auto"
+                else max(int(band_param), 1)
+            )
+            k_band = np.ones((2 * band + 1, 2 * band + 1), np.uint8)
             fg = cv2.erode(binm, k_fg) if k_fg is not None else binm
             dil = cv2.dilate(binm, k_band)
             trimap = np.zeros((H, W), np.uint8)

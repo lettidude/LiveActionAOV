@@ -38,6 +38,11 @@ def _rect_stack(n: int, h: int, w: int, y0: int, y1: int, x0: int, x1: int) -> n
 
 
 class _FakeBiRefNet(BiRefNetRefinerPass):
+    def __init__(self, params=None):
+        merged = {"fallback_feather": False}
+        merged.update(params or {})
+        super().__init__(merged)
+
     """BiRefNet whose neural call returns a flat alpha of 1.0 for the crop,
     so we can assert the crop → paste → mask-bound geometry exactly."""
 

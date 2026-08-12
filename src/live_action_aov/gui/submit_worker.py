@@ -297,6 +297,15 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
     # each other. A single engine keeps the canonical names.
     n_refiners = sum(1 for n in plugin_names if n in _COMPARE_SUFFIX)
     multi_engine = n_refiners > 1 or "sam3_all_refiners" in state.enabled_models
+    # Per-OBJECT engine routing: click objects may pin their own engine
+    # (ClickInstance.refiner). Those labels are refined by dedicated
+    # engine passes (only_labels) and SKIPPED by the run's main engines,
+    # so each object is refined exactly once, by exactly one engine.
+    assigned: dict[str, list[str]] = {}
+    for ci in state.click_instances:
+        eng_plugin = _OBJECT_ENGINES.get(getattr(ci, "refiner", "") or "")
+        if eng_plugin and ci.name:
+            assigned.setdefault(eng_plugin, []).append(ci.name)
     out: list[PassConfig] = []
     for n in plugin_names:
         if n == "sam3_matte" and sam3_params:
@@ -315,10 +324,38 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
             # its own layer so they don't overwrite each other in the EXR.
             if multi_engine:
                 rp["channel_suffix"] = _COMPARE_SUFFIX.get(n, "")
+            skip = [lab for eng, labs in assigned.items() if eng != n for lab in labs]
+            if skip:
+                rp["skip_labels"] = skip
             out.append(PassConfig(name=n, params=rp) if rp else PassConfig(name=n))
         else:
             out.append(PassConfig(name=n))
+    # Dedicated passes for per-object engine assignments not already
+    # covered by the run's main engines. They emit ONLY those objects'
+    # soft mask.<name> channels (no hero packing, labels are disjoint).
+    for eng_plugin, labels in assigned.items():
+        if eng_plugin in plugin_names:
+            continue  # the main pass keeps those labels (not skipped there)
+        out.append(
+            PassConfig(
+                name=eng_plugin,
+                params={
+                    "only_labels": labels,
+                    "refine_all_masks": True,
+                    "pack_heroes": False,
+                },
+            )
+        )
     return out
+
+
+#: ClickInstance.refiner value -> refiner plugin name (per-object engines).
+_OBJECT_ENGINES = {
+    "vitmatte": "vitmatte_refiner",
+    "birefnet": "birefnet_refiner",
+    "chromakey": "chroma_key",
+    "rvm": "rvm_refiner",
+}
 
 
 #: Soft-matte refiner plugins that accept the `refine_all_masks` param.

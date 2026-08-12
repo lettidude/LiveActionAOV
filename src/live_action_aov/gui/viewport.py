@@ -424,6 +424,19 @@ class ViewportPanel(QWidget):
             self._mask_worker.request(image, pts, lbls, box, refine=False)
             return
         if override == "auto":
+            # The active object's pinned engine takes precedence — the
+            # weight belongs to the layer.
+            inst = self._active_instance
+            pinned = str(getattr(inst, "refiner", "") or "") if inst is not None else ""
+            if pinned == "vitmatte":
+                override = "vitmatte"
+            elif pinned == "chromakey":
+                override = "chromakey"
+            elif pinned == "rvm":
+                override = "rvm"
+            elif pinned == "birefnet":
+                override = "birefnet:"
+        if override == "auto":
             enabled = shot.enabled_models or []
             if "sam3_chromakey" in enabled:
                 kind, model_id = "chromakey", ""
@@ -433,9 +446,9 @@ class ViewportPanel(QWidget):
                 kind, model_id = "rvm", ""
             else:
                 kind, model_id = "birefnet", str(shot.refiner_model or "")
-        elif override.startswith("birefnet:"):
+        if override.startswith("birefnet:"):
             kind, model_id = "birefnet", override.split(":", 1)[1]
-        else:
+        elif override != "auto":
             kind, model_id = override, ""
         self._mask_worker.request(
             image,

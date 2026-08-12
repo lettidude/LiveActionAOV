@@ -709,6 +709,24 @@ class InspectorPanel(QWidget):
         masks_layout.addWidget(self._mask_points_warn)
         masks_layout.addWidget(QLabel("Name:"))
         masks_layout.addWidget(self._mask_name_edit)
+        # Per-object ENGINE: the weight belongs to the LAYER, not the shot —
+        # portrait on the person, trimap/chroma on the car, in one run.
+        self._mask_engine_combo = QComboBox()
+        self._mask_engine_combo.addItem("Default (run engine)", "")
+        self._mask_engine_combo.addItem("ViTMatte (trimap)", "vitmatte")
+        self._mask_engine_combo.addItem("BiRefNet", "birefnet")
+        self._mask_engine_combo.addItem("Chroma Key", "chromakey")
+        self._mask_engine_combo.addItem("RVM", "rvm")
+        self._mask_engine_combo.setToolTip(
+            "Soft-edge engine for THIS object only. Default follows the "
+            "Passes-tab run engine; a pinned engine refines this object's "
+            "mask.<name> at submit and drives its preview."
+        )
+        self._mask_engine_combo.currentIndexChanged.connect(self._on_mask_engine_changed)
+        engine_row = QHBoxLayout()
+        engine_row.addWidget(QLabel("Engine:"))
+        engine_row.addWidget(self._mask_engine_combo, stretch=1)
+        masks_layout.addLayout(engine_row)
         masks_layout.addStretch()
         masks_tab = _scrollable(masks_layout)
 
@@ -1157,7 +1175,24 @@ class InspectorPanel(QWidget):
         self._mask_name_edit.blockSignals(True)
         self._mask_name_edit.setText(inst.name if inst is not None else "")
         self._mask_name_edit.blockSignals(False)
+        want = getattr(inst, "refiner", "") if inst is not None else ""
+        eng_idx = 0
+        for i in range(self._mask_engine_combo.count()):
+            if self._mask_engine_combo.itemData(i) == want:
+                eng_idx = i
+                break
+        self._mask_engine_combo.blockSignals(True)
+        self._mask_engine_combo.setCurrentIndex(eng_idx)
+        self._mask_engine_combo.blockSignals(False)
         self.active_click_instance_changed.emit(inst)
+
+    def _on_mask_engine_changed(self, idx: int) -> None:
+        if self._building or self._current is None:
+            return
+        inst = self._active_mask_instance()
+        if inst is None:
+            return
+        inst.refiner = str(self._mask_engine_combo.itemData(idx) or "")
 
     def _on_mask_name_edited(self, text: str) -> None:
         """Rename the selected object. The name becomes the mask.<name>

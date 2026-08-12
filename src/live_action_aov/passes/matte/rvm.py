@@ -36,6 +36,7 @@ torch or pulling RVM weights.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
@@ -58,12 +59,26 @@ from live_action_aov.io.channels import (
 # Canonical slot -> channel name mapping. Kept here (not in channels.py) so
 # rank.py remains a pure-Python helper with no dependency on the writer's
 # channel contract.
+_log = logging.getLogger(__name__)
+
 _SLOT_TO_CHANNEL: dict[str, str] = {
     "r": CH_MATTE_R,
     "g": CH_MATTE_G,
     "b": CH_MATTE_B,
     "a": CH_MATTE_A,
 }
+
+
+def adaptive_band_px(mask: np.ndarray, frac: float, min_px: int, max_px: int) -> int:
+    """Resolution-independent edge-band width: a fraction of the object's
+    bbox diagonal, clamped. Fixed-pixel bands were arbitrary — the same
+    20px covered 3% of a 720p proxy but 1% of a 2K native frame, and gave
+    a tiny object the same reach as a frame-filling one."""
+    ys, xs = np.nonzero(mask)
+    if ys.size == 0:
+        return min_px
+    diag = float(np.hypot(int(ys.max()) - int(ys.min()) + 1, int(xs.max()) - int(xs.min()) + 1))
+    return int(np.clip(frac * diag, min_px, max_px))
 
 
 class RVMRefinerPass(UtilityPass):
@@ -345,6 +360,40 @@ class RVMRefinerPass(UtilityPass):
         # "if the instance isn't there, the slot is zero".
         present = dense_hard.sum(axis=(1, 2)) > 0.0
         soft[~present] = 0.0
+
+        # --- Sanity guardrail: never ship a "by luck" edge -----------------
+        # Category-biased engines (portrait weights on a car, salient-object
+        # nets on unfamiliar content) can output near-0 or near-1 garbage in
+        # the edge band. If the refined band diverges wildly from the hard
+        # edge, fall back to a FEATHERED HARD EDGE for that frame: honest and
+        # soft instead of random. Trimap/chroma engines rarely trip this.
+        if bool(self.params.get("fallback_feather", True)):
+            import cv2
+
+            thresh = float(self.params.get("fallback_threshold", 0.40))
+            for i in range(n_frames):
+                if not present[i]:
+                    continue
+                binm = (dense_hard[i] > 0.5).astype(np.uint8)
+                band_px = adaptive_band_px(binm, 0.06, 6, 64)
+                kb = np.ones((2 * band_px + 1, 2 * band_px + 1), np.uint8)
+                band = (cv2.dilate(binm, kb) > 0) & (cv2.erode(binm, kb) == 0)
+                if not band.any():
+                    continue
+                sigma = max(band_px / 2.0, 1.0)
+                feathered = cv2.GaussianBlur(binm.astype(np.float32), (0, 0), sigma)
+                divergence = float(np.abs(soft[i][band] - feathered[band]).mean())
+                if divergence > thresh:
+                    _log.warning(
+                        "refiner output diverged from the hard edge "
+                        "(%.2f > %.2f) on track %d frame-idx %d — falling "
+                        "back to a feathered hard edge (engine likely does "
+                        "not understand this object; try ViTMatte or the "
+                        "chroma key for non-person objects).",
+                        divergence, thresh, track_id, i,
+                    )
+                    core_i = cv2.erode(binm, kb).astype(np.float32)
+                    soft[i] = np.clip(np.maximum(feathered, core_i), 0.0, 1.0)
         refined_frames = sorted(int(f) for f in track_frames if int(f) in frame_to_local)
         return soft, refined_frames
 
@@ -428,9 +477,23 @@ class RVMRefinerPass(UtilityPass):
             for tr in self._hard_masks.values():
                 occupancy += _dense_core(tr)
 
+        # Per-object engine routing: when `only_labels` is set, this refiner
+        # instance touches ONLY tracks whose label is in the set — several
+        # refiner passes can then split the objects between them (each object
+        # refined by exactly one engine, no channel collisions).
+        only_labels = self.params.get("only_labels")
+        only = {str(x) for x in only_labels} if only_labels else None
+        skip_labels = self.params.get("skip_labels")
+        skip = {str(x) for x in skip_labels} if skip_labels else set()
+        pack_heroes = bool(self.params.get("pack_heroes", True))
         for track_id in order:
             track = self._hard_masks.get(track_id)
             if track is None:
+                continue
+            lbl = str(track.get("label", ""))
+            if only is not None and lbl not in only:
+                continue
+            if lbl in skip:
                 continue
             soft, refined_frames = self._refine_track(
                 track, frames, frame_to_local, n_frames, plate_h, plate_w, track_id
@@ -441,8 +504,8 @@ class RVMRefinerPass(UtilityPass):
             label = str(track.get("label", "") or "")
             slot = hero_slot.get(track_id, "")
             channel = _SLOT_TO_CHANNEL.get(slot)
-            is_hero = channel is not None
-            if channel is not None:
+            is_hero = channel is not None and pack_heroes
+            if channel is not None and pack_heroes:
                 channel_stacks[channel] = soft
                 h = hero_meta[track_id]
                 self._refined.append(

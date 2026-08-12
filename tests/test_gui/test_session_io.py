@@ -55,7 +55,7 @@ def _full_shot(folder: Path) -> ShotState:
                 points=[(100.5, 200.25, 1), (300.0, 400.0, 0)],
                 box=(10.0, 20.0, 1000.0, 900.0),
             ),
-            ClickInstance(name="prop", seed_frame=1001, points=[(5.0, 6.0, 1)]),
+            ClickInstance(name="prop", seed_frame=1001, points=[(5.0, 6.0, 1)], refiner="vitmatte"),
         ],
         output_mode="subfolder",
         output_external_root=Path("X:/renders"),
@@ -109,6 +109,8 @@ def test_shot_dict_roundtrip_preserves_everything(tmp_path: Path) -> None:
     assert hero.points == [(100.5, 200.25, 1), (300.0, 400.0, 0)]
     assert hero.box == (10.0, 20.0, 1000.0, 900.0)
     assert restored.click_instances[1].box is None
+    assert restored.click_instances[1].refiner == "vitmatte"
+    assert restored.click_instances[0].refiner == ""
     # Runtime state resets — a restored session starts idle.
     assert restored.status == "new"
     assert restored.last_error == ""

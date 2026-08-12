@@ -110,3 +110,23 @@ def test_no_clicks_no_concepts_leaves_defaults() -> None:
     state = _shot(enabled_models=["sam3_rvm"])
     sam3 = next(c for c in _build_pass_configs(state) if c.name == "sam3_matte")
     assert sam3.params == {}
+
+
+def test_per_object_engine_builds_dedicated_pass() -> None:
+    """A click object pinned to ViTMatte gets its own only_labels pass while
+    the run's main engine skips that label."""
+    from live_action_aov.gui.submit_worker import _build_pass_configs
+
+    state = _shot()
+    state.enabled_models = ["sam3_birefnet"]
+    state.refine_all_masks = True
+    state.click_instances = [
+        ClickInstance(name="hero", seed_frame=1, points=[(1.0, 2.0, 1)]),
+        ClickInstance(name="car", seed_frame=1, points=[(3.0, 4.0, 1)], refiner="vitmatte"),
+    ]
+    cfgs = {c.name: c.params for c in _build_pass_configs(state)}
+    assert "birefnet_refiner" in cfgs and "vitmatte_refiner" in cfgs
+    assert cfgs["birefnet_refiner"].get("skip_labels") == ["car"]
+    assert cfgs["vitmatte_refiner"].get("only_labels") == ["car"]
+    assert cfgs["vitmatte_refiner"].get("pack_heroes") is False
+    assert cfgs["vitmatte_refiner"].get("refine_all_masks") is True

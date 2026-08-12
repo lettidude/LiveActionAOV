@@ -45,7 +45,17 @@ def _rect_stack(n: int, h: int, w: int, y0: int, y1: int, x0: int, x1: int) -> n
 
 
 class _FakeRVM(RVMRefinerPass):
-    """Refiner that returns a mild floating-point copy of the hard mask."""
+    """Refiner that returns a mild floating-point copy of the hard mask.
+
+    The sanity guardrail is DISABLED here: these fakes deliberately return
+    unrealistic flat alphas to make assertions easy, and the guardrail
+    (correctly) rejects those in production. It has its own dedicated test.
+    """
+
+    def __init__(self, params=None):
+        merged = {"fallback_feather": False}
+        merged.update(params or {})
+        super().__init__(merged)
 
     def _load_model(self) -> None:  # type: ignore[override]
         self._model = object()
@@ -371,3 +381,55 @@ def test_missing_hard_mask_recorded_not_crashed() -> None:
 def test_smoothable_channels_empty() -> None:
     """RVM is recurrent; auto-smoother must not attach."""
     assert RVMRefinerPass.smoothable_channels == []
+
+
+def test_guardrail_replaces_garbage_band_with_feathered_edge() -> None:
+    """A category-biased engine outputting flat garbage in the band must be
+    caught: the band falls back to a feathered hard edge, never 'by luck'."""
+    n, h, w = 1, 48, 64
+    hard = _rect_stack(n, h, w, 12, 36, 16, 48)
+
+    class _GarbageRVM(RVMRefinerPass):
+        def _load_model(self) -> None:  # type: ignore[override]
+            self._model = object()
+
+        def _refine_instance(self, plate_stack, hard_stack):  # type: ignore[override]
+            return np.ones_like(hard_stack) * 0.95  # nonsense everywhere
+
+    art = {
+        "sam3_hard_masks": {0: {1: {"label": "car", "frames": [1], "stack": hard}}},
+        "sam3_instances": {0: [
+            {"track_id": 1, "slot": "r", "label": "car", "score": 0.9, "frames": [1]}
+        ]},
+    }
+    p = _GarbageRVM()  # guardrail ON (default)
+    p.ingest_artifacts(art)
+    out = p.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, 1))
+    r = out[1][CH_MATTE_R]
+    # Far outside the object: the garbage 0.95 must be GONE (feathered ~0).
+    assert r[2, 2] < 0.05, f"garbage survived the guardrail: {r[2, 2]}"
+    # Interior stays solid, edge is soft (feather), not the flat 0.95.
+    assert r[24, 32] > 0.9
+
+
+def test_only_and_skip_labels_route_objects_between_engines() -> None:
+    """Per-object engine routing: only_labels refines just those labels;
+    skip_labels leaves them for another engine's pass."""
+    n, h, w = 2, 16, 24
+    art = _artifacts_two_heroes(n, h, w)
+
+    # Engine A: skip 'vehicle' (assigned elsewhere).
+    a = _FakeRVM({"refine_all_masks": True, "skip_labels": ["vehicle"]})
+    a.ingest_artifacts(art)
+    out_a = a.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, n))
+    assert f"{MASK_PREFIX}person" in out_a[1]
+    assert f"{MASK_PREFIX}vehicle" not in out_a[1]
+
+    # Engine B: only 'vehicle', no hero packing.
+    b = _FakeRVM({"refine_all_masks": True, "only_labels": ["vehicle"], "pack_heroes": False})
+    b.ingest_artifacts(art)
+    out_b = b.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, n))
+    assert f"{MASK_PREFIX}vehicle" in out_b[1]
+    assert f"{MASK_PREFIX}person" not in out_b[1]
+    # pack_heroes=False: matte slots stay zero (the main engine owns them).
+    assert float(out_b[1][CH_MATTE_G].sum()) == 0.0
