@@ -36,6 +36,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -59,6 +60,12 @@ from PySide6.QtWidgets import (
 from live_action_aov.gui.pass_catalog import PASS_CATALOG
 from live_action_aov.gui.shot_state import ClickInstance, ShotRegistry, ShotState
 from live_action_aov.io.colorspace_detect import SUPPORTED_COLORSPACES
+
+#: Categories where ANY COMBINATION of entries may be enabled together
+#: (checkboxes, no Off radio — all-unchecked means off). When more than one
+#: matte refiner runs, the submit worker auto-namespaces each engine's
+#: layers (matte_<engine>.*) so they can't overwrite each other.
+_MULTI_SELECT_CATEGORIES = {"Matte"}
 
 
 def _category_of(model_key: str) -> str | None:
@@ -265,7 +272,7 @@ class InspectorPanel(QWidget):
         # amber = non-commercial). Flow has one entry + Off; Matte is
         # a single combo + Off; Depth and Normals are where the
         # single-select constraint really matters.
-        self._model_radios: dict[str, QRadioButton] = {}
+        self._model_radios: dict[str, QAbstractButton] = {}
         self._off_radios: dict[str, QRadioButton] = {}
         self._category_groups: dict[str, QButtonGroup] = {}
         # Collapsible section containers so users can hide categories
@@ -303,29 +310,33 @@ class InspectorPanel(QWidget):
             section_layout.setSpacing(4)
             self._category_sections[category] = section
 
-            group = QButtonGroup(self)
-            group.setExclusive(True)
-            self._category_groups[category] = group
+            multi = category in _MULTI_SELECT_CATEGORIES
+            group: QButtonGroup | None = None
+            if not multi:
+                group = QButtonGroup(self)
+                group.setExclusive(True)
+                self._category_groups[category] = group
 
             # "Off" is the default — users opt in per category. Keeping
             # it visible rather than hidden-by-default makes the "I
             # don't want depth right now" intent explicit.
-            off_row = QWidget()
-            off_row.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-            off_layout = QHBoxLayout(off_row)
-            off_layout.setContentsMargins(16, 0, 0, 0)
-            off_layout.setSpacing(6)
-            off_radio = QRadioButton("Off")
-            off_radio.setStyleSheet("color: #888;")
-            off_radio.setChecked(True)
-            off_radio.toggled.connect(
-                lambda checked, cat=category: self._on_category_off(cat) if checked else None
-            )
-            self._off_radios[category] = off_radio
-            group.addButton(off_radio)
-            off_layout.addWidget(off_radio)
-            off_layout.addStretch()
-            section_layout.addWidget(off_row)
+            if not multi and group is not None:
+                off_row = QWidget()
+                off_row.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+                off_layout = QHBoxLayout(off_row)
+                off_layout.setContentsMargins(16, 0, 0, 0)
+                off_layout.setSpacing(6)
+                off_radio = QRadioButton("Off")
+                off_radio.setStyleSheet("color: #888;")
+                off_radio.setChecked(True)
+                off_radio.toggled.connect(
+                    lambda checked, cat=category: self._on_category_off(cat) if checked else None
+                )
+                self._off_radios[category] = off_radio
+                group.addButton(off_radio)
+                off_layout.addWidget(off_radio)
+                off_layout.addStretch()
+                section_layout.addWidget(off_row)
 
             for entry in entries:
                 row = QWidget()
@@ -333,12 +344,22 @@ class InspectorPanel(QWidget):
                 row_layout = QHBoxLayout(row)
                 row_layout.setContentsMargins(16, 0, 0, 0)
                 row_layout.setSpacing(6)
-                radio = QRadioButton(entry.label)
-                radio.toggled.connect(
-                    lambda checked, key=entry.key: self._on_model_selected(key) if checked else None
-                )
+                radio: QAbstractButton
+                if multi:
+                    radio = QCheckBox(entry.label)
+                    radio.toggled.connect(
+                        lambda checked, key=entry.key: self._on_model_multi_toggled(key, checked)
+                    )
+                else:
+                    radio = QRadioButton(entry.label)
+                    radio.toggled.connect(
+                        lambda checked, key=entry.key: (
+                            self._on_model_selected(key) if checked else None
+                        )
+                    )
+                    assert group is not None
+                    group.addButton(radio)
                 self._model_radios[entry.key] = radio
-                group.addButton(radio)
                 row_layout.addWidget(radio)
                 row_layout.addStretch()
                 colour = "#5ec864" if entry.commercial else "#e0a040"
@@ -523,6 +544,15 @@ class InspectorPanel(QWidget):
         preview_layout.addWidget(_section_label("Exposure (EV)"))
         preview_layout.addLayout(exposure_row)
         preview_layout.addWidget(self._auto_ev_label)
+        grade_note = QLabel(
+            "This grade is exactly what the AI models see: matte/key "
+            "quality depends on it. A flat or desaturated view weakens "
+            "screen pulls and soft edges - grade for a punchy, saturated "
+            "image before submitting."
+        )
+        grade_note.setStyleSheet("color: #8a8; font-size: 8pt;")
+        grade_note.setWordWrap(True)
+        preview_layout.addWidget(grade_note)
         preview_layout.addSpacing(12)
         preview_layout.addWidget(self._reset_btn)
         preview_layout.addStretch()
@@ -799,6 +829,13 @@ class InspectorPanel(QWidget):
             # the state alone until the user edits.
             enabled = set(shot.enabled_models)
             for category, entries in PASS_CATALOG.items():
+                if category in _MULTI_SELECT_CATEGORIES:
+                    for entry in entries:
+                        cb = self._model_radios[entry.key]
+                        cb.blockSignals(True)
+                        cb.setChecked(entry.key in enabled)
+                        cb.blockSignals(False)
+                    continue
                 # Block signals on the whole group so programmatic
                 # setChecked doesn't fire the handler and clobber state.
                 group = self._category_groups[category]
@@ -1211,6 +1248,18 @@ class InspectorPanel(QWidget):
         category_keys = {e.key for e in PASS_CATALOG.get(category, [])}
         enabled = [k for k in self._current.enabled_models if k not in category_keys]
         enabled.append(key)
+        self._current.enabled_models = enabled
+        self._update_preview_refiner_note()
+        self._registry.notify_updated(self._current)
+
+    def _on_model_multi_toggled(self, key: str, checked: bool) -> None:
+        """Multi-select category toggle: add/remove `key` independently —
+        any combination of matte engines may run together."""
+        if self._building or self._current is None:
+            return
+        enabled = [k for k in self._current.enabled_models if k != key]
+        if checked:
+            enabled.append(key)
         self._current.enabled_models = enabled
         self._update_preview_refiner_note()
         self._registry.notify_updated(self._current)

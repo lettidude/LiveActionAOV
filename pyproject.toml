@@ -164,6 +164,7 @@ rvm_refiner        = "live_action_aov.passes.matte.rvm:RVMRefinerPass"
 birefnet_refiner   = "live_action_aov.passes.matte.birefnet:BiRefNetRefinerPass"
 vitmatte_refiner   = "live_action_aov.passes.matte.vitmatte:ViTMatteRefinerPass"
 chroma_key         = "live_action_aov.passes.matte.chroma_key:ChromaKeyPass"
+screen_pull        = "live_action_aov.passes.matte.screen_pull:ScreenPullPass"
 matanyone2         = "live_action_aov.passes.matte.matanyone2:MatAnyone2RefinerPass"
 cryptomatte        = "live_action_aov.passes.matte.cryptomatte:CryptomattePass"
 

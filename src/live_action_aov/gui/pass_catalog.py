@@ -136,6 +136,19 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
     # instance, the cryptomatte encoder packs them into Nuke's click-any-
     # object ID format. Commercial follows SAM 3 (SAM-License, military
     # carve-out); the encoder itself is MIT.
+    "Key": [
+        # The KEYER product (distinct from the SAM-bounded chroma_key roto):
+        # keys the WHOLE plate against the green/blue screen. Emits key.rgba
+        # = despilled premultiplied plate + screen-pull alpha. Standalone —
+        # no SAM, no models; auto-detects green vs blue.
+        ModelEntry(
+            "screen_pull",
+            "Screen Pull (premult RGBA + despill)",
+            "MIT",
+            True,
+            ("screen_pull",),
+        ),
+    ],
     "Cryptomatte": [
         ModelEntry(
             "cryptomatte",
