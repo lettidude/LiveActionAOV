@@ -131,3 +131,20 @@ def test_desaturated_screen_still_keys_to_zero() -> None:
     assert soft[0, 16, 20] == 1.0  # subject solid
     # Screen INSIDE the dilated bound — the halo region — must be dead.
     assert soft[0, 16, 40] < 0.05, f"washed-out screen leaked: {soft[0, 16, 40]}"
+
+
+def test_non_screen_neighbour_stays_out_of_the_band() -> None:
+    """Field bug: where the subject borders a NON-screen area (a car), the
+    key kept everything in the dilated band and the matte swallowed the
+    neighbour. Non-screen band pixels must follow SAM's hard edge (0
+    outside the mask), while screen-side edges stay key-soft."""
+    n, h, w = 1, 48, 64
+    plate = _screen_plate(n, h, w, "green")
+    # A grey "car" region to the RIGHT of the subject, outside the mask.
+    plate[:, 8:24, 34:60, :] = 0.25
+    soft = _run(plate, _hard(n, h, w))
+    # Inside the band over the CAR (non-screen, outside SAM) -> excluded.
+    assert soft[0, 16, 38] == 0.0, f"neighbour swallowed: {soft[0, 16, 38]}"
+    # Subject core still solid; screen side (above subject) still keyed out.
+    assert soft[0, 16, 20] == 1.0
+    assert soft[0, 2, 20] < 0.05

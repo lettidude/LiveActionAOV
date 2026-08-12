@@ -92,9 +92,8 @@ class ChromaKeyPass(RVMRefinerPass):
         "key_gain": 1.0,
         "key_lift": 0.02,
         # SAM-bound trimap: outward garbage bound + solid inward core.
-        # The bound is generous by default — the SAM mask may come from a
-        # coarse proxy, and the KEY (not the bound) draws the real edge.
-        "bound_dilate": 20,
+        # "auto" = adaptive (fraction of the object bbox diagonal).
+        "bound_dilate": "auto",
         "core_erode": 6,
     }
 
@@ -156,11 +155,12 @@ class ChromaKeyPass(RVMRefinerPass):
         Output: (T, H, W) float32 soft alpha (key bounded by SAM)."""
         import cv2
 
+        from live_action_aov.passes.matte.rvm import adaptive_band_px
+
         self._load_model()
         T, H, W, _ = plate_stack.shape
-        dil_px = max(int(self.params.get("bound_dilate", 20)), 0)
+        dil_param = self.params.get("bound_dilate", "auto")
         ero_px = max(int(self.params.get("core_erode", 6)), 0)
-        k_dil = np.ones((2 * dil_px + 1, 2 * dil_px + 1), np.uint8) if dil_px else None
         k_ero = np.ones((2 * ero_px + 1, 2 * ero_px + 1), np.uint8) if ero_px else None
         screen_param = str(self.params.get("screen", "auto")).lower()
 
@@ -191,16 +191,25 @@ class ChromaKeyPass(RVMRefinerPass):
                     )
             d_ref = self._screen_reference(plate_stack[t], binm, screen)
             alpha = self._key_alpha(plate_stack[t], screen, d_ref).astype(np.float32)
+            dil_px = (
+                adaptive_band_px(binm, 0.06, 8, 64)
+                if dil_param == "auto"
+                else max(int(dil_param), 0)
+            )
+            k_dil = np.ones((2 * dil_px + 1, 2 * dil_px + 1), np.uint8) if dil_px else None
             dil = cv2.dilate(binm, k_dil) if k_dil is not None else binm
             core = cv2.erode(binm, k_ero) if k_ero is not None else binm
-            # Trimap combine: key draws the edge inside the SAM garbage
-            # bound; the SAM core stays solid (screen-coloured clothing
-            # can't hole the subject).
-            out[t] = np.clip(
-                np.maximum(alpha * dil.astype(np.float32), core.astype(np.float32)),
-                0.0,
-                1.0,
-            )
+            # SCREEN-AWARE edge: a key can only judge pixels against the
+            # SCREEN. Where the band is actually screen-coloured, the key
+            # draws the soft edge (hair over green). Where the band is NOT
+            # screen (the subject borders a car, a wall, another prop), the
+            # key has no opinion — keeping it would swallow the neighbour
+            # into the matte (field bug: wide blobs over the car). There we
+            # fall back to SAM's hard edge, tight.
+            d = self._colour_diff(plate_stack[t], screen)
+            screen_px = d > (0.35 * d_ref)
+            edge = np.where(screen_px, alpha * dil.astype(np.float32), binm.astype(np.float32))
+            out[t] = np.clip(np.maximum(edge, core.astype(np.float32)), 0.0, 1.0)
         return out
 
 

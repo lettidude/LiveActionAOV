@@ -704,7 +704,19 @@ class InspectorPanel(QWidget):
         self._preview_refiner_note.setStyleSheet("color: #888; font-size: 8pt;")
         self._preview_refiner_note.setWordWrap(True)
         masks_layout.addWidget(self._preview_refiner_note)
-        masks_layout.addWidget(self._mask_preview_btn)
+        # Preview + Apply side by side: try engines in the preview, then one
+        # click pins the current preview engine onto the ACTIVE object — no
+        # hunting the Engine dropdown further down.
+        self._apply_engine_btn = QPushButton("Set as engine")
+        self._apply_engine_btn.setToolTip(
+            "Pin the current 'Preview with' engine onto the selected object "
+            "(same as picking it in the Engine dropdown below)."
+        )
+        self._apply_engine_btn.clicked.connect(self._on_apply_preview_engine)
+        pv_row = QHBoxLayout()
+        pv_row.addWidget(self._mask_preview_btn, stretch=1)
+        pv_row.addWidget(self._apply_engine_btn)
+        masks_layout.addLayout(pv_row)
         masks_layout.addWidget(self._mask_list)
         masks_layout.addWidget(self._mask_points_warn)
         masks_layout.addWidget(QLabel("Name:"))
@@ -1185,6 +1197,28 @@ class InspectorPanel(QWidget):
         self._mask_engine_combo.setCurrentIndex(eng_idx)
         self._mask_engine_combo.blockSignals(False)
         self.active_click_instance_changed.emit(inst)
+
+    def _on_apply_preview_engine(self) -> None:
+        """Pin the current preview engine to the active object."""
+        if self._current is None:
+            return
+        inst = self._active_mask_instance()
+        if inst is None:
+            return
+        pv = str(self._preview_refiner_combo.currentData() or "auto")
+        mapping = {"vitmatte": "vitmatte", "rvm": "rvm", "chromakey": "chromakey"}
+        if pv.startswith("birefnet"):
+            engine = "birefnet"
+        else:
+            engine = mapping.get(pv, "")  # auto / none -> back to default
+        inst.refiner = engine
+        # Mirror in the Engine dropdown below.
+        for i in range(self._mask_engine_combo.count()):
+            if self._mask_engine_combo.itemData(i) == engine:
+                self._mask_engine_combo.blockSignals(True)
+                self._mask_engine_combo.setCurrentIndex(i)
+                self._mask_engine_combo.blockSignals(False)
+                break
 
     def _on_mask_engine_changed(self, idx: int) -> None:
         if self._building or self._current is None:
