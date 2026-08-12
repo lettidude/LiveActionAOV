@@ -26,6 +26,8 @@ pulling stable-video-diffusion) to run with no network at all.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
+from typing import Any
 
 
 def apply_hf_network_defaults() -> None:
@@ -38,3 +40,27 @@ def apply_hf_network_defaults() -> None:
 
 
 __all__ = ["apply_hf_network_defaults"]
+
+
+def load_local_first(loader: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Call a HF-style loader CACHE-FIRST: zero network when weights exist.
+
+    TPN-style content machines must not phone home once weights are cached,
+    but Hugging Face's default revalidates over the network on EVERY load
+    (and fails hard when the network is down even with a warm cache — the
+    June outage lost a real batch that way). This helper tries
+    `local_files_only=True` first (pure cache read, no sockets); only a
+    genuine cache MISS falls back to an online download. With
+    HF_HUB_OFFLINE=1 the fallback is disabled and the miss surfaces.
+
+    Works with any loader accepting `local_files_only` (transformers /
+    diffusers `from_pretrained`, `hf_hub_download`).
+    """
+    import os
+
+    try:
+        return loader(*args, **kwargs, local_files_only=True)
+    except Exception:
+        if os.environ.get("HF_HUB_OFFLINE") == "1":
+            raise
+        return loader(*args, **kwargs)

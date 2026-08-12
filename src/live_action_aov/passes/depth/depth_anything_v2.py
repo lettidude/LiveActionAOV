@@ -50,6 +50,7 @@ from live_action_aov.core.pass_base import (
     TemporalMode,
     UtilityPass,
 )
+from live_action_aov.core.runtime_env import load_local_first
 from live_action_aov.io.channels import CH_Z, CH_Z_RAW
 
 # HF model IDs. Small/Base are Apache-2.0 (commercial OK); Large/Giant are
@@ -130,8 +131,8 @@ class DepthAnythingV2Pass(UtilityPass):
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
         repo = _COMMERCIAL_VARIANTS[str(self.params["variant"]).lower()]
-        self._processor = AutoImageProcessor.from_pretrained(repo)
-        model = AutoModelForDepthEstimation.from_pretrained(repo)
+        self._processor = load_local_first(AutoImageProcessor.from_pretrained, repo)
+        model = load_local_first(AutoModelForDepthEstimation.from_pretrained, repo)
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._dtype = (
             torch.float16

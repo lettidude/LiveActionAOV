@@ -154,6 +154,7 @@ class MatAnyone2RefinerPass(UtilityPass):
             str(self.params["model_id"]),
             variant,
             trust_repo=True,
+            skip_validation=True,
         )
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._dtype = (
