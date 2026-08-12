@@ -69,6 +69,31 @@ _SLOT_TO_CHANNEL: dict[str, str] = {
 }
 
 
+def apply_edge_guardrail(
+    soft: np.ndarray, hard: np.ndarray, threshold: float = 0.40
+) -> tuple[np.ndarray, bool]:
+    """Single-frame sanity guardrail (see run_shot): if the refined edge
+    band diverges wildly from a feathered hard edge, return the feathered
+    edge instead. Returns (alpha, tripped)."""
+    import cv2
+
+    binm = (hard > 0.5).astype(np.uint8)
+    if int(binm.sum()) == 0:
+        return soft, False
+    band_px = adaptive_band_px(binm, 0.06, 6, 64)
+    kb = np.ones((2 * band_px + 1, 2 * band_px + 1), np.uint8)
+    band = (cv2.dilate(binm, kb) > 0) & (cv2.erode(binm, kb) == 0)
+    if not band.any():
+        return soft, False
+    sigma = max(band_px / 2.0, 1.0)
+    feathered = cv2.GaussianBlur(binm.astype(np.float32), (0, 0), sigma)
+    divergence = float(np.abs(soft[band] - feathered[band]).mean())
+    if divergence <= threshold:
+        return soft, False
+    core = cv2.erode(binm, kb).astype(np.float32)
+    return np.clip(np.maximum(feathered, core), 0.0, 1.0), True
+
+
 def adaptive_band_px(mask: np.ndarray, frac: float, min_px: int, max_px: int) -> int:
     """Resolution-independent edge-band width: a fraction of the object's
     bbox diagonal, clamped. Fixed-pixel bands were arbitrary — the same
@@ -368,32 +393,20 @@ class RVMRefinerPass(UtilityPass):
         # edge, fall back to a FEATHERED HARD EDGE for that frame: honest and
         # soft instead of random. Trimap/chroma engines rarely trip this.
         if bool(self.params.get("fallback_feather", True)):
-            import cv2
-
             thresh = float(self.params.get("fallback_threshold", 0.40))
             for i in range(n_frames):
                 if not present[i]:
                     continue
-                binm = (dense_hard[i] > 0.5).astype(np.uint8)
-                band_px = adaptive_band_px(binm, 0.06, 6, 64)
-                kb = np.ones((2 * band_px + 1, 2 * band_px + 1), np.uint8)
-                band = (cv2.dilate(binm, kb) > 0) & (cv2.erode(binm, kb) == 0)
-                if not band.any():
-                    continue
-                sigma = max(band_px / 2.0, 1.0)
-                feathered = cv2.GaussianBlur(binm.astype(np.float32), (0, 0), sigma)
-                divergence = float(np.abs(soft[i][band] - feathered[band]).mean())
-                if divergence > thresh:
+                soft[i], tripped = apply_edge_guardrail(soft[i], dense_hard[i], thresh)
+                if tripped:
                     _log.warning(
-                        "refiner output diverged from the hard edge "
-                        "(%.2f > %.2f) on track %d frame-idx %d — falling "
-                        "back to a feathered hard edge (engine likely does "
-                        "not understand this object; try ViTMatte or the "
-                        "chroma key for non-person objects).",
-                        divergence, thresh, track_id, i,
+                        "refiner output diverged from the hard edge on track "
+                        "%d frame-idx %d — falling back to a feathered hard "
+                        "edge (engine likely does not understand this object; "
+                        "try ViTMatte or the chroma key for non-person "
+                        "objects).",
+                        track_id, i,
                     )
-                    core_i = cv2.erode(binm, kb).astype(np.float32)
-                    soft[i] = np.clip(np.maximum(feathered, core_i), 0.0, 1.0)
         refined_frames = sorted(int(f) for f in track_frames if int(f) in frame_to_local)
         return soft, refined_frames
 

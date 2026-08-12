@@ -235,7 +235,19 @@ class _PreviewTask(QRunnable):
             plate = self._image[None].astype(np.float32, copy=False)  # (1, H, W, 3)
             hard = out[None].astype(np.float32, copy=False)  # (1, H, W)
             soft = refiner._refine_instance(plate, hard)[0]
-            out = np.clip(soft.astype(np.float32, copy=False), 0.0, 1.0)
+            soft = np.clip(soft.astype(np.float32, copy=False), 0.0, 1.0)
+            # Same sanity guardrail the submit applies — the preview must
+            # show what the run would produce, including the fallback when
+            # an engine does not understand the object.
+            from live_action_aov.passes.matte.rvm import apply_edge_guardrail
+
+            soft, tripped = apply_edge_guardrail(soft, out)
+            if tripped:
+                owner.status.emit(
+                    "Engine diverged - showing feathered hard edge (try "
+                    "ViTMatte / Chroma Key for this object)"
+                )
+            out = soft
         return out
 
 
