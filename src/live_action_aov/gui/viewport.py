@@ -418,6 +418,11 @@ class ViewportPanel(QWidget):
         # Preview engine: the Masks-tab "Preview with" override wins; "auto"
         # mirrors the run choice from the Passes tab (the tabs communicate).
         override = str(getattr(shot, "preview_refiner", "auto") or "auto")
+        if override == "none":
+            # Debug view: the RAW SAM 3 hard mask, no refinement — the tool
+            # for telling "SAM got it wrong" apart from "the refiner broke it".
+            self._mask_worker.request(image, pts, lbls, box, refine=False)
+            return
         if override == "auto":
             enabled = shot.enabled_models or []
             if "sam3_chromakey" in enabled:
