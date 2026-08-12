@@ -86,6 +86,11 @@ class BiRefNetRefinerPass(RVMRefinerPass):
         "precision": "fp16",
         "hard_mask_dilate": "auto",  # adaptive: fraction of object bbox diag (resolution-independent)
         "crop_pad_fraction": 0.12,  # pad the mask bbox before cropping
+        # Inward solid core: SMALL and independent of the band radius. The
+        # band is for REACH (hair beyond the SAM edge); eroding the core by
+        # the same radius destroyed hole-riddled masks (a reflective car:
+        # 64px erode of a holey mask = empty core, no interior guarantee).
+        "core_erode": 4,
     }
 
     # ------------------------------------------------------------------
@@ -197,7 +202,9 @@ class BiRefNetRefinerPass(RVMRefinerPass):
             #   BiRefNet under-segments (misses a limb, dims the interior),
             #   the final mask must NOT erode inside SAM's silhouette. Users
             #   saw exactly that: every model "ate" the mask interior.
-            core = cv2.erode(binm, kernel) if kernel is not None else binm
+            ce = max(int(self.params.get("core_erode", 4)), 0)
+            k_core = np.ones((2 * ce + 1, 2 * ce + 1), np.uint8) if ce else None
+            core = cv2.erode(binm, k_core) if k_core is not None else binm
             out[t] = np.clip(
                 np.maximum(full * dil.astype(np.float32), core.astype(np.float32)),
                 0.0,

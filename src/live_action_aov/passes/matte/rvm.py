@@ -82,16 +82,25 @@ def apply_edge_guardrail(
         return soft, False
     band_px = adaptive_band_px(binm, 0.06, 6, 64)
     kb = np.ones((2 * band_px + 1, 2 * band_px + 1), np.uint8)
-    band = (cv2.dilate(binm, kb) > 0) & (cv2.erode(binm, kb) == 0)
+    # Small, band-independent core: eroding by the band radius destroys
+    # hole-riddled masks (reflective car). 4px keeps the object solid.
+    kc = np.ones((9, 9), np.uint8)
+    core_m = cv2.erode(binm, kc)
+    band = (cv2.dilate(binm, kb) > 0) & (core_m == 0)
     if not band.any():
         return soft, False
-    sigma = max(band_px / 2.0, 1.0)
-    feathered = cv2.GaussianBlur(binm.astype(np.float32), (0, 0), sigma)
-    divergence = float(np.abs(soft[band] - feathered[band]).mean())
-    if divergence <= threshold:
+    # Tight fallback edge: a few px of feather, NOT band-sized mush.
+    feathered = cv2.GaussianBlur(binm.astype(np.float32), (0, 0), 3.0)
+    tripped = False
+    # Engine erased the object? (near-zero where SAM is confidently solid)
+    if core_m.any() and float(soft[core_m > 0].mean()) < 0.6:
+        tripped = True
+    else:
+        divergence = float(np.abs(soft[band] - feathered[band]).mean())
+        tripped = divergence > threshold
+    if not tripped:
         return soft, False
-    core = cv2.erode(binm, kb).astype(np.float32)
-    return np.clip(np.maximum(feathered, core), 0.0, 1.0), True
+    return np.clip(np.maximum(feathered, core_m.astype(np.float32)), 0.0, 1.0), True
 
 
 def adaptive_band_px(mask: np.ndarray, frac: float, min_px: int, max_px: int) -> int:

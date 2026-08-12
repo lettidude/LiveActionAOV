@@ -162,7 +162,7 @@ def test_output_bitwise_matches_rvm_for_same_fake_refine() -> None:
     # Exclusion off for parity: RVM's inter-object overlap exclusion is a
     # newer behaviour MatAnyone2's (stub) run_shot doesn't implement — the
     # parity contract under test is the shared slot/zeroing machinery.
-    b = _FakeRVM({"exclude_other_instances": False})
+    b = _FakeRVM({"exclude_other_instances": False, "fallback_feather": False})
     b.ingest_artifacts(artifacts)
     b_out = b.run_shot(_FakeReader(plates), frame_range=(1, n))
 
