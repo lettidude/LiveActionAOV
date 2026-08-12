@@ -73,7 +73,7 @@ class ViTMatteRefinerPass(RVMRefinerPass):
         "precision": "fp32",  # ViTMatte is light; fp32 avoids edge banding
         # Trimap construction from the SAM hard mask, in pixels at plate res.
         "fg_erode": 5,  # certain-foreground core
-        "band_dilate": 15,  # unknown band reach beyond the hard edge
+        "band_dilate": 28,  # unknown band reach - must contain flying hair beyond the SAM edge
         "crop_pad_fraction": 0.12,  # pad the band bbox before cropping
         "max_infer_long_edge": 1600,  # downscale huge crops before the ViT
     }

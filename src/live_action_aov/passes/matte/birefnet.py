@@ -83,7 +83,7 @@ class BiRefNetRefinerPass(RVMRefinerPass):
         "model_id": "ZhengPeng7/BiRefNet-portrait",
         "infer_size": 1024,  # BiRefNet's native inference resolution
         "precision": "fp16",
-        "hard_mask_dilate": 5,  # grow the seed before bounding the alpha
+        "hard_mask_dilate": 20,  # band reach beyond the SAM edge - must contain flying hair
         "crop_pad_fraction": 0.12,  # pad the mask bbox before cropping
     }
 
