@@ -161,7 +161,7 @@ class ViTMatteRefinerPass(RVMRefinerPass):
             if int(binm.sum()) == 0:
                 continue
             band = (
-                adaptive_band_px(binm, 0.07, 8, 72)
+                adaptive_band_px(binm, 0.18, 8, 72)
                 if band_param == "auto"
                 else max(int(band_param), 1)
             )

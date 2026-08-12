@@ -175,7 +175,7 @@ class BiRefNetRefinerPass(RVMRefinerPass):
             if int(binm.sum()) == 0:
                 continue
             dilate = (
-                adaptive_band_px(binm, 0.06, 8, 64)
+                adaptive_band_px(binm, 0.16, 8, 64)
                 if dilate_param == "auto"
                 else max(int(dilate_param), 0)
             )

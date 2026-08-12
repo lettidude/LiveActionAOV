@@ -192,7 +192,7 @@ class ChromaKeyPass(RVMRefinerPass):
             d_ref = self._screen_reference(plate_stack[t], binm, screen)
             alpha = self._key_alpha(plate_stack[t], screen, d_ref).astype(np.float32)
             dil_px = (
-                adaptive_band_px(binm, 0.06, 8, 64)
+                adaptive_band_px(binm, 0.16, 8, 64)
                 if dil_param == "auto"
                 else max(int(dil_param), 0)
             )

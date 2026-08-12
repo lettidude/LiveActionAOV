@@ -80,7 +80,7 @@ def apply_edge_guardrail(
     binm = (hard > 0.5).astype(np.uint8)
     if int(binm.sum()) == 0:
         return soft, False
-    band_px = adaptive_band_px(binm, 0.06, 6, 64)
+    band_px = adaptive_band_px(binm, 0.16, 6, 64)
     kb = np.ones((2 * band_px + 1, 2 * band_px + 1), np.uint8)
     # Small, band-independent core: eroding by the band radius destroys
     # hole-riddled masks (reflective car). 4px keeps the object solid.
@@ -103,16 +103,15 @@ def apply_edge_guardrail(
     return np.clip(np.maximum(feathered, core_m.astype(np.float32)), 0.0, 1.0), True
 
 
-def adaptive_band_px(mask: np.ndarray, frac: float, min_px: int, max_px: int) -> int:
-    """Resolution-independent edge-band width: a fraction of the object's
-    bbox diagonal, clamped. Fixed-pixel bands were arbitrary — the same
-    20px covered 3% of a 720p proxy but 1% of a 2K native frame, and gave
-    a tiny object the same reach as a frame-filling one."""
-    ys, xs = np.nonzero(mask)
-    if ys.size == 0:
+def adaptive_band_px(mask: "np.ndarray", frac: float, min_px: int, max_px: int) -> int:
+    """Resolution-independent edge-band width: a fraction of sqrt(mask
+    AREA), clamped. Area (not bbox diagonal) so long-THIN objects (a rifle)
+    get a band matched to their thickness — the bbox diagonal of a thin
+    object is huge and produced comically wide halos."""
+    area = float(np.count_nonzero(mask))
+    if area <= 0:
         return min_px
-    diag = float(np.hypot(int(ys.max()) - int(ys.min()) + 1, int(xs.max()) - int(xs.min()) + 1))
-    return int(np.clip(frac * diag, min_px, max_px))
+    return int(np.clip(frac * np.sqrt(area), min_px, max_px))
 
 
 class RVMRefinerPass(UtilityPass):
