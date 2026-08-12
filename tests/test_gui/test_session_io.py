@@ -35,7 +35,9 @@ def _full_shot(folder: Path) -> ShotState:
         frame_range=(1001, 1150),
         resolution=(2048, 1080),
         pixel_aspect=2.0,
-        detected=DetectedColorspace(detected="arri_logc4", reason="camera metadata", confident=True),
+        detected=DetectedColorspace(
+            detected="arri_logc4", reason="camera metadata", confident=True
+        ),
         override="acescg",
         current_frame=1006,
         view_mode="compare",
@@ -43,10 +45,11 @@ def _full_shot(folder: Path) -> ShotState:
         auto_ev=0.75,
         auto_ev_source="auto",
         sampled_luma=0.123,
-        enabled_models=["sam3_rvm", "depth_anything_v2"],
+        enabled_models=["sam3_matte_on", "depth_anything_v2"],
         sam3_concepts="person, red car",
         refine_all_masks=True,
         refiner_model="ZhengPeng7/BiRefNet-matting",
+        default_engine="rvm",
         preview_refiner="vitmatte",
         click_instances=[
             ClickInstance(
@@ -89,10 +92,11 @@ def test_shot_dict_roundtrip_preserves_everything(tmp_path: Path) -> None:
     assert restored.exposure_ev == 1.25
     assert restored.auto_ev == 0.75
     assert restored.sampled_luma == 0.123
-    assert restored.enabled_models == ["sam3_rvm", "depth_anything_v2"]
+    assert restored.enabled_models == ["sam3_matte_on", "depth_anything_v2"]
     assert restored.sam3_concepts == "person, red car"
     assert restored.refine_all_masks is True
     assert restored.refiner_model == "ZhengPeng7/BiRefNet-matting"
+    assert restored.default_engine == "rvm"
     assert restored.preview_refiner == "vitmatte"
     assert restored.output_mode == "subfolder"
     assert restored.output_external_root == Path("X:/renders")
@@ -162,3 +166,15 @@ def test_save_is_atomic_no_tmp_left_behind(tmp_path: Path) -> None:
     save_session(f, [_full_shot(plate)])  # overwrite path also clean
     assert f.is_file()
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_legacy_matte_keys_migrate_to_single_switch(tmp_path: Path) -> None:
+    """Pre-simplification sessions stored per-engine Matte combos; they
+    all collapse (deduped) onto the one Matte switch on load."""
+    plate = tmp_path / "p"
+    plate.mkdir()
+    s = _full_shot(plate)
+    d = shot_to_dict(s)
+    d["enabled_models"] = ["sam3_birefnet", "sam3_vitmatte", "depth_anything_v2"]
+    restored = shot_from_dict(d)
+    assert restored.enabled_models == ["sam3_matte_on", "depth_anything_v2"]

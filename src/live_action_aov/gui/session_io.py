@@ -38,6 +38,28 @@ def autosave_path() -> Path:
     return d / "autosave" / f"session{SESSION_SUFFIX}"
 
 
+_LEGACY_MATTE_KEYS = {
+    "sam3_rvm",
+    "sam3_birefnet",
+    "sam3_vitmatte",
+    "sam3_chromakey",
+    "sam3_all_refiners",
+}
+
+
+def _migrate_matte_keys(keys: list[str]) -> list[str]:
+    """Old sessions stored per-engine Matte combos; the UI now has ONE
+    Matte switch (engines live per object / in the default dropdown)."""
+    out: list[str] = []
+    for k in keys:
+        if k in _LEGACY_MATTE_KEYS:
+            if "sam3_matte_on" not in out:
+                out.append("sam3_matte_on")
+        else:
+            out.append(k)
+    return out
+
+
 # --- ShotState <-> dict ----------------------------------------------------
 
 
@@ -69,6 +91,7 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
         "sam3_concepts": s.sam3_concepts,
         "refine_all_masks": bool(s.refine_all_masks),
         "refiner_model": s.refiner_model,
+        "default_engine": s.default_engine,
         "preview_refiner": s.preview_refiner,
         "click_instances": [
             {
@@ -132,10 +155,11 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         auto_ev=(None if d.get("auto_ev") is None else float(d["auto_ev"])),
         auto_ev_source=str(d.get("auto_ev_source", "")),
         sampled_luma=(None if d.get("sampled_luma") is None else float(d["sampled_luma"])),
-        enabled_models=[str(m) for m in (d.get("enabled_models") or [])],
+        enabled_models=_migrate_matte_keys([str(m) for m in (d.get("enabled_models") or [])]),
         sam3_concepts=str(d.get("sam3_concepts", "")),
         refine_all_masks=bool(d.get("refine_all_masks", False)),
         refiner_model=str(d.get("refiner_model", "")),
+        default_engine=str(d.get("default_engine", "birefnet")),
         preview_refiner=str(d.get("preview_refiner", "auto")),
         click_instances=clicks,
         output_mode=str(d.get("output_mode", "inplace")),

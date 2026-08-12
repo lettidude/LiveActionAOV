@@ -21,11 +21,12 @@ worker pool is backed up.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -114,6 +115,10 @@ class _ClickCanvas(QLabel):
     pressed = Signal(float, float, int)
     boxed = Signal(float, float, float, float)
     dragging = Signal(object)  # (nx0, ny0, nx1, ny1) live, or None on end
+    wheel_zoomed = Signal(float, float, float)  # delta, widget x, widget y
+    panned = Signal(float, float)  # dx, dy in widget px (MMB drag)
+    view_reset = Signal()  # MMB double-click — back to fit
+    resized = Signal()
 
     _DRAG_PX = 5  # movement below this on release = a click, not a box
 
@@ -121,8 +126,14 @@ class _ClickCanvas(QLabel):
         super().__init__()
         self._press_pos: Any = None  # QPointF in widget coords, or None
         self._press_norm: tuple[float, float] | None = None
+        self._pan_last: Any = None  # QPointF while an MMB drag is live
+        # The panel installs this to map widget coords → normalized image
+        # coords under the current zoom/pan. None = legacy centred-fit.
+        self.mapper: Callable[[float, float], tuple[float, float] | None] | None = None
 
     def _norm_at(self, pos: Any) -> tuple[float, float] | None:
+        if self.mapper is not None:
+            return self.mapper(pos.x(), pos.y())
         pm = self.pixmap()
         if pm is None or pm.isNull():
             return None
@@ -130,8 +141,14 @@ class _ClickCanvas(QLabel):
             pos.x(), pos.y(), self.width(), self.height(), pm.width(), pm.height()
         )
 
+    def wheelEvent(self, ev: QWheelEvent) -> None:
+        self.wheel_zoomed.emit(float(ev.angleDelta().y()), ev.position().x(), ev.position().y())
+        ev.accept()
+
     def mousePressEvent(self, ev: QMouseEvent) -> None:
-        if ev.button() == Qt.MouseButton.RightButton:
+        if ev.button() == Qt.MouseButton.MiddleButton:
+            self._pan_last = ev.position()
+        elif ev.button() == Qt.MouseButton.RightButton:
             norm = self._norm_at(ev.position())
             if norm is not None:
                 self.pressed.emit(norm[0], norm[1], 0)
@@ -140,21 +157,40 @@ class _ClickCanvas(QLabel):
             self._press_norm = self._norm_at(ev.position())
         super().mousePressEvent(ev)
 
+    def mouseDoubleClickEvent(self, ev: QMouseEvent) -> None:
+        if ev.button() == Qt.MouseButton.MiddleButton:
+            self._pan_last = None
+            self.view_reset.emit()
+        super().mouseDoubleClickEvent(ev)
+
     def mouseMoveEvent(self, ev: QMouseEvent) -> None:
-        if self._press_pos is not None and self._press_norm is not None:
+        if self._pan_last is not None:
+            pos = ev.position()
+            self.panned.emit(pos.x() - self._pan_last.x(), pos.y() - self._pan_last.y())
+            self._pan_last = pos
+        elif self._press_pos is not None and self._press_norm is not None:
             cur = self._norm_at(ev.position())
             if cur is not None:
                 self.dragging.emit((self._press_norm[0], self._press_norm[1], cur[0], cur[1]))
         super().mouseMoveEvent(ev)
 
+    def resizeEvent(self, ev: Any) -> None:
+        super().resizeEvent(ev)
+        self.resized.emit()
+
     def mouseReleaseEvent(self, ev: QMouseEvent) -> None:
+        if ev.button() == Qt.MouseButton.MiddleButton:
+            self._pan_last = None
         if ev.button() == Qt.MouseButton.LeftButton and self._press_pos is not None:
             start, start_norm = self._press_pos, self._press_norm
             self._press_pos, self._press_norm = None, None
             self.dragging.emit(None)
             end = ev.position()
             end_norm = self._norm_at(end)
-            moved = abs(end.x() - start.x()) >= self._DRAG_PX or abs(end.y() - start.y()) >= self._DRAG_PX
+            moved = (
+                abs(end.x() - start.x()) >= self._DRAG_PX
+                or abs(end.y() - start.y()) >= self._DRAG_PX
+            )
             if start_norm is not None:
                 if moved and end_norm is not None:
                     x0, x1 = sorted((start_norm[0], end_norm[0]))
@@ -236,6 +272,19 @@ class ViewportPanel(QWidget):
         self._canvas.pressed.connect(self._on_canvas_pressed)
         self._canvas.boxed.connect(self._on_canvas_boxed)
         self._canvas.dragging.connect(self._on_canvas_dragging)
+        # Zoom/pan: wheel zooms around the cursor, MMB-drag pans, MMB
+        # double-click resets to fit. State lives here (not per shot) —
+        # it's a viewing aid, not prep data.
+        self._zoom = 1.0
+        self._pan = (0.0, 0.0)
+        # Displayed image rect (off_x, off_y, w, h) in canvas coords under
+        # the current zoom/pan — the click mapper reads it.
+        self._img_rect: tuple[float, float, float, float] | None = None
+        self._canvas.mapper = self._pos_to_norm
+        self._canvas.wheel_zoomed.connect(self._on_canvas_wheel)
+        self._canvas.panned.connect(self._on_canvas_panned)
+        self._canvas.view_reset.connect(self._reset_view)
+        self._canvas.resized.connect(self._repaint_canvas)
 
         # --- Frame scrub slider + label ---
         self._frame_slider = QSlider(Qt.Orientation.Horizontal)
@@ -262,6 +311,7 @@ class ViewportPanel(QWidget):
 
     def _on_current_changed(self, shot: ShotState | None) -> None:
         self._current = shot
+        self._zoom, self._pan = 1.0, (0.0, 0.0)  # fit view per shot
         self._refresh_for_current()
 
     def _on_shot_updated(self, shot: ShotState) -> None:
@@ -275,6 +325,7 @@ class ViewportPanel(QWidget):
             self._frame_slider.setRange(0, 0)
             self._frame_label.setText("Frame: —")
             self._last_composed = None
+            self._img_rect = None
             self._canvas.setPixmap(QPixmap())
             self._canvas.setText("(no shot loaded)")
             return
@@ -437,13 +488,9 @@ class ViewportPanel(QWidget):
             elif pinned == "birefnet":
                 override = "birefnet:"
         if override == "auto":
-            enabled = shot.enabled_models or []
-            if "sam3_chromakey" in enabled:
-                kind, model_id = "chromakey", ""
-            elif "sam3_vitmatte" in enabled:
-                kind, model_id = "vitmatte", ""
-            elif "sam3_rvm" in enabled:
-                kind, model_id = "rvm", ""
+            de = str(getattr(shot, "default_engine", "birefnet") or "birefnet")
+            if de in ("vitmatte", "chromakey", "rvm"):
+                kind, model_id = de, ""
             else:
                 kind, model_id = "birefnet", str(shot.refiner_model or "")
         if override.startswith("birefnet:"):
@@ -531,18 +578,91 @@ class ViewportPanel(QWidget):
         self._drag_rect = rect if isinstance(rect, tuple) else None
         self._repaint_canvas()
 
+    def _pos_to_norm(self, x: float, y: float) -> tuple[float, float] | None:
+        """Widget coords → normalized image coords under the current
+        zoom/pan. None when the point lands outside the image."""
+        r = self._img_rect
+        if r is None:
+            return None
+        off_x, off_y, zw, zh = r
+        if zw <= 0 or zh <= 0:
+            return None
+        nx = (x - off_x) / zw
+        ny = (y - off_y) / zh
+        if not (0.0 <= nx <= 1.0 and 0.0 <= ny <= 1.0):
+            return None
+        return nx, ny
+
+    def _reset_view(self) -> None:
+        self._zoom, self._pan = 1.0, (0.0, 0.0)
+        self._repaint_canvas()
+
+    def _on_canvas_wheel(self, delta: float, x: float, y: float) -> None:
+        if self._last_composed is None or self._last_composed.isNull():
+            return
+        new_zoom = min(8.0, max(1.0, self._zoom * (1.25 ** (delta / 120.0))))
+        if abs(new_zoom - self._zoom) < 1e-6:
+            return
+        # Keep the image point under the cursor fixed through the zoom.
+        r = self._img_rect
+        if r is not None and r[2] > 0 and r[3] > 0:
+            nx = (x - r[0]) / r[2]
+            ny = (y - r[1]) / r[3]
+        else:
+            nx = ny = 0.5
+        self._zoom = new_zoom
+        if new_zoom <= 1.0 + 1e-6:
+            self._pan = (0.0, 0.0)
+        else:
+            cw, ch = self._canvas.width(), self._canvas.height()
+            bw, bh = self._last_composed.width(), self._last_composed.height()
+            s = min(cw / bw, ch / bh) * new_zoom
+            zw, zh = bw * s, bh * s
+            self._pan = (x - nx * zw - (cw - zw) / 2.0, y - ny * zh - (ch - zh) / 2.0)
+        self._repaint_canvas()
+
+    def _on_canvas_panned(self, dx: float, dy: float) -> None:
+        if self._zoom <= 1.0:
+            return
+        self._pan = (self._pan[0] + dx, self._pan[1] + dy)
+        self._repaint_canvas()
+
     def _repaint_canvas(self) -> None:
-        """Scale the last composed preview to the canvas and overlay the
-        active instance's points (seed frame only). Pure-paint — never
-        re-decodes the EXR."""
+        """Render the last composed preview into a canvas-sized pixmap
+        under the current zoom/pan and overlay the active instance's
+        points (seed frame only). Pure-paint — never re-decodes the EXR."""
         base = self._last_composed
         if base is None or base.isNull():
             return
-        scaled = base.scaled(
-            self._canvas.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
+        cw, ch = self._canvas.width(), self._canvas.height()
+        if cw <= 0 or ch <= 0:
+            return
+        bw, bh = base.width(), base.height()
+        s = min(cw / bw, ch / bh) * self._zoom
+        zw, zh = bw * s, bh * s
+        off_x = (cw - zw) / 2.0 + self._pan[0]
+        off_y = (ch - zh) / 2.0 + self._pan[1]
+        # Clamp so the image never pans fully out of view; write the
+        # clamped offsets back into _pan to keep further deltas sane.
+        if zw > cw:
+            off_x = min(0.0, max(cw - zw, off_x))
+        else:
+            off_x = (cw - zw) / 2.0
+        if zh > ch:
+            off_y = min(0.0, max(ch - zh, off_y))
+        else:
+            off_y = (ch - zh) / 2.0
+        self._pan = (off_x - (cw - zw) / 2.0, off_y - (ch - zh) / 2.0)
+        self._img_rect = (off_x, off_y, zw, zh)
+
+        out = QPixmap(cw, ch)
+        out.fill(QColor(26, 26, 26))
+        painter = QPainter(out)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        # Painter-side scaling from the source rect — no giant intermediate
+        # pixmap at high zoom.
+        painter.drawPixmap(QRectF(off_x, off_y, zw, zh), base, QRectF(base.rect()))
+
         shot = self._current
         inst = self._active_instance
         on_seed = (
@@ -557,21 +677,14 @@ class ViewportPanel(QWidget):
         )
         if shot is not None and inst is not None and on_seed and (has_marks or self._drag_rect):
             w, h = shot.resolution
-            sw, sh = scaled.width(), scaled.height()
-            painter = QPainter(scaled)
+            sw, sh = zw, zh
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.translate(off_x, off_y)
             # Mask preview first (under markers): SAM 3 result at composed-
-            # image resolution, scaled onto the canvas pixmap.
+            # image resolution, painter-scaled onto the zoomed image rect.
             if self._preview_mask is not None:
                 overlay = _mask_to_overlay(self._preview_mask)
-                painter.drawImage(
-                    scaled.rect(),
-                    overlay.scaled(
-                        scaled.size(),
-                        Qt.AspectRatioMode.IgnoreAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    ),
-                )
+                painter.drawImage(QRectF(0.0, 0.0, sw, sh), overlay)
             # Committed box (solid cyan).
             if inst.box is not None:
                 bx0, by0, bx1, by1 = inst.box
@@ -602,8 +715,8 @@ class ViewportPanel(QWidget):
                 painter.setPen(QPen(QColor(255, 255, 255), 1.5))
                 painter.setBrush(colour)
                 painter.drawEllipse(int(cx) - 4, int(cy) - 4, 8, 8)
-            painter.end()
-        self._canvas.setPixmap(scaled)
+        painter.end()
+        self._canvas.setPixmap(out)
 
 
 def _compose_pixmap(result: PreviewResult) -> QPixmap | None:

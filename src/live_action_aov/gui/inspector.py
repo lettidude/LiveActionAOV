@@ -65,7 +65,7 @@ from live_action_aov.io.colorspace_detect import SUPPORTED_COLORSPACES
 #: (checkboxes, no Off radio — all-unchecked means off). When more than one
 #: matte refiner runs, the submit worker auto-namespaces each engine's
 #: layers (matte_<engine>.*) so they can't overwrite each other.
-_MULTI_SELECT_CATEGORIES = {"Matte"}
+_MULTI_SELECT_CATEGORIES: set[str] = set()
 
 
 def _category_of(model_key: str) -> str | None:
@@ -339,6 +339,8 @@ class InspectorPanel(QWidget):
                 section_layout.addWidget(off_row)
 
             for entry in entries:
+                if entry.hidden:
+                    continue
                 row = QWidget()
                 row.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
                 row_layout = QHBoxLayout(row)
@@ -393,7 +395,7 @@ class InspectorPanel(QWidget):
             "person, vehicle, tree, building, sky, water, animal"
         )
         self._sam3_concepts_edit.setToolTip(
-            "What SAM 3 should detect, comma-separated (e.g. \"person, red car, dog\").\n"
+            'What SAM 3 should detect, comma-separated (e.g. "person, red car, dog").\n'
             "Drives both the Matte and Cryptomatte passes. SAM 3 only finds the\n"
             "concepts you prompt — leave empty to use the built-in defaults."
         )
@@ -403,9 +405,7 @@ class InspectorPanel(QWidget):
         concepts_label.setStyleSheet(
             "font-weight: 600; color: #ddd; font-size: 9pt; padding-top: 6px;"
         )
-        concepts_hint = QLabel(
-            "Comma-separated. Matte + Cryptomatte. Empty = defaults."
-        )
+        concepts_hint = QLabel("Comma-separated. Matte + Cryptomatte. Empty = defaults.")
         concepts_hint.setStyleSheet("color: #999; font-size: 8pt;")
         concepts_hint.setWordWrap(True)
         passes_block.addSpacing(8)
@@ -413,28 +413,25 @@ class InspectorPanel(QWidget):
         passes_block.addWidget(self._sam3_concepts_edit)
         passes_block.addWidget(concepts_hint)
 
-        # Refiner options live HERE with the model choice — what gets
-        # created belongs on the Passes tab. The Masks tab only previews
-        # (it shows a note with the current refiner — the tabs communicate).
-        # BiRefNet weights dropdown: used by the BiRefNet combo; ignored by
-        # ViTMatte (trimap, fixed weights) and RVM.
-        self._refiner_model_combo = QComboBox()
-        self._refiner_model_combo.addItem("BiRefNet Portrait - people/hair (default)", "")
-        self._refiner_model_combo.addItem(
-            "BiRefNet Matting - general soft", "ZhengPeng7/BiRefNet-matting"
+        # DEFAULT ENGINE for the run — one dropdown, covering both the
+        # engine and (for BiRefNet) the weight variant. Objects pinned on
+        # the Masks tab override this per object.
+        self._default_engine_combo = QComboBox()
+        self._default_engine_combo.addItem("BiRefNet Portrait - people/hair", ("birefnet", ""))
+        self._default_engine_combo.addItem(
+            "BiRefNet Matting - general soft", ("birefnet", "ZhengPeng7/BiRefNet-matting")
         )
-        self._refiner_model_combo.addItem(
-            "BiRefNet General - hard, cleanest licence", "ZhengPeng7/BiRefNet"
+        self._default_engine_combo.addItem(
+            "BiRefNet General - cleanest licence", ("birefnet", "ZhengPeng7/BiRefNet")
         )
-        self._refiner_model_combo.addItem(
-            "RMBG-2.0 (BiRefNet arch) - paid licence for commercial", "briaai/RMBG-2.0"
+        self._default_engine_combo.addItem("ViTMatte (trimap)", ("vitmatte", ""))
+        self._default_engine_combo.addItem("Chroma Key (green/blue)", ("chromakey", ""))
+        self._default_engine_combo.addItem("RVM", ("rvm", ""))
+        self._default_engine_combo.setToolTip(
+            "Engine used for every object that has no per-object pin on the "
+            "Masks tab (and for the concept-detected unions)."
         )
-        self._refiner_model_combo.setToolTip(
-            "Soft-edge refiner weights for this shot (BiRefNet combos only). "
-            "Used by the Masks-tab preview AND by the submit. Same speed; "
-            "they differ in edge softness (Portrait best on hair) + licence."
-        )
-        self._refiner_model_combo.currentIndexChanged.connect(self._on_refiner_model_changed)
+        self._default_engine_combo.currentIndexChanged.connect(self._on_default_engine_changed)
 
         self._refine_all_check = QCheckBox("Refine ALL mask.<name> channels at submit (slower)")
         self._refine_all_check.setToolTip(
@@ -445,9 +442,9 @@ class InspectorPanel(QWidget):
         self._refine_all_check.toggled.connect(self._on_refine_all_toggled)
 
         refiner_weights_row = QHBoxLayout()
-        self._refiner_weights_label = QLabel("BiRefNet weights:")
+        self._refiner_weights_label = QLabel("Default engine:")
         refiner_weights_row.addWidget(self._refiner_weights_label)
-        refiner_weights_row.addWidget(self._refiner_model_combo, stretch=1)
+        refiner_weights_row.addWidget(self._default_engine_combo, stretch=1)
         passes_block.addSpacing(8)
         passes_block.addLayout(refiner_weights_row)
         passes_block.addWidget(self._refine_all_check)
@@ -611,13 +608,10 @@ class InspectorPanel(QWidget):
         masks_hint.setStyleSheet("color: #999; font-size: 9pt;")
         masks_hint.setWordWrap(True)
 
-        self._mask_mode_check = QCheckBox("Place points in viewport")
-        self._mask_mode_check.setToolTip(
-            "Arms the viewport: clicks add points to the selected object "
-            "instead of doing nothing. Disable to scrub freely."
-        )
-        self._mask_mode_check.toggled.connect(self._on_mask_mode_toggled)
-
+        # Point placement is ALWAYS armed while the Masks tab is open (and
+        # disarmed on any other tab) — the old "Place points in viewport"
+        # checkbox was one more thing to forget. Scrubbing stays free: the
+        # frame slider lives outside the canvas.
         self._mask_list = QListWidget()
         self._mask_list.setFixedHeight(140)
         self._mask_list.currentRowChanged.connect(self._on_mask_selected)
@@ -659,7 +653,6 @@ class InspectorPanel(QWidget):
         masks_layout.addWidget(_section_label("Click-to-mask"))
         masks_layout.addWidget(masks_hint)
         masks_layout.addSpacing(6)
-        masks_layout.addWidget(self._mask_mode_check)
         masks_layout.addLayout(mask_btn_row)
         # Too-many-points guardrail. Empirically verified on real plates:
         # 3+2 points → full-object mask (34.8% of frame); 50+ points → the
@@ -717,12 +710,9 @@ class InspectorPanel(QWidget):
         pv_row.addWidget(self._mask_preview_btn, stretch=1)
         pv_row.addWidget(self._apply_engine_btn)
         masks_layout.addLayout(pv_row)
-        masks_layout.addWidget(self._mask_list)
-        masks_layout.addWidget(self._mask_points_warn)
-        masks_layout.addWidget(QLabel("Name:"))
-        masks_layout.addWidget(self._mask_name_edit)
-        # Per-object ENGINE: the weight belongs to the LAYER, not the shot —
-        # portrait on the person, trimap/chroma on the car, in one run.
+        # Per-object ENGINE, BESIDE the list: the weight belongs to the
+        # LAYER, not the shot — portrait on the person, trimap/chroma on
+        # the car, in one run. Selecting a row shows its engine here.
         self._mask_engine_combo = QComboBox()
         self._mask_engine_combo.addItem("Default (run engine)", "")
         self._mask_engine_combo.addItem("ViTMatte (trimap)", "vitmatte")
@@ -735,10 +725,17 @@ class InspectorPanel(QWidget):
             "mask.<name> at submit and drives its preview."
         )
         self._mask_engine_combo.currentIndexChanged.connect(self._on_mask_engine_changed)
-        engine_row = QHBoxLayout()
-        engine_row.addWidget(QLabel("Engine:"))
-        engine_row.addWidget(self._mask_engine_combo, stretch=1)
-        masks_layout.addLayout(engine_row)
+        engine_col = QVBoxLayout()
+        engine_col.addWidget(QLabel("Engine:"))
+        engine_col.addWidget(self._mask_engine_combo)
+        engine_col.addStretch()
+        list_row = QHBoxLayout()
+        list_row.addWidget(self._mask_list, stretch=1)
+        list_row.addLayout(engine_col)
+        masks_layout.addLayout(list_row)
+        masks_layout.addWidget(self._mask_points_warn)
+        masks_layout.addWidget(QLabel("Name:"))
+        masks_layout.addWidget(self._mask_name_edit)
         masks_layout.addStretch()
         masks_tab = _scrollable(masks_layout)
 
@@ -747,6 +744,10 @@ class InspectorPanel(QWidget):
         tabs.addTab(masks_tab, "Masks")
         tabs.addTab(preview_tab, "Colour")
         tabs.addTab(output_tab, "Output")
+        # Auto-arm point placement while the Masks tab is open (replaces
+        # the old "Place points in viewport" checkbox).
+        self._masks_tab_index = tabs.indexOf(masks_tab)
+        tabs.currentChanged.connect(self._on_tab_changed)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
@@ -892,13 +893,14 @@ class InspectorPanel(QWidget):
             self._refine_all_check.blockSignals(False)
 
             rm_index = 0
-            for i in range(self._refiner_model_combo.count()):
-                if self._refiner_model_combo.itemData(i) == shot.refiner_model:
+            want_pair = (shot.default_engine, shot.refiner_model)
+            for i in range(self._default_engine_combo.count()):
+                if tuple(self._default_engine_combo.itemData(i)) == want_pair:
                     rm_index = i
                     break
-            self._refiner_model_combo.blockSignals(True)
-            self._refiner_model_combo.setCurrentIndex(rm_index)
-            self._refiner_model_combo.blockSignals(False)
+            self._default_engine_combo.blockSignals(True)
+            self._default_engine_combo.setCurrentIndex(rm_index)
+            self._default_engine_combo.blockSignals(False)
             pr_index = 0
             for i in range(self._preview_refiner_combo.count()):
                 if self._preview_refiner_combo.itemData(i) == shot.preview_refiner:
@@ -1033,13 +1035,14 @@ class InspectorPanel(QWidget):
         box = "  ·  box" if inst.box is not None else ""
         # The engine ON the row: every layer's model visible at a glance
         # (field feedback — the whole point of per-layer engines).
-        eng_names = {"vitmatte": "ViTMatte", "birefnet": "BiRefNet",
-                     "chromakey": "ChromaKey", "rvm": "RVM"}
+        eng_names = {
+            "vitmatte": "ViTMatte",
+            "birefnet": "BiRefNet",
+            "chromakey": "ChromaKey",
+            "rvm": "RVM",
+        }
         eng = f"  ·  [{eng_names.get(inst.refiner, inst.refiner)}]" if inst.refiner else ""
-        return (
-            f"{inst.name}  ·  f{inst.seed_frame}  ·  "
-            f"{n} pt{'s' if n != 1 else ''}{box}{eng}"
-        )
+        return f"{inst.name}  ·  f{inst.seed_frame}  ·  {n} pt{'s' if n != 1 else ''}{box}{eng}"
 
     def _refresh_mask_list(self) -> None:
         """Repopulate the Masks list from the current shot, preserving the
@@ -1075,18 +1078,20 @@ class InspectorPanel(QWidget):
             )
         self._mask_points_warn.setVisible(bool(too_many))
 
-    def _on_mask_mode_toggled(self, checked: bool) -> None:
-        self.click_mode_changed.emit(bool(checked))
+    def _on_tab_changed(self, index: int) -> None:
+        self.click_mode_changed.emit(index == self._masks_tab_index)
 
     def _on_refine_all_toggled(self, checked: bool) -> None:
         if self._building or self._current is None:
             return
         self._current.refine_all_masks = bool(checked)
 
-    def _on_refiner_model_changed(self, idx: int) -> None:
+    def _on_default_engine_changed(self, idx: int) -> None:
         if self._building or self._current is None:
             return
-        self._current.refiner_model = str(self._refiner_model_combo.itemData(idx) or "")
+        data = self._default_engine_combo.itemData(idx) or ("birefnet", "")
+        self._current.default_engine = str(data[0])
+        self._current.refiner_model = str(data[1])
         self._update_preview_refiner_note()
 
     def _on_preview_refiner_changed(self, idx: int) -> None:
@@ -1096,45 +1101,25 @@ class InspectorPanel(QWidget):
         self._update_preview_refiner_note()
 
     def _update_preview_refiner_note(self) -> None:
-        """Masks-tab note mirroring the Passes-tab RUN choice, and Passes-tab
-        weights-dropdown enablement — how the two tabs communicate without
-        duplicating controls."""
+        """Masks-tab note mirroring the Passes-tab run setup."""
         shot = self._current
         if shot is None:
             self._preview_refiner_note.setText("")
             return
         enabled = shot.enabled_models or []
-        # The BiRefNet weights dropdown only applies to the BiRefNet combo —
-        # grey it out otherwise so it can't mislead.
-        is_brn = "sam3_birefnet" in enabled
-        self._refiner_model_combo.setEnabled(is_brn)
-        self._refiner_weights_label.setEnabled(is_brn)
-
-        if "sam3_chromakey" in enabled:
-            what = "Chroma Key"
-            # The #1 field confusion: users click the SCREEN. Say it here.
+        self._default_engine_combo.setEnabled("sam3_matte_on" in enabled)
+        self._refiner_weights_label.setEnabled("sam3_matte_on" in enabled)
+        if "sam3_matte_on" not in enabled:
             self._preview_refiner_note.setText(
-                "Chroma Key: seed the SUBJECT (person/object) - the key "
-                "removes the screen around it automatically. Do NOT click "
-                "the green/blue screen itself."
+                "Matte is OFF (Passes tab) - previews work, but the submit writes no mattes."
             )
             return
-        elif "sam3_vitmatte" in enabled:
-            what = "ViTMatte (trimap)"
-        elif is_brn:
-            what = self._refiner_model_combo.currentText().split(" - ")[0]
-        elif "sam3_rvm" in enabled:
-            what = "RVM"
-        else:
-            self._preview_refiner_note.setText("No matte model selected (Passes tab).")
-            return
-        override = str(shot.preview_refiner or "auto")
-        if override == "auto":
-            self._preview_refiner_note.setText(f"Run refines with: {what}  (set in Passes tab)")
-        else:
-            self._preview_refiner_note.setText(
-                f"Run refines with: {what}  —  preview overridden above"
-            )
+        label = self._default_engine_combo.currentText().split(" - ")[0]
+        pinned = sum(1 for ci in shot.click_instances if ci.refiner)
+        extra = f"; {pinned} object(s) pinned to their own engine" if pinned else ""
+        self._preview_refiner_note.setText(
+            f"Run default engine: {label}{extra}  (set per object below)"
+        )
 
     def _on_mask_new(self) -> None:
         if self._current is None:
@@ -1149,9 +1134,6 @@ class InspectorPanel(QWidget):
         )
         self._refresh_mask_list()
         self._mask_list.setCurrentRow(len(shot.click_instances) - 1)
-        # Creating an object means the user wants to click — arm the viewport.
-        if not self._mask_mode_check.isChecked():
-            self._mask_mode_check.setChecked(True)  # emits click_mode_changed
         self._registry.notify_updated(shot)
 
     def _on_mask_delete(self) -> None:
@@ -1373,6 +1355,7 @@ class InspectorPanel(QWidget):
         source_concepts = self._current.sam3_concepts
         src_refine_all = bool(self._current.refine_all_masks)
         src_refiner_model = self._current.refiner_model
+        src_default_engine = self._current.default_engine
         count = 0
         for shot in self._registry.shots():
             if shot is self._current:
@@ -1381,6 +1364,7 @@ class InspectorPanel(QWidget):
             shot.sam3_concepts = source_concepts
             shot.refine_all_masks = src_refine_all
             shot.refiner_model = src_refiner_model
+            shot.default_engine = src_default_engine
             self._registry.notify_updated(shot)
             count += 1
         # Tiny feedback — tooltip-style text in the button so the user

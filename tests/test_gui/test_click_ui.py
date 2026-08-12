@@ -54,6 +54,7 @@ def _shot(**kw: object) -> ShotState:
 
 # --- _canvas_pos_to_norm ----------------------------------------------
 
+
 def test_norm_mapping_centered_letterbox() -> None:
     # Canvas 1000x600, pixmap 800x450 → offsets (100, 75).
     assert _canvas_pos_to_norm(100, 75, 1000, 600, 800, 450) == (0.0, 0.0)
@@ -71,6 +72,7 @@ def test_norm_mapping_rejects_letterbox_and_empty() -> None:
 
 
 # --- ViewportPanel click handling --------------------------------------
+
 
 def _viewport_with_shot(qapp: QApplication) -> tuple[ViewportPanel, ShotState, ShotRegistry]:
     reg = ShotRegistry()
@@ -135,6 +137,7 @@ def test_first_click_anchors_seed_frame_then_locks(qapp: QApplication) -> None:
 
 # --- InspectorPanel Masks tab ------------------------------------------
 
+
 def test_masks_tab_lifecycle_and_signals(qapp: QApplication) -> None:
     from live_action_aov.gui.inspector import InspectorPanel
 
@@ -149,12 +152,19 @@ def test_masks_tab_lifecycle_and_signals(qapp: QApplication) -> None:
     reg.add(shot)
     shot.current_frame = 1005
 
-    # New object: created at the viewed frame, selected, viewport armed.
+    # Point placement auto-arms with the Masks tab (no checkbox anymore)
+    # and disarms when leaving it.
+    panel._on_tab_changed(panel._masks_tab_index)
+    assert armed[-1] is True
+    panel._on_tab_changed(0)
+    assert armed[-1] is False
+    panel._on_tab_changed(panel._masks_tab_index)
+
+    # New object: created at the viewed frame, selected.
     panel._on_mask_new()
     assert len(shot.click_instances) == 1
     inst = shot.click_instances[0]
     assert inst.seed_frame == 1005
-    assert armed[-1] is True
     assert actives[-1] is inst
 
     # Rename feeds the state (→ Cryptomatte name).
@@ -274,7 +284,9 @@ def test_undo_drops_box_when_no_points(qapp: QApplication) -> None:
 def test_mask_item_text_shows_box(qapp: QApplication) -> None:
     from live_action_aov.gui.inspector import InspectorPanel
 
-    inst = ClickInstance(name="car", seed_frame=1006, points=[(1.0, 1.0, 1)], box=(0.0, 0.0, 9.0, 9.0))
+    inst = ClickInstance(
+        name="car", seed_frame=1006, points=[(1.0, 1.0, 1)], box=(0.0, 0.0, 9.0, 9.0)
+    )
     text = InspectorPanel._mask_item_text(inst)
     assert "car" in text and "1 pt" in text and "box" in text
 
@@ -318,6 +330,7 @@ def test_undo_removes_only_last_point(qapp: QApplication) -> None:
 
 
 # --- Mask preview (GPU-free parts) --------------------------------------
+
 
 def test_preview_guards_no_points_and_wrong_frame(qapp: QApplication) -> None:
     panel, shot, _ = _viewport_with_shot(qapp)

@@ -290,6 +290,13 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
     injected onto the `sam3_matte` pass when set; empty falls back to defaults.
     """
     plugin_names = expand_models(state.enabled_models)
+    # New single Matte switch: the catalog expands it to the detector only;
+    # append the run's DEFAULT engine here so the refiner branch below
+    # configures it exactly like a legacy combo would have.
+    if "sam3_matte_on" in state.enabled_models:
+        eng = _DEFAULT_ENGINE_PLUGIN.get(state.default_engine, "birefnet_refiner")
+        if eng not in plugin_names:
+            plugin_names.append(eng)
     sam3_params = _sam3_matte_params(state)
     # Multi-engine mode: when MORE THAN ONE matte refiner is selected
     # (Matte is multi-select), each engine's layers are auto-namespaced
@@ -348,6 +355,14 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
         )
     return out
 
+
+#: ShotState.default_engine -> refiner plugin (the run's main engine).
+_DEFAULT_ENGINE_PLUGIN = {
+    "birefnet": "birefnet_refiner",
+    "vitmatte": "vitmatte_refiner",
+    "chromakey": "chroma_key",
+    "rvm": "rvm_refiner",
+}
 
 #: ClickInstance.refiner value -> refiner plugin name (per-object engines).
 _OBJECT_ENGINES = {

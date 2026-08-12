@@ -38,6 +38,7 @@ def _shot(**kw: object) -> ShotState:
 
 # --- _serialize_click_instances --------------------------------------
 
+
 def test_serialize_points_and_box() -> None:
     inst = ClickInstance(
         name="hero",
@@ -82,6 +83,7 @@ def test_serialize_drops_empty_instances() -> None:
 
 
 # --- _build_pass_configs ---------------------------------------------
+
 
 def test_clicks_injected_onto_sam3_matte() -> None:
     state = _shot(

@@ -135,8 +135,12 @@ class _PreviewTask(QRunnable):
 
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
-            eng["processor"] = load_local_first(Sam3TrackerVideoProcessor.from_pretrained, "facebook/sam3")
-            model: Any = load_local_first(Sam3TrackerVideoModel.from_pretrained, "facebook/sam3", dtype=dtype)
+            eng["processor"] = load_local_first(
+                Sam3TrackerVideoProcessor.from_pretrained, "facebook/sam3"
+            )
+            model: Any = load_local_first(
+                Sam3TrackerVideoModel.from_pretrained, "facebook/sam3", dtype=dtype
+            )
             model.to(device).eval()
             eng["model"] = model
             eng["device"] = device
@@ -149,9 +153,7 @@ class _PreviewTask(QRunnable):
         model = eng["model"]
 
         h, w = int(self._image.shape[0]), int(self._image.shape[1])
-        pil = Image.fromarray(
-            (np.clip(self._image, 0.0, 1.0) * 255.0).astype(np.uint8), "RGB"
-        )
+        pil = Image.fromarray((np.clip(self._image, 0.0, 1.0) * 255.0).astype(np.uint8), "RGB")
         # Single-frame session — same call shapes as the batch pass.
         session = processor.init_video_session(
             video=[pil],

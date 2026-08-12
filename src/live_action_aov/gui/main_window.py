@@ -289,8 +289,11 @@ class MainWindow(QMainWindow):
 
         try:
             proc = subprocess.Popen(
-                [sys.executable, "-c",
-                 "from live_action_aov.cli.app import app; app(['prefetch', '--all'])"],
+                [
+                    sys.executable,
+                    "-c",
+                    "from live_action_aov.cli.app import app; app(['prefetch', '--all'])",
+                ],
                 creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
             )
         except Exception as e:
@@ -366,9 +369,7 @@ class MainWindow(QMainWindow):
                 self._registry.remove(shot)
         self._adopt_loaded_shots(shots, warnings, source=path_str)
 
-    def _adopt_loaded_shots(
-        self, shots: list[ShotState], warnings: list[str], source: str
-    ) -> None:
+    def _adopt_loaded_shots(self, shots: list[ShotState], warnings: list[str], source: str) -> None:
         for shot in shots:
             self._registry.add(shot)
         msg = f"Session loaded — {len(shots)} shot(s) from {source}"
@@ -405,8 +406,7 @@ class MainWindow(QMainWindow):
         resp = QMessageBox.question(
             self,
             "Restore previous session?",
-            f"An autosaved session with {len(shots)} shot(s) was found.\n"
-            "Restore it?",
+            f"An autosaved session with {len(shots)} shot(s) was found.\nRestore it?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )

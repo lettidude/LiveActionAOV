@@ -29,6 +29,9 @@ class ModelEntry:
     license_tag: str  # short SPDX-ish string shown next to the label
     commercial: bool  # gates the non-commercial consent dialog
     expansion: tuple[str, ...]  # concrete plugin names fed to the executor
+    # Hidden entries stay resolvable (legacy sessions expand fine) but are
+    # not rendered — the old per-engine Matte combos live on this way.
+    hidden: bool = False
 
 
 # Grouped by category; rendering order inside a category is the list
@@ -81,16 +84,25 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ),
     ],
     "Matte": [
-        # Matte combos are virtual entries — one checkbox in the UX
-        # but two plugins on the executor side. Keeps the mental
-        # model simple ("pick a matte backend") and leaves detector
-        # + refiner pairing to the catalog rather than the user.
+        # ONE switch (field feedback: five engine combos were confusing).
+        # The default engine is a dropdown next to it; per-object engines
+        # are set on the Masks tab. Expansion carries only the detector —
+        # the submit worker appends the engine passes.
+        ModelEntry(
+            "sam3_matte_on",
+            "Matte (SAM 3 - engines per object on the Masks tab)",
+            "SAM-License / MIT",
+            True,
+            ("sam3_matte",),
+        ),
+        # --- legacy combos: resolvable for old sessions, not rendered ---
         ModelEntry(
             "sam3_rvm",
             "SAM3 + RVM",
             "SAM-License / MIT",
             True,
             ("sam3_matte", "rvm_refiner"),
+            hidden=True,
         ),
         ModelEntry(
             "sam3_birefnet",
@@ -98,6 +110,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             "SAM-License / MIT",
             True,
             ("sam3_matte", "birefnet_refiner"),
+            hidden=True,
         ),
         ModelEntry(
             "sam3_vitmatte",
@@ -105,6 +118,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             "SAM-License / MIT",
             True,
             ("sam3_matte", "vitmatte_refiner"),
+            hidden=True,
         ),
         ModelEntry(
             "sam3_chromakey",
@@ -112,6 +126,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             "SAM-License / MIT",
             True,
             ("sam3_matte", "chroma_key"),
+            hidden=True,
         ),
         # Compare mode: run ALL refiners side by side. Each lands in its own
         # layer (matte_rvm.* / matte_birefnet.* / matte_vitmatte.*, and
@@ -123,6 +138,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             "SAM-License / MIT",
             True,
             ("sam3_matte", "rvm_refiner", "birefnet_refiner", "vitmatte_refiner", "chroma_key"),
+            hidden=True,
         ),
         # SAM3 + MatAnyone2 intentionally withheld from the GUI
         # catalog until the MatAnyone2 refiner's `_refine_instance`

@@ -33,6 +33,7 @@ def _shot(**kw: object) -> ShotState:
 
 # --- _parse_concepts -------------------------------------------------
 
+
 def test_parse_concepts_empty_is_empty_list() -> None:
     assert _parse_concepts("") == []
     assert _parse_concepts("   ") == []
@@ -53,6 +54,7 @@ def test_parse_concepts_drops_blank_fields() -> None:
 
 
 # --- _build_pass_configs --------------------------------------------
+
 
 def test_concepts_injected_onto_sam3_matte() -> None:
     state = _shot(enabled_models=["sam3_rvm"], sam3_concepts="person, red car")
@@ -81,3 +83,33 @@ def test_concepts_only_touch_sam3_matte_not_other_passes() -> None:
     by_name = {c.name: c for c in configs}
     assert by_name["depth_anything_v2"].params == {}
     assert by_name["sam3_matte"].params == {"concepts": ["person"]}
+
+
+# --- Single Matte switch (sam3_matte_on) -----------------------------
+
+
+def test_matte_on_appends_default_engine() -> None:
+    configs = _build_pass_configs(
+        _shot(enabled_models=["sam3_matte_on"], default_engine="vitmatte")
+    )
+    names = [c.name for c in configs]
+    assert names == ["sam3_matte", "vitmatte_refiner"]
+
+
+def test_matte_on_default_engine_birefnet_carries_weights() -> None:
+    configs = _build_pass_configs(
+        _shot(
+            enabled_models=["sam3_matte_on"],
+            default_engine="birefnet",
+            refiner_model="ZhengPeng7/BiRefNet-matting",
+        )
+    )
+    by_name = {c.name: c for c in configs}
+    assert by_name["birefnet_refiner"].params["model_id"] == "ZhengPeng7/BiRefNet-matting"
+
+
+def test_matte_on_unknown_engine_falls_back_to_birefnet() -> None:
+    configs = _build_pass_configs(
+        _shot(enabled_models=["sam3_matte_on"], default_engine="nonsense")
+    )
+    assert [c.name for c in configs] == ["sam3_matte", "birefnet_refiner"]
