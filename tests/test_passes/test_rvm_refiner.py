@@ -448,3 +448,27 @@ def test_clean_mask_specks_drops_islands_and_fills_holes() -> None:
     assert out[5, 80] == 0  # speck dropped
     assert out[55, 75] == 1  # legit second region kept
     assert out[30, 30] == 1  # main intact
+
+
+def test_duplicate_coverage_does_not_hollow_interiors() -> None:
+    """The same subject tracked TWICE (click 'ARM' + concept 'person')
+    must NOT mutually exclude: exclusion fires only OUTSIDE an object's
+    own hard mask. Field bug: mask.ARM was delivered as an edge ring."""
+    n, h, w = 1, 32, 48
+    rect = _rect_stack(n, h, w, 8, 24, 10, 34)
+    art = {
+        "sam3_hard_masks": {0: {
+            1: {"label": "ARM", "frames": [1], "stack": rect.copy()},
+            2: {"label": "person", "frames": [1], "stack": rect.copy()},
+        }},
+        "sam3_instances": {0: [
+            {"track_id": 1, "slot": "r", "label": "ARM", "score": 0.9, "frames": [1]},
+            {"track_id": 2, "slot": "g", "label": "person", "score": 0.8, "frames": [1]},
+        ]},
+    }
+    p = _FakeRVM({"refine_all_masks": True})
+    p.ingest_artifacts(art)
+    out = p.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, 1))
+    # Interior must survive on BOTH duplicates (fake gives 0.5).
+    assert out[1][f"{MASK_PREFIX}ARM"][16, 20] > 0.0, "duplicate hollowed ARM"
+    assert out[1][f"{MASK_PREFIX}person"][16, 20] > 0.0, "duplicate hollowed person"

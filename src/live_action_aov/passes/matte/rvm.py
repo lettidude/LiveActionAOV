@@ -537,7 +537,7 @@ class RVMRefinerPass(UtilityPass):
                 else None
             )
 
-            def _dense_core(tr: dict[str, Any]) -> np.ndarray:
+            def _dense_core(tr: dict[str, Any], erode: bool = True) -> np.ndarray:
                 dense = np.zeros((n_frames, plate_h, plate_w), dtype=np.uint8)
                 st = np.asarray(tr.get("stack"))
                 for k_i, fr in enumerate(tr.get("frames") or []):
@@ -545,7 +545,7 @@ class RVMRefinerPass(UtilityPass):
                     if li is None:
                         continue
                     b = (st[k_i] > 0.5).astype(np.uint8)
-                    dense[li] = cv2.erode(b, nk) if nk is not None else b
+                    dense[li] = cv2.erode(b, nk) if (erode and nk is not None) else b
                 return dense
 
             occupancy = np.zeros((n_frames, plate_h, plate_w), dtype=np.uint8)
@@ -575,7 +575,15 @@ class RVMRefinerPass(UtilityPass):
             )
             if occupancy is not None:
                 own = _dense_core(track)
-                soft[(occupancy - own) > 0] = 0.0
+                # Exclusion applies ONLY OUTSIDE this object's own hard mask:
+                # it exists to stop the refine band leaking over a NEIGHBOUR.
+                # Inside the object's own SAM mask, SAM says "this is mine" —
+                # even if another track ALSO covers it (the same subject
+                # tracked twice: a click 'ARM' + the concept 'person').
+                # Excluding there hollowed both duplicates to edge rings
+                # (field bug: mask.ARM delivered as an outline).
+                own_solid = _dense_core(track, erode=False)
+                soft[((occupancy - own) > 0) & (own_solid == 0)] = 0.0
             label = str(track.get("label", "") or "")
             slot = hero_slot.get(track_id, "")
             channel = _SLOT_TO_CHANNEL.get(slot)

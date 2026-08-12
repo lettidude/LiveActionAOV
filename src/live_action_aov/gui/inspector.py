@@ -593,40 +593,6 @@ class InspectorPanel(QWidget):
         delivery_hint.setWordWrap(True)
         output_layout.addWidget(delivery_hint)
         output_layout.addWidget(self._delivery_combo)
-        output_layout.addSpacing(16)
-        output_layout.addWidget(_section_label("Models & network"))
-        models_hint = QLabel(
-            "Weights download once into the local cache (~30-40 GB for "
-            "everything) and later loads are CACHE-FIRST: with a warm cache "
-            "the tool makes no network requests. 'Download all models' warms "
-            "the cache while online; 'Offline mode' then forbids any "
-            "network fallback - required for TPN-style content machines."
-        )
-        models_hint.setStyleSheet("color: #888; font-size: 9pt;")
-        models_hint.setWordWrap(True)
-        output_layout.addWidget(models_hint)
-        self._prefetch_btn = QPushButton("Download all models (prefetch)")
-        self._prefetch_btn.setToolTip(
-            "Runs 'liveaov prefetch --all' in the background (CPU only, no "
-            "VRAM use). Do this once while online; afterwards the tool can "
-            "run fully offline."
-        )
-        self._prefetch_btn.clicked.connect(self._on_prefetch_clicked)
-        self._offline_check = QCheckBox("Offline mode (never touch the network)")
-        self._offline_check.setToolTip(
-            "Forbids ALL Hugging Face network access. Loads use only the "
-            "local cache; a missing model fails immediately instead of "
-            "downloading. Prefetch first."
-        )
-        import os as _os
-
-        self._offline_check.setChecked(_os.environ.get("HF_HUB_OFFLINE") == "1")
-        self._offline_check.toggled.connect(self._on_offline_toggled)
-        self._prefetch_status = QLabel("")
-        self._prefetch_status.setStyleSheet("color: #888; font-size: 9pt;")
-        output_layout.addWidget(self._prefetch_btn)
-        output_layout.addWidget(self._offline_check)
-        output_layout.addWidget(self._prefetch_status)
         output_layout.addStretch()
         output_tab = _scrollable(output_layout)
 
@@ -741,7 +707,7 @@ class InspectorPanel(QWidget):
         # Preview + Apply side by side: try engines in the preview, then one
         # click pins the current preview engine onto the ACTIVE object — no
         # hunting the Engine dropdown further down.
-        self._apply_engine_btn = QPushButton("Set as engine")
+        self._apply_engine_btn = QPushButton("Apply engine")
         self._apply_engine_btn.setToolTip(
             "Pin the current 'Preview with' engine onto the selected object "
             "(same as picking it in the Engine dropdown below)."
@@ -1231,53 +1197,6 @@ class InspectorPanel(QWidget):
         self._mask_engine_combo.setCurrentIndex(eng_idx)
         self._mask_engine_combo.blockSignals(False)
         self.active_click_instance_changed.emit(inst)
-
-    def _on_offline_toggled(self, checked: bool) -> None:
-        """App-level: gate the cache-miss network fallback. Loads are
-        cache-first regardless; this makes a genuine miss FAIL instead of
-        silently downloading (TPN content machines)."""
-        import os
-
-        if checked:
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            os.environ["TRANSFORMERS_OFFLINE"] = "1"
-        else:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
-
-    def _on_prefetch_clicked(self) -> None:
-        """Warm the whole model cache in a background process (CPU-only via
-        the CLI's own env guard - the GUI process GPU stays untouched)."""
-        import subprocess
-        import sys
-
-        self._prefetch_btn.setEnabled(False)
-        self._prefetch_status.setText("Prefetch running in background - see console...")
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, "-c",
-                 "from live_action_aov.cli.app import app; app(['prefetch', '--all'])"],
-                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
-            )
-            self._prefetch_proc = proc
-            from PySide6.QtCore import QTimer
-
-            def _poll() -> None:
-                if proc.poll() is None:
-                    QTimer.singleShot(2000, _poll)
-                    return
-                ok = proc.returncode == 0
-                self._prefetch_btn.setEnabled(True)
-                self._prefetch_status.setText(
-                    "All models cached - you can enable Offline mode."
-                    if ok
-                    else f"Prefetch finished with errors (exit {proc.returncode})."
-                )
-
-            QTimer.singleShot(2000, _poll)
-        except Exception as e:
-            self._prefetch_btn.setEnabled(True)
-            self._prefetch_status.setText(f"Prefetch failed to start: {e}")
 
     def _on_apply_preview_engine(self) -> None:
         """Pin the current preview engine to the active object."""

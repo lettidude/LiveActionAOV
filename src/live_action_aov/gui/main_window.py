@@ -236,6 +236,24 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
+        # Models & network — app-level machinery, so it lives in the menu
+        # bar (field feedback: it is not a per-shot output setting).
+        models_menu = self.menuBar().addMenu("&Models")
+        prefetch_action = QAction("&Download all models (prefetch)", self)
+        prefetch_action.setToolTip(
+            "Warm the whole model cache while online (background, CPU only). "
+            "Afterwards the tool can run fully offline."
+        )
+        prefetch_action.triggered.connect(self._on_prefetch_models)
+        models_menu.addAction(prefetch_action)
+        self._offline_action = QAction("&Offline mode (never touch the network)", self)
+        self._offline_action.setCheckable(True)
+        import os as _os
+
+        self._offline_action.setChecked(_os.environ.get("HF_HUB_OFFLINE") == "1")
+        self._offline_action.toggled.connect(self._on_offline_mode_toggled)
+        models_menu.addAction(self._offline_action)
+
         help_menu = self.menuBar().addMenu("&Help")
         open_logs = QAction("Open &log folder", self)
         open_logs.setToolTip(
@@ -248,6 +266,52 @@ class MainWindow(QMainWindow):
         about = QAction("&About", self)
         about.triggered.connect(self._show_about)
         help_menu.addAction(about)
+
+    def _on_offline_mode_toggled(self, checked: bool) -> None:
+        """Forbid the cache-miss network fallback (TPN posture). Loads are
+        cache-first regardless; this makes a genuine miss FAIL instead of
+        silently downloading."""
+        import os
+
+        if checked:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            self.statusBar().showMessage("Offline mode ON - no network access", 5000)
+        else:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+            self.statusBar().showMessage("Offline mode off", 5000)
+
+    def _on_prefetch_models(self) -> None:
+        """Warm the model cache in a background CPU-only process."""
+        import subprocess
+        import sys
+
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-c",
+                 "from live_action_aov.cli.app import app; app(['prefetch', '--all'])"],
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            )
+        except Exception as e:
+            self.statusBar().showMessage(f"Prefetch failed to start: {e}", 8000)
+            return
+        self.statusBar().showMessage("Prefetch running in a background console...", 8000)
+        from PySide6.QtCore import QTimer
+
+        def _poll() -> None:
+            if proc.poll() is None:
+                QTimer.singleShot(3000, _poll)
+                return
+            ok = proc.returncode == 0
+            self.statusBar().showMessage(
+                "All models cached - you can enable Offline mode."
+                if ok
+                else f"Prefetch finished with errors (exit {proc.returncode}).",
+                15000,
+            )
+
+        QTimer.singleShot(3000, _poll)
 
     def _open_log_folder(self) -> None:
         from PySide6.QtCore import QUrl
