@@ -103,6 +103,42 @@ def apply_edge_guardrail(
     return np.clip(np.maximum(feathered, core_m.astype(np.float32)), 0.0, 1.0), True
 
 
+def clean_mask_specks(mask: np.ndarray, min_frac: float = 0.02, min_px: int = 12) -> np.ndarray:
+    """Denoise a SAM hard mask: drop tiny DETACHED islands and fill tiny
+    interior holes — both smaller than `min_frac` of the largest island
+    (and at least `min_px`). SAM routinely sprinkles speck islands and
+    pepper holes on reflective/dark objects; they are noise 99% of the
+    time and derail the refiners (a band around every speck). Legit
+    secondary regions (a limb split by occlusion) are far above 2% and
+    survive. Returns uint8 0/1."""
+    import cv2
+
+    binm = (mask > 0.5).astype(np.uint8)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(binm, connectivity=8)
+    if n <= 1:
+        return binm
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    thr = max(int(float(areas.max()) * min_frac), min_px)
+    keep = np.zeros_like(binm)
+    for i in range(1, n):
+        if int(stats[i, cv2.CC_STAT_AREA]) >= thr:
+            keep[lab == i] = 1
+    # Fill interior holes below the same threshold (not touching the frame
+    # border — border-touching background is legitimate outside).
+    h, w = keep.shape
+    inv = (1 - keep).astype(np.uint8)
+    n2, lab2, stats2, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
+    for i in range(1, n2):
+        if int(stats2[i, cv2.CC_STAT_AREA]) < thr:
+            x = int(stats2[i, cv2.CC_STAT_LEFT])
+            y = int(stats2[i, cv2.CC_STAT_TOP])
+            ww = int(stats2[i, cv2.CC_STAT_WIDTH])
+            hh = int(stats2[i, cv2.CC_STAT_HEIGHT])
+            if x > 0 and y > 0 and x + ww < w and y + hh < h:
+                keep[lab2 == i] = 1
+    return keep
+
+
 def adaptive_band_px(mask: np.ndarray, frac: float, min_px: int, max_px: int) -> int:
     """Resolution-independent edge-band width: a fraction of sqrt(mask
     AREA), clamped. Area (not bbox diagonal) so long-THIN objects (a rifle)
@@ -380,6 +416,16 @@ class RVMRefinerPass(UtilityPass):
             if local is None:
                 continue
             dense_hard[local] = track_stack[k]
+
+        # Speck/hole cleanup before the engine sees the mask (param
+        # `clean_specks`, on by default; `speck_frac` tunes the threshold).
+        if bool(self.params.get("clean_specks", True)):
+            frac = float(self.params.get("speck_frac", 0.02))
+            for i in range(n_frames):
+                if dense_hard[i].any():
+                    dense_hard[i] = clean_mask_specks(dense_hard[i], frac).astype(
+                        dense_hard.dtype
+                    )
 
         soft = self._refine_instance(frames, dense_hard)
         if soft.shape != dense_hard.shape:

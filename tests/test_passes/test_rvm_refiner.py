@@ -433,3 +433,18 @@ def test_only_and_skip_labels_route_objects_between_engines() -> None:
     assert f"{MASK_PREFIX}person" not in out_b[1]
     # pack_heroes=False: matte slots stay zero (the main engine owns them).
     assert float(out_b[1][CH_MATTE_G].sum()) == 0.0
+
+
+def test_clean_mask_specks_drops_islands_and_fills_holes() -> None:
+    from live_action_aov.passes.matte.rvm import clean_mask_specks
+
+    m = np.zeros((64, 96), np.float32)
+    m[10:50, 10:60] = 1.0  # main island (2000 px)
+    m[30:33, 30:33] = 0.0  # tiny pepper hole (9 px)
+    m[5:7, 80:82] = 1.0  # tiny speck island (4 px)
+    m[52:62, 70:90] = 1.0  # legit second region (200 px = 10% of main)
+    out = clean_mask_specks(m)
+    assert out[31, 31] == 1  # hole filled
+    assert out[5, 80] == 0  # speck dropped
+    assert out[55, 75] == 1  # legit second region kept
+    assert out[30, 30] == 1  # main intact

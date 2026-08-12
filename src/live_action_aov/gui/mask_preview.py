@@ -233,6 +233,11 @@ class _PreviewTask(QRunnable):
                     refiner = BiRefNetRefinerPass({"model_id": model_id})
                 refiners[cache_key] = refiner
             plate = self._image[None].astype(np.float32, copy=False)  # (1, H, W, 3)
+            # Same speck/hole denoise the run applies (raw SAM preview via
+            # 'no refiner' stays untouched for debugging).
+            from live_action_aov.passes.matte.rvm import clean_mask_specks
+
+            out = clean_mask_specks(out).astype(np.float32)
             hard = out[None].astype(np.float32, copy=False)  # (1, H, W)
             soft = refiner._refine_instance(plate, hard)[0]
             soft = np.clip(soft.astype(np.float32, copy=False), 0.0, 1.0)
