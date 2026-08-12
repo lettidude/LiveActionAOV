@@ -38,12 +38,27 @@ Deterministic per-frame → no ML flicker → no smoothing declared.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
 
 from live_action_aov.core.pass_base import License
 from live_action_aov.passes.matte.rvm import RVMRefinerPass
+
+_log = logging.getLogger(__name__)
+
+
+def _screen_likeness(frame_rgb: np.ndarray, region: np.ndarray, screen: str) -> float:
+    """How screen-coloured a region is: mean colour-difference d in [0,1]."""
+    if not region.any():
+        return 0.0
+    px = frame_rgb[region]
+    if screen == "blue":
+        d = px[:, 2] - np.maximum(px[:, 0], px[:, 1])
+    else:
+        d = px[:, 1] - np.maximum(px[:, 0], px[:, 2])
+    return float(np.clip(d, 0.0, 1.0).mean())
 
 
 class ChromaKeyPass(RVMRefinerPass):
@@ -136,6 +151,23 @@ class ChromaKeyPass(RVMRefinerPass):
                 continue
             if not screen:  # auto: detect once, on the first populated frame
                 screen = self._detect_screen(plate_stack[t], binm)
+                # Seed-direction guard: the #1 usage mistake is seeding the
+                # SCREEN instead of the subject. If the masked interior is
+                # decidedly more screen-coloured than the outside, say so —
+                # the output will be garbage and the user should know why.
+                inside = _screen_likeness(plate_stack[t], binm > 0, screen)
+                alt = "blue" if screen == "green" else "green"
+                inside_alt = _screen_likeness(plate_stack[t], binm > 0, alt)
+                worst = max(inside, inside_alt)
+                if worst > 0.25:
+                    _log.warning(
+                        "chroma_key: the SAM mask interior looks like a %s "
+                        "screen (likeness %.2f) — you probably seeded the "
+                        "SCREEN. Seed the SUBJECT instead; the key removes "
+                        "the screen around it automatically.",
+                        alt if inside_alt > inside else screen,
+                        worst,
+                    )
             alpha = self._key_alpha(plate_stack[t], screen).astype(np.float32)
             dil = cv2.dilate(binm, k_dil) if k_dil is not None else binm
             core = cv2.erode(binm, k_ero) if k_ero is not None else binm
