@@ -236,3 +236,23 @@ def test_heroes_override_routes_to_specific_slot() -> None:
     by_slot = {h["slot"]: h["label"] for h in heroes}
     assert by_slot["r"] == "vehicle"
     assert by_slot["g"] == "person"
+
+
+# --- Zero-match concept warning (the 'peron' typo case) ----------------
+
+
+def test_user_concept_matching_nothing_warns(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger=sam3_mod.__name__):
+        sam3_mod._warn_unmatched_concepts(["peron", "car"], {"car"})
+    msgs = [r.message for r in caplog.records]
+    assert len(msgs) == 1
+    assert "'peron' matched 0 objects" in msgs[0]
+    assert "mask.peron" in msgs[0]
+
+
+def test_default_concepts_do_not_arm_the_warning() -> None:
+    """Built-in defaults matching nothing is normal — only USER-typed
+    concepts flip the flag that gates the warning in run_shot."""
+    assert SAM3MattePass()._user_concepts is False
+    assert SAM3MattePass({"prompt_instances": []})._user_concepts is False
+    assert SAM3MattePass({"concepts": ["person"]})._user_concepts is True

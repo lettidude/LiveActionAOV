@@ -99,6 +99,26 @@ def _mask_ram_message(n_inst: int, n_frames: int, h: int, w: int, peak_bytes: in
     )
 
 
+def _warn_unmatched_concepts(concepts: list[str], found_labels: set[str]) -> None:
+    """Loud warning for every USER-typed concept that seeded no track.
+
+    SAM 3 only finds what it's prompted for, so a typo ('peron') or an
+    off-frame subject silently produces no mask.<name> channel at all —
+    the delivery just misses a matte with zero errors. Field case
+    2026-08-12: 'peron, rifle, car, greenscreen' shipped without the
+    person matte."""
+    for concept in concepts:
+        if concept not in found_labels:
+            _log.warning(
+                "SAM3 matte: concept '%s' matched 0 objects on the seed frame - "
+                "no track and no mask.%s channel will be produced. Check the "
+                "spelling in 'SAM 3 detects', or the subject may not be visible "
+                "on the seed frame.",
+                concept,
+                concept,
+            )
+
+
 def _wrap_if_gated_repo(repo: str, exc: BaseException) -> RuntimeError | None:
     """Translate a Hugging Face gated-repo / 401 error into actionable guidance.
 
@@ -211,6 +231,11 @@ class SAM3MattePass(UtilityPass):
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         super().__init__(params)
+        # Whether the concepts list was TYPED by the user (GUI field / YAML)
+        # rather than our built-in defaults — user concepts that match
+        # nothing get a loud warning (typos: 'peron'); silent defaults
+        # matching nothing is normal and stays quiet.
+        self._user_concepts = bool((params or {}).get("concepts"))
         for k, v in self.DEFAULT_PARAMS.items():
             self.params.setdefault(k, v)
         self._model: Any = None
@@ -566,6 +591,8 @@ class SAM3MattePass(UtilityPass):
 
         concepts = [str(c) for c in self.params["concepts"]]
         seeds = self._detect_seed(seed_rgb, concepts)
+        if self._user_concepts:
+            _warn_unmatched_concepts(concepts, {label for _tid, label, _m in seeds})
 
         # Pre-flight host-RAM check (fail fast, before the minutes-long track).
         # Peak host RAM is dominated by holding every instance's whole-clip mask
