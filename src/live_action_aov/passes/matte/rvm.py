@@ -103,7 +103,7 @@ def apply_edge_guardrail(
     return np.clip(np.maximum(feathered, core_m.astype(np.float32)), 0.0, 1.0), True
 
 
-def adaptive_band_px(mask: "np.ndarray", frac: float, min_px: int, max_px: int) -> int:
+def adaptive_band_px(mask: np.ndarray, frac: float, min_px: int, max_px: int) -> int:
     """Resolution-independent edge-band width: a fraction of sqrt(mask
     AREA), clamped. Area (not bbox diagonal) so long-THIN objects (a rifle)
     get a band matched to their thickness — the bbox diagonal of a thin
