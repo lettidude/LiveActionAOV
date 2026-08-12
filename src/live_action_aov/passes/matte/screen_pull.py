@@ -21,8 +21,24 @@ memory-flat on 1000-frame clips).
 
 Screen colour is auto-detected per shot (dominant green-vs-blue
 colour-difference population); the pull is auto-calibrated per frame
-against the measured screen (same approach as chroma_key) so display
-transforms / exposure / uneven screens map pure screen to alpha 0.
+against the measured screen so uneven screens map pure screen to alpha 0.
+
+The pass keys on SCENE-LINEAR pixels (`input_colorspace =
+"scene_linear"` — the executor hands it the OCIO-linearized plate,
+skipping exposure/AgX/EOTF). Keying on the display-transformed plate
+was the 2026-08-12 field failure: AgX desaturation compressed the
+green screen and green-ish plate content (foliage, glossy-car
+reflections) toward the same pale values, so the calibrated pull keyed
+half the plate. In scene-linear the screen stays strongly chromatic
+and the discriminant holds.
+
+Calibration is two-stage per frame: screen candidates = pixels with
+d > 0.5 * p99(d) (works even when the screen is a small fraction of
+frame — a whole-frame p90 needs the screen to cover >10%), d_ref =
+their median. A per-shot floor (3/4 of the first calibrated d_ref) stops
+frames where the screen leaves view from collapsing d_ref onto
+foliage. key.rgb stays unclamped scene-linear (premultiplied) so comp
+keeps the plate's dynamic range.
 
 Despill (green example): g' = min(g, blend of max(r,b) and (r+b)/2) —
 kills the green bounce on skin/edges before premultiplying.
@@ -61,7 +77,9 @@ class ScreenPullPass(UtilityPass):
     )
     pass_type = PassType.SEMANTIC
     temporal_mode = TemporalMode.VIDEO_CLIP  # run_shot streams frame-by-frame
-    input_colorspace = "srgb_display"
+    # SCENE-LINEAR input — see module docstring. The executor recognises
+    # this value and hands run_shot a LinearizedReader.
+    input_colorspace = "scene_linear"
 
     produces_channels = [
         ChannelSpec(name=CH_KEY_R, description="Keyed plate R (despilled, premultiplied)"),
@@ -92,6 +110,10 @@ class ScreenPullPass(UtilityPass):
         for k, v in self.DEFAULT_PARAMS.items():
             self.params.setdefault(k, v)
         self._model: Any = None
+        # First successfully-calibrated d_ref of the shot — later frames
+        # never calibrate below 3/4 of it (screen leaving frame must not
+        # re-target the pull onto foliage), and it damps flicker.
+        self._shot_d_ref: float | None = None
 
     # No weights — sentinel loader keeps executor lifecycle happy.
     def _load_model(self) -> None:
@@ -126,11 +148,26 @@ class ScreenPullPass(UtilityPass):
 
     def _pull_alpha(self, rgb: np.ndarray, screen: str) -> np.ndarray:
         d = self._colour_diff(rgb, screen)
-        # Per-frame calibration: p90 of the frame's difference lands deep in
-        # the screen on screen plates (the screen is a large region).
-        d_ref = max(float(np.percentile(d, 90)) * 0.9, 1e-4)
-        if d_ref < 0.05:
-            d_ref = 0.45  # no real screen this frame — old fixed behaviour
+        # Two-stage calibration: the screen population is "pixels close to
+        # the frame's deepest colour-difference" (p99 top). Median of that
+        # population = d_ref. Robust to small screens (2% of frame is
+        # plenty) where a whole-frame percentile lands on foliage instead.
+        d99 = float(np.percentile(d, 99))
+        if d99 >= 0.02:
+            cand = d[d > 0.5 * d99]
+            d_ref = max(float(np.median(cand)) * 0.9, 1e-4)
+        else:
+            # No measurable screen this frame — weak fixed pull rather
+            # than amplifying noise.
+            d_ref = 0.45
+        if self._shot_d_ref is None:
+            if d99 >= 0.02:
+                self._shot_d_ref = d_ref
+        else:
+            # Per-frame calibration only tracks mild screen/lighting drift;
+            # a big drop means the screen left frame and the top-percentile
+            # population is now plate content — don't re-target onto it.
+            d_ref = max(d_ref, 0.75 * self._shot_d_ref)
         gain = float(self.params.get("key_gain", 1.0))
         lift = float(self.params.get("key_lift", 0.02))
         return (1.0 - np.clip((d / d_ref) * gain - lift, 0.0, 1.0)).astype(np.float32)
@@ -176,7 +213,10 @@ class ScreenPullPass(UtilityPass):
                 screen = self._detect_screen(rgb)
                 _log.info("screen_pull: detected %s screen", screen)
             alpha = self._pull_alpha(rgb, screen)
-            despilled = self._despill(np.clip(rgb, 0.0, 1.0), screen)
+            # No [0,1] clip: the plate is scene-linear and key.rgb should
+            # keep its dynamic range (negatives still floored — they are
+            # sensor/decode noise, not signal).
+            despilled = self._despill(np.maximum(rgb, 0.0), screen)
             premult = despilled * alpha[..., None]
             out[f] = {
                 CH_KEY_R: premult[..., 0].astype(np.float32),

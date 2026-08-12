@@ -223,6 +223,42 @@ class DisplayTransformedReader(ImageSequenceReader):
             return ocio_color._fallback_to_linear(frames, colorspace)
 
 
+class LinearizedReader(ImageSequenceReader):
+    """Scene-LINEAR view over a `DisplayTransformedReader`.
+
+    Same OCIO linearize stage (and NaN/Inf guard) as the display path,
+    but it STOPS there: no exposure, no tonemap, no EOTF, no clamp.
+
+    For passes doing pure colour maths — chroma keying — the display
+    transform is actively destructive: AgX desaturates, so a green
+    screen and green foliage compress toward the same pale values and
+    the colour-difference discriminant collapses (field case 2026-08-12:
+    screen_pull keyed a black car's green reflections and milked the
+    whole plate). In scene-linear the screen stays strongly chromatic.
+    """
+
+    def __init__(self, base: DisplayTransformedReader) -> None:
+        self._dt = base
+        self.folder = base.folder
+        self.sequence_pattern = base.sequence_pattern
+
+    def frame_range(self) -> tuple[int, int]:
+        return self._dt.frame_range()
+
+    def resolution(self) -> tuple[int, int]:
+        return self._dt.resolution()
+
+    def pixel_aspect(self) -> float:
+        return self._dt.pixel_aspect()
+
+    def read_frame(self, frame: int) -> tuple[np.ndarray, dict[str, Any]]:
+        raw, attrs = self._dt._base.read_frame(frame)
+        raw = _sanitize_nonfinite(raw, frame=frame, where="source plate")
+        colorspace = self._dt._resolve_colorspace(attrs)
+        lin = self._dt._linearize(raw, colorspace)
+        return lin.astype(np.float32, copy=False), attrs
+
+
 # Colorspaces we know are already linear — skip the OCIO step for them.
 # Keep this list conservative; when in doubt, go through OCIO.
 _LINEAR_COLORSPACES = {
@@ -256,4 +292,4 @@ def _sniff_colorspace_extended(attrs: dict[str, Any], fallback: str) -> str:
     return result.detected
 
 
-__all__ = ["DisplayTransformedReader"]
+__all__ = ["DisplayTransformedReader", "LinearizedReader"]

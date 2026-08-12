@@ -33,7 +33,10 @@ from live_action_aov.core.logging_setup import RunLoggingSession
 from live_action_aov.core.pass_base import TemporalMode, UtilityPass
 from live_action_aov.core.registry import get_registry
 from live_action_aov.executors.base import Executor
-from live_action_aov.io.readers.display_transform_reader import DisplayTransformedReader
+from live_action_aov.io.readers.display_transform_reader import (
+    DisplayTransformedReader,
+    LinearizedReader,
+)
 from live_action_aov.io.readers.oiio_exr import OIIOExrReader
 from live_action_aov.io.readers.proxy import wrap_if_proxy
 from live_action_aov.io.writers.exr import ExrSidecarWriter
@@ -214,7 +217,16 @@ class LocalExecutor(Executor):
                 if getattr(cls, "requires_artifacts", None):
                     instance.ingest_artifacts(artifacts)
 
-                frame_outputs = instance.run_shot(reader, shot.frame_range)
+                # Colour-maths passes (screen_pull) key on SCENE-LINEAR
+                # pixels: the display transform's desaturation collapses
+                # the chroma discriminant they depend on. Same OCIO
+                # linearize stage, minus exposure/tonemap/EOTF.
+                pass_reader = reader
+                if getattr(cls, "input_colorspace", "") == "scene_linear" and isinstance(
+                    reader, DisplayTransformedReader
+                ):
+                    pass_reader = LinearizedReader(reader)
+                frame_outputs = instance.run_shot(pass_reader, shot.frame_range)
                 for frame_idx, channels in frame_outputs.items():
                     per_frame_channels.setdefault(frame_idx, {}).update(channels)
 
