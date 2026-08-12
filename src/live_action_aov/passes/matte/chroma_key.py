@@ -83,10 +83,13 @@ class ChromaKeyPass(RVMRefinerPass):
         # "auto" samples the plate outside the SAM mask and picks the
         # dominant screen primary; "green"/"blue" force it.
         "screen": "auto",
-        # alpha_key = 1 - clip(d * gain - lift, 0, 1). Higher gain = harder
-        # pull (more opaque subject, less screen bleed); lift eats screen
-        # noise near zero.
-        "key_gain": 2.2,
+        # The pull is AUTO-CALIBRATED per frame: the screen reference d_ref
+        # is measured from the plate OUTSIDE the SAM mask, so a pure-screen
+        # pixel always maps to alpha 0 regardless of display transform (AgX
+        # desaturates greens — a fixed gain under-pulled) or exposure.
+        # alpha = 1 - clip((d / d_ref) * gain - lift, 0, 1).
+        # gain is a multiplier on the calibrated pull (1.0 = calibrated).
+        "key_gain": 1.0,
         "key_lift": 0.02,
         # SAM-bound trimap: outward garbage bound + solid inward core.
         # The bound is generous by default — the SAM mask may come from a
@@ -115,16 +118,34 @@ class ChromaKeyPass(RVMRefinerPass):
         mean = frame_rgb[bg].mean(axis=0)
         return "blue" if mean[2] > mean[1] else "green"
 
-    def _key_alpha(self, frame_rgb: np.ndarray, screen: str) -> np.ndarray:
-        """Colour-difference pull on one (H, W, 3) float frame -> alpha."""
+    @staticmethod
+    def _colour_diff(frame_rgb: np.ndarray, screen: str) -> np.ndarray:
         r, g, b = frame_rgb[..., 0], frame_rgb[..., 1], frame_rgb[..., 2]
         if screen == "blue":
-            d = b - np.maximum(r, g)
-        else:
-            d = g - np.maximum(r, b)
-        gain = float(self.params.get("key_gain", 2.2))
+            return b - np.maximum(r, g)
+        return g - np.maximum(r, b)
+
+    def _key_alpha(self, frame_rgb: np.ndarray, screen: str, d_ref: float) -> np.ndarray:
+        """Calibrated colour-difference pull -> alpha. `d_ref` is the
+        measured screen difference; a pure-screen pixel maps to alpha 0."""
+        d = self._colour_diff(frame_rgb, screen)
+        gain = float(self.params.get("key_gain", 1.0))
         lift = float(self.params.get("key_lift", 0.02))
-        return 1.0 - np.clip(d * gain - lift, 0.0, 1.0)
+        return 1.0 - np.clip((d / max(d_ref, 1e-4)) * gain - lift, 0.0, 1.0)
+
+    @staticmethod
+    def _screen_reference(frame_rgb: np.ndarray, subject_mask: np.ndarray, screen: str) -> float:
+        """Measure the screen's own colour-difference from OUTSIDE the SAM
+        mask. p90 of the outside distribution lands deep in the screen even
+        when the outside also contains set/props; scaled slightly down so a
+        typical screen pixel reaches ratio >= 1 (alpha exactly 0). Fallback
+        0.45 (the old fixed-gain behaviour) when there is no screen outside."""
+        bg = subject_mask < 0.5
+        if not bg.any():
+            return 0.45
+        d_out = ChromaKeyPass._colour_diff(frame_rgb[bg][None, ...], screen)[0]
+        ref = float(np.percentile(d_out, 90)) * 0.9
+        return ref if ref > 0.05 else 0.45
 
     def _refine_instance(
         self,
@@ -168,7 +189,8 @@ class ChromaKeyPass(RVMRefinerPass):
                         alt if inside_alt > inside else screen,
                         worst,
                     )
-            alpha = self._key_alpha(plate_stack[t], screen).astype(np.float32)
+            d_ref = self._screen_reference(plate_stack[t], binm, screen)
+            alpha = self._key_alpha(plate_stack[t], screen, d_ref).astype(np.float32)
             dil = cv2.dilate(binm, k_dil) if k_dil is not None else binm
             core = cv2.erode(binm, k_ero) if k_ero is not None else binm
             # Trimap combine: key draws the edge inside the SAM garbage

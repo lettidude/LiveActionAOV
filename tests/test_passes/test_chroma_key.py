@@ -113,3 +113,21 @@ def test_emits_standard_refiner_channels() -> None:
 def test_license_is_unencumbered() -> None:
     lic = ChromaKeyPass.declared_license()
     assert lic.commercial_use is True and lic.spdx == "MIT"
+
+
+def test_desaturated_screen_still_keys_to_zero() -> None:
+    """The field bug: display transforms (AgX) desaturate the screen, the
+    colour-difference halves, and a fixed gain under-pulled — the screen
+    stayed at alpha ~0.5 inside the dilated bound (visible halo around the
+    subject). The per-frame calibration must kill a washed-out screen."""
+    n, h, w = 1, 32, 48
+    rgb = np.zeros((n, h, w, 3), np.float32)
+    # AgX-ish pastel green: weak colour difference (d = 0.45 - 0.25 = 0.2).
+    rgb[..., 0] = 0.25
+    rgb[..., 1] = 0.45
+    rgb[..., 2] = 0.25
+    rgb[:, 8:24, 10:30, :] = 0.4  # neutral subject
+    soft = _run(rgb, _hard(n, h, w))
+    assert soft[0, 16, 20] == 1.0  # subject solid
+    # Screen INSIDE the dilated bound — the halo region — must be dead.
+    assert soft[0, 16, 40] < 0.05, f"washed-out screen leaked: {soft[0, 16, 40]}"
