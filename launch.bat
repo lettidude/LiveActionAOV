@@ -33,11 +33,11 @@ git log -1 --oneline 2>nul
 echo.
 
 echo  Python (via uv):
-uv run python --version
+uv run --extra all python --version
 echo.
 
 echo  CUDA visibility (torch):
-uv run python -c "import torch; print('  torch       :', torch.__version__); print('  cuda.is_available:', torch.cuda.is_available()); print('  device      :', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU only')"
+uv run --extra all python -c "import torch; print('  torch       :', torch.__version__); print('  cuda.is_available:', torch.cuda.is_available()); print('  device      :', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU only')"
 echo.
 
 REM --- Stream Python output to the console in real time -------------------
@@ -57,11 +57,14 @@ set HF_HUB_DOWNLOAD_TIMEOUT=120
 set HF_HUB_ETAG_TIMEOUT=30
 
 echo ----------------------------------------------------------------------
-echo  Launching: uv run liveaov-gui
+echo  Launching: uv run --extra all liveaov-gui
 echo ----------------------------------------------------------------------
 echo.
 
-uv run liveaov-gui
+REM --extra all: a bare `uv run` re-syncs WITHOUT extras and silently
+REM removes them (einops/kornia/timm vanished mid-session once). Keep the
+REM extras pinned on every invocation.
+uv run --extra all liveaov-gui
 set EXITCODE=%ERRORLEVEL%
 
 echo.
