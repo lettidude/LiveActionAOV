@@ -76,8 +76,11 @@ def test_produces_albedo_and_irradiance() -> None:
 
 def test_vram_floor_declared() -> None:
     # Heavy model → must advertise a VRAM floor for the capability gate.
-    assert MIN_VRAM_GB >= 16.0
-    assert UniVidXIntrinsicPass.vram_estimate_gb_fn(1920, 1080) >= 16.0
+    # 24 GB is the honest minimum (FP8) per the UniVidX_ComfyUI maintainer
+    # on the same upstream model; a lower claim would let the GUI offer
+    # this pass on a card that then OOM-crashes mid-run.
+    assert MIN_VRAM_GB >= 24.0
+    assert UniVidXIntrinsicPass.vram_estimate_gb_fn(1920, 1080) >= 24.0
 
 
 def test_backend_raises_until_wired() -> None:
