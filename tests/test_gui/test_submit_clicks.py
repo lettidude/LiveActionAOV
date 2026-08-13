@@ -114,6 +114,20 @@ def test_no_clicks_no_concepts_leaves_defaults() -> None:
     assert sam3.params == {}
 
 
+def test_clicks_without_concepts_disable_default_concepts() -> None:
+    """Click objects + empty concepts field -> clicks ONLY: the built-in
+    default concepts would duplicate a clicked object under another label
+    (click 'ARM' + default 'person') and the two tracks then fight in the
+    exclusion step (the 2026-08 edge-ring case)."""
+    state = _shot(
+        enabled_models=["sam3_matte_on"],
+        click_instances=[ClickInstance(name="ARM", seed_frame=1, points=[(1.0, 2.0, 1)])],
+    )
+    params = next(c for c in _build_pass_configs(state) if c.name == "sam3_matte").params
+    assert params["concepts"] == []
+    assert params["prompt_instances"][0]["name"] == "ARM"
+
+
 def test_per_object_engine_builds_dedicated_pass() -> None:
     """A click object pinned to ViTMatte gets its own only_labels pass while
     the run's main engine skips that label."""

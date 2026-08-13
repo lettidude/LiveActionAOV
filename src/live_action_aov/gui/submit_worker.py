@@ -274,6 +274,13 @@ def _sam3_matte_params(state: ShotState) -> dict[str, Any]:
     clicks = _serialize_click_instances(state.click_instances, state.resolution)
     if clicks:
         params["prompt_instances"] = clicks
+        if not concepts:
+            # Clicks present + empty concepts field -> clicks ONLY. The
+            # pass's built-in default concepts would silently duplicate a
+            # clicked object under another label (click 'ARM' + default
+            # 'person'), and the two tracks then fight in the exclusion
+            # step. Typed concepts still combine with clicks as before.
+            params["concepts"] = []
     return params
 
 

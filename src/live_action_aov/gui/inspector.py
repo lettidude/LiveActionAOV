@@ -405,7 +405,10 @@ class InspectorPanel(QWidget):
         concepts_label.setStyleSheet(
             "font-weight: 600; color: #ddd; font-size: 9pt; padding-top: 6px;"
         )
-        concepts_hint = QLabel("Comma-separated. Matte + Cryptomatte. Empty = defaults.")
+        concepts_hint = QLabel(
+            "Comma-separated. Matte + Cryptomatte. Empty = default concepts - "
+            "unless you have click objects (Masks tab): then empty = clicks only."
+        )
         concepts_hint.setStyleSheet("color: #999; font-size: 8pt;")
         concepts_hint.setWordWrap(True)
         passes_block.addSpacing(8)
@@ -550,6 +553,24 @@ class InspectorPanel(QWidget):
         grade_note.setStyleSheet("color: #8a8; font-size: 8pt;")
         grade_note.setWordWrap(True)
         preview_layout.addWidget(grade_note)
+        preview_layout.addSpacing(12)
+        preview_layout.addWidget(_section_label("Pixel aspect"))
+        pa_hint = QLabel(
+            "Anamorphic desqueeze for the VIEWER only (sidecars stay in "
+            "pixel space). Auto-filled from the EXR header; override it "
+            "here when the header lies (1.0 = square pixels, 2.0 = 2x "
+            "anamorphic)."
+        )
+        pa_hint.setStyleSheet("color: #888; font-size: 9pt;")
+        pa_hint.setWordWrap(True)
+        preview_layout.addWidget(pa_hint)
+        self._pixel_aspect_spin = QDoubleSpinBox()
+        self._pixel_aspect_spin.setRange(0.25, 4.0)
+        self._pixel_aspect_spin.setSingleStep(0.05)
+        self._pixel_aspect_spin.setDecimals(3)
+        self._pixel_aspect_spin.setValue(1.0)
+        self._pixel_aspect_spin.valueChanged.connect(self._on_pixel_aspect_changed)
+        preview_layout.addWidget(self._pixel_aspect_spin)
         preview_layout.addSpacing(12)
         preview_layout.addWidget(self._reset_btn)
         preview_layout.addStretch()
@@ -810,6 +831,7 @@ class InspectorPanel(QWidget):
             ev = float(shot.exposure_ev)
             self._exposure_slider.setValue(int(round(ev * 10)))
             self._exposure_spin.setValue(ev)
+            self._pixel_aspect_spin.setValue(float(shot.pixel_aspect or 1.0))
 
             # Output location radios.
             mode_to_button = {
@@ -981,6 +1003,12 @@ class InspectorPanel(QWidget):
         self._exposure_slider.setValue(int(round(ev * 10)))
         self._exposure_slider.blockSignals(False)
         self._registry.notify_updated(self._current)
+
+    def _on_pixel_aspect_changed(self, pa: float) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.pixel_aspect = float(pa)
+        self._registry.notify_updated(self._current)  # viewer re-desqueezes
 
     def _set_output_mode(self, mode: str) -> None:
         """Radio handler — runs once per new selection (not for the
