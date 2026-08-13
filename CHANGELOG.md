@@ -4,6 +4,83 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [0.8.0] — 2026-08-13
+
+### Added
+- **Screen Pull keyer** ("Key" category, Passes tab): whole-plate chroma
+  key — `key.rgba` = despilled plate premultiplied by a pulled alpha
+  (screen=0, subject=1, soft in between). Pure colour-difference maths:
+  no models, no weights, MIT-clean, streams frame-by-frame (memory-flat
+  on 1000-frame clips). Auto green/blue detection; keys on the
+  SCENE-LINEAR plate (the display transform's desaturation collapses the
+  chroma discriminant) with a robust two-stage per-frame calibration
+  (works with the screen down to ~2% of frame; a per-shot floor stops
+  frames where the screen leaves view from re-targeting onto foliage).
+  `key.rgb` stays unclamped scene-linear — comp keeps the dynamic range.
+- **Chroma Key per-object engine**: SAM decides WHO, the key does the
+  edge. Auto-calibrated against the measured screen, screen-aware edges
+  (non-screen band pixels follow the SAM edge instead of the key), and a
+  seed-direction guard that warns when the clicked object looks like the
+  screen itself.
+- **Per-object engines**: every mask layer can pin its own soft-edge
+  engine (ViTMatte / BiRefNet / Chroma Key / RVM) — portrait weights on
+  the person, trimap on the car, in one run. The engine picker sits
+  beside the mask list; "Apply engine" pins the current preview engine
+  onto the selected object; the list shows each object's engine.
+- **One Matte switch** (Passes tab): the five per-engine matte combos
+  collapse into Matte Off/On + a "Default engine" dropdown (engine +
+  BiRefNet weight variant in one choice). Old sessions migrate
+  automatically.
+- **Viewport zoom + pan**: wheel zooms around the cursor (up to 8x),
+  middle-drag pans, middle double-click resets to fit. Click-to-mask
+  coordinates follow the zoomed view exactly.
+- **Models menu** (menu bar): "Download all models (prefetch)" launches
+  the full prefetch in a console window; a checkable "Offline mode"
+  pins HF_HUB_OFFLINE for TPN-style air-gapped runs. Model loading is
+  local-first everywhere: once weights are cached, no network requests.
+- **Manual pixel-aspect override** (Colour tab) for anamorphic scans
+  whose EXR header carries PixelAspectRatio=1.0.
+- **Zero-match concept warning**: every user-typed SAM 3 concept that
+  matches nothing logs a loud warning naming the missing channel — a
+  typo no longer silently drops a matte from the delivery.
+
+### Fixed
+- **Duplicate-track edge ring**: a clicked object duplicated by a default
+  concept (click "ARM" + default "person") made the twin tracks hollow
+  each other out via inter-object exclusion, delivering an edge ring.
+  Exclusion now never fires inside an object's own hard mask — and
+  clicks with an empty concepts field now submit clicks ONLY (no default
+  concepts), removing the duplicate at the source.
+- **Hero mattes came out black** when any object pinned its own engine:
+  the dedicated engine passes emitted empty hero channels that
+  overwrote the main engine's. They now emit only their own
+  `mask.<name>` channels.
+- **Boiling edges + per-frame warning spam**: the edge guardrail decided
+  engine-vs-feather per frame, flip-flopping across the clip. It now
+  decides once per track (>=25% tripped frames -> consistent feather)
+  and logs one aggregated warning.
+- **Refiner band sizing** on thin/holey objects: the band radius now
+  derives from sqrt(mask AREA) instead of the bbox diagonal (a rifle no
+  longer gets a car-sized halo), BiRefNet's core anchor is a small
+  fixed erode independent of the band, and guardrail feathering is a
+  tight 3px instead of band-sized mush.
+- **SAM speck cleanup**: stray specks and pinholes in SAM 3's hard masks
+  (top culprits for refiner blobs) are removed before refinement, with
+  absolute caps so legitimate structures (car windows, arm gaps) are
+  never filled.
+- **TPN compliance**: warm-cache model loads no longer touch the
+  network (HF revalidation skipped; torch.hub validation skipped).
+- Prefetch covered ViTMatte + Video-Depth-Anything (external tester
+  report); a coverage guard now warns when a pass's weights are not in
+  the prefetch list.
+
+### Changed
+- Masks tab: point placement auto-arms with the tab (the "Place points
+  in viewport" checkbox is gone); preview overlay alpha is gamma-lifted
+  so soft edges read as soft instead of eroded.
+- launch/update scripts pin `--extra all` so a bare `uv run` can no
+  longer prune the refiner extras.
+
 ## [0.7.1] — 2026-07-14
 
 ### Fixed
