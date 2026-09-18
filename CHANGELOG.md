@@ -4,6 +4,20 @@ All notable changes to LiveActionAOV are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); this project
 uses [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Marigold V2 bridge passes** (Apache-2.0 code + weights, Qwen-Image-Edit
+  -2509 Apache-2.0 backbone): `marigold_v2_albedo` (Albedo category) and
+  `marigold_v2_depth_seethrough` (Depth category — depth that sees through
+  glass/water). The 20B model runs in an EXTERNAL environment
+  (`A:/AI/marigold-v2`, one-time setup via `setup_win.sh` + asset download,
+  ~70 GB); the passes shell out once per shot. Measured on a real plate
+  (PF0071, 16 frames @1024): ~40-50 s per shot including model load;
+  see-through depth is temporally very stable (0.2-0.4% of range frame to
+  frame); albedo drifts by a global per-channel gain that the pass
+  neutralises (`stabilize_gain`). Experimental — per-image model.
+
 ## [0.8.0] — 2026-08-13
 
 ### Added

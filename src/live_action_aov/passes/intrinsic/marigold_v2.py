@@ -243,7 +243,9 @@ class _MarigoldV2BridgeBase(UtilityPass):
     def _collect(
         self, out_dir: Path, first: int, last: int, plate_shape: tuple[int, int]
     ) -> dict[int, dict[str, np.ndarray]]:
-        preds = {p.stem: p for p in (out_dir / "predictions_npy").rglob("*.npy")}
+        # infer.py nests the dataset name (out/<dataset>/predictions_npy/) —
+        # search the whole output tree rather than pin that layout.
+        preds = {p.stem: p for p in out_dir.rglob("*.npy") if p.parent.name == "predictions_npy"}
         h, w = plate_shape
         out: dict[int, dict[str, np.ndarray]] = {}
         for f in range(first, last + 1):
@@ -284,7 +286,30 @@ class MarigoldV2AlbedoPass(_MarigoldV2BridgeBase):
         ChannelSpec(name=CH_ALBEDO_G, description="Albedo (base colour) G, lighting removed"),
         ChannelSpec(name=CH_ALBEDO_B, description="Albedo (base colour) B, lighting removed"),
     ]
-    smoothable_channels: list[str] = []  # judged on real clips first
+    smoothable_channels: list[str] = []  # global drift handled here; see _finalize
+
+    DEFAULT_PARAMS: dict[str, Any] = {
+        **_MarigoldV2BridgeBase.DEFAULT_PARAMS,
+        # Per-image model: measured on a real plate (PF0071, 16 frames) the
+        # albedo of a static region drifts +-3-4.5% per channel frame to
+        # frame, and 70% of the frame-to-frame change is a GLOBAL per-channel
+        # gain. A per-frame gain match to the clip median removes it.
+        "stabilize_gain": True,
+        "stabilize_gain_clamp": 1.5,  # never scale a frame by more than this
+    }
+
+    def _finalize(self, out: dict[int, dict[str, np.ndarray]]) -> dict[int, dict[str, np.ndarray]]:
+        if not bool(self.params.get("stabilize_gain", True)) or len(out) < 2:
+            return out
+        chans = (CH_ALBEDO_R, CH_ALBEDO_G, CH_ALBEDO_B)
+        means = np.array([[float(c[ch].mean()) for ch in chans] for c in out.values()])
+        ref = np.median(means, axis=0)
+        clamp = float(self.params.get("stabilize_gain_clamp", 1.5))
+        for c, m in zip(out.values(), means, strict=True):
+            for k, ch in enumerate(chans):
+                gain = float(np.clip(ref[k] / max(m[k], 1e-6), 1.0 / clamp, clamp))
+                c[ch] = (c[ch] * gain).astype(np.float32)
+        return out
 
     def _to_channels(self, arr: np.ndarray, w: int, h: int) -> dict[str, np.ndarray]:
         # infer.py saves albedo as [3, H, W] in sRGB (output_color_space=srgb).

@@ -141,3 +141,30 @@ def test_registered_and_commercial_clean() -> None:
         lic = cls.declared_license()
         assert lic.commercial_use is True and lic.spdx == "Apache-2.0"
         assert cls.requires_artifacts == []
+
+
+def test_albedo_global_gain_drift_is_stabilised(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-image predictions drift by a global gain frame to frame (measured
+    on PF0071); the pass matches each frame's mean to the clip median."""
+    repo = _fake_env(monkeypatch, tmp_path)
+    p = MarigoldV2AlbedoPass(_params(repo))
+    gains = [0.9, 1.0, 1.1, 1.0]
+
+    def fake_run(in_dir: Path, out_dir: Path) -> None:
+        (out_dir / "predictions_npy").mkdir(parents=True)
+        for k, png in enumerate(sorted(in_dir.glob("*.png"))):
+            import cv2
+
+            h, w = cv2.imread(str(png)).shape[:2]
+            np.save(out_dir / "predictions_npy" / f"{png.stem}.npy", np.full((3, h, w), 0.5 * gains[k], np.float32))
+
+    monkeypatch.setattr(p, "_run_infer", fake_run)
+    frames = [np.zeros((32, 48, 3), np.float32) for _ in gains]
+    out = p.run_shot(_Reader(frames), (1, 4))
+    means = [float(out[f][CH_ALBEDO_G].mean()) for f in (1, 2, 3, 4)]
+    assert max(means) - min(means) < 1e-4, means  # drift gone
+    p2 = MarigoldV2AlbedoPass({**_params(repo), "stabilize_gain": False})
+    monkeypatch.setattr(p2, "_run_infer", fake_run)
+    out2 = p2.run_shot(_Reader(frames), (1, 4))
+    m2 = [float(out2[f][CH_ALBEDO_G].mean()) for f in (1, 2, 3, 4)]
+    assert m2[0] < m2[2]  # untouched when disabled
