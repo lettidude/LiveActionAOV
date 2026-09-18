@@ -103,7 +103,16 @@ _DEFAULT_PREFETCH = [
 #: Registered passes that intentionally have no weights to prefetch (no
 #: `_load_model` work) or are known stubs. Used by the coverage warning.
 # chroma_key + screen_pull: pure maths, no weights to prefetch.
-_PREFETCH_EXEMPT = {"cryptomatte", "matanyone2", "chroma_key", "screen_pull"}
+# marigold_v2_*: weights live in an EXTERNAL env (scripts/download_assets.py
+# there), not in the HF cache this prefetch fills.
+_PREFETCH_EXEMPT = {
+    "cryptomatte",
+    "matanyone2",
+    "chroma_key",
+    "screen_pull",
+    "marigold_v2_albedo",
+    "marigold_v2_depth_seethrough",
+}
 
 
 def _warn_uncovered_passes(covered: list[str]) -> None:

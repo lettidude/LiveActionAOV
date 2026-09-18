@@ -72,6 +72,24 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             False,
             ("depthpro",),
         ),
+        # Bridge to an EXTERNAL env (A:/AI/marigold-v2): 20B backbone, per-
+        # image, ~17 GB VRAM at 1024. Sees THROUGH glass/water.
+        ModelEntry(
+            "marigold_v2_depth_seethrough",
+            "Marigold V2 see-through (external env, heavy)",
+            "Apache-2.0",
+            True,
+            ("marigold_v2_depth_seethrough",),
+        ),
+    ],
+    "Albedo": [
+        ModelEntry(
+            "marigold_v2_albedo",
+            "Marigold V2 albedo (external env, heavy)",
+            "Apache-2.0",
+            True,
+            ("marigold_v2_albedo",),
+        ),
     ],
     "Normals": [
         ModelEntry("dsine", "DSINE", "MIT", True, ("dsine",)),

@@ -167,6 +167,8 @@ chroma_key         = "live_action_aov.passes.matte.chroma_key:ChromaKeyPass"
 screen_pull        = "live_action_aov.passes.matte.screen_pull:ScreenPullPass"
 matanyone2         = "live_action_aov.passes.matte.matanyone2:MatAnyone2RefinerPass"
 cryptomatte        = "live_action_aov.passes.matte.cryptomatte:CryptomattePass"
+marigold_v2_albedo           = "live_action_aov.passes.intrinsic.marigold_v2:MarigoldV2AlbedoPass"
+marigold_v2_depth_seethrough = "live_action_aov.passes.intrinsic.marigold_v2:MarigoldV2SeeThroughDepthPass"
 
 [project.entry-points."live_action_aov.post"]
 temporal_smooth      = "live_action_aov.post.temporal_smooth:TemporalSmoother"
