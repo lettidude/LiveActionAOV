@@ -155,9 +155,22 @@ def test_no_prompts_changes_nothing_and_empties_skipped() -> None:
     assert p2._instances == []
 
 
+class _SmallClickFake(_ClickFake):
+    """Click object = a box overlapping only the person's top-left corner."""
+
+    def _track_instance(
+        self, frames, seed_frame_idx, seed_mask=None, *, points=None, labels=None, box=None
+    ):  # type: ignore[override]
+        if seed_mask is not None:
+            return super()._track_instance(frames, seed_frame_idx, seed_mask)
+        n, h, w = frames.shape[0], frames.shape[1], frames.shape[2]
+        self.click_calls.append({"seed_frame_idx": seed_frame_idx})
+        return np.stack([_rect_mask(h, w, 2, 12, 2, 20)] * n, axis=0)
+
+
 def test_clicks_coexist_with_concept_detection() -> None:
     frames = _plate_frames(4)
-    pass_ = _ClickFake(
+    pass_ = _SmallClickFake(
         _params(
             concepts=["person"],
             prompt_instances=[
@@ -173,3 +186,41 @@ def test_clicks_coexist_with_concept_detection() -> None:
     # Detector ids and click ids never collide.
     ids = [i.track_id for i in pass_._instances]
     assert len(ids) == len(set(ids))
+    # One owner per pixel, and the user's click wins the contested corner.
+    m_person = out[1][f"{MASK_PREFIX}person"] > 0
+    m_prop = out[1][f"{MASK_PREFIX}prop"] > 0
+    assert not (m_person & m_prop).any()
+    assert m_prop[10, 15] and not m_person[10, 15]
+    assert m_person[20, 30]
+
+
+def test_click_covering_a_detection_swallows_it() -> None:
+    """A click object that fully contains a detector object owns all of its
+    pixels; the emptied detector track is dropped rather than shipped empty."""
+    frames = _plate_frames(4)
+    pass_ = _ClickFake(
+        _params(
+            concepts=["person"],
+            prompt_instances=[
+                {"name": "prop", "seed_frame": 2, "points": [[6.0, 6.0, 1]], "box": None}
+            ],
+        )
+    )
+    out = pass_.run_shot(_FakeReader(frames), frame_range=(1, 4))
+    assert {i.label for i in pass_._instances} == {"prop"}
+    assert f"{MASK_PREFIX}person" not in out[1]
+
+
+def test_overlap_kept_when_exclusive_off() -> None:
+    frames = _plate_frames(4)
+    pass_ = _ClickFake(
+        _params(
+            concepts=["person"],
+            exclusive_masks=False,
+            prompt_instances=[
+                {"name": "prop", "seed_frame": 2, "points": [[6.0, 6.0, 1]], "box": None}
+            ],
+        )
+    )
+    out = pass_.run_shot(_FakeReader(frames), frame_range=(1, 4))
+    assert f"{MASK_PREFIX}person" in out[1] and f"{MASK_PREFIX}prop" in out[1]

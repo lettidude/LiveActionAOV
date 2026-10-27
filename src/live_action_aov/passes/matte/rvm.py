@@ -433,9 +433,7 @@ class RVMRefinerPass(UtilityPass):
             frac = float(self.params.get("speck_frac", 0.02))
             for i in range(n_frames):
                 if dense_hard[i].any():
-                    dense_hard[i] = clean_mask_specks(dense_hard[i], frac).astype(
-                        dense_hard.dtype
-                    )
+                    dense_hard[i] = clean_mask_specks(dense_hard[i], frac).astype(dense_hard.dtype)
 
         soft = self._refine_instance(frames, dense_hard)
         if soft.shape != dense_hard.shape:
@@ -493,7 +491,10 @@ class RVMRefinerPass(UtilityPass):
                     "%d/%d frames — %s (engine likely does not understand "
                     "this object; try ViTMatte or the chroma key for "
                     "non-person objects).",
-                    track_id, len(tripped_frames), n_present, treatment,
+                    track_id,
+                    len(tripped_frames),
+                    n_present,
+                    treatment,
                 )
         refined_frames = sorted(int(f) for f in track_frames if int(f) in frame_to_local)
         return soft, refined_frames
@@ -634,6 +635,29 @@ class RVMRefinerPass(UtilityPass):
                     # Copy when this soft is also retained as a hero channel, so
                     # a later union max() doesn't mutate the hero's array.
                     label_soft[label] = soft.copy() if is_hero else soft
+
+        # --- Seam normalisation ------------------------------------------
+        # SAM 3 masks are exclusive (one owner per pixel), but each object's
+        # soft edge is refined on its own, so along a SHARED boundary (rifle
+        # over the person, hair against the greenscreen) the two alphas can
+        # sum above 1 -> a bright seam when the layers are added in comp.
+        # Where the sum exceeds 1, scale them so they add up to exactly 1.
+        if bool(self.params.get("normalize_overlaps", True)):
+            for group in (
+                [channel_stacks[c] for c in _SLOT_TO_CHANNEL.values()] if pack_heroes else [],
+                list(label_soft.values()),
+            ):
+                if len(group) < 2:
+                    continue
+                for i in range(n_frames):
+                    tot = group[0][i].copy()
+                    for g in group[1:]:
+                        tot += g[i]
+                    over = tot > 1.0
+                    if over.any():
+                        scale = np.where(over, 1.0 / np.maximum(tot, 1e-6), 1.0).astype(np.float32)
+                        for g in group:
+                            g[i] *= scale
 
         # Emit per-frame channel dicts keyed by absolute frame index. Soft
         # `mask.<label>` channels (all-masks mode) override SAM 3's hard ones

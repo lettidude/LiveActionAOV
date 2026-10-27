@@ -208,7 +208,28 @@ class SAM3MattePass(UtilityPass):
         "confidence_threshold": 0.4,
         "min_area_fraction": 0.005,  # drop instances smaller than 0.5% of plate
         "sample_frame": "middle",  # "first" | "middle" | "last" | int
-        "redetect_stride": None,  # None = seed-and-track only (v1 default)
+        # Re-run the detector every N frames and start a track for anything
+        # not already covered (objects entering after the seed frame, or lost
+        # by the tracker). None/0 = seed-and-track only (pre-0.9 behaviour).
+        "redetect_stride": 12,
+        "redetect_new_coverage": 0.5,  # det. less covered than this = new object
+        "max_redetect_tracks": 8,
+        # A new detection overlapping a same-label track by at least this
+        # much is a lost PART of it (re-attached), not a new object.
+        "redetect_merge_coverage": 0.1,
+        # Track all objects that share a seed frame in ONE tracker session
+        # (video encoded once, not once per object) and give each pixel to
+        # ONE object: the per-object sessions let masks overlap freely
+        # (person vs greenscreen at the hair, car vs a person in its window),
+        # which is where the refiners' edges broke.
+        "joint_tracking": True,
+        "exclusive_masks": True,
+        # Inside a joint session, user clicks out-rank detector objects on
+        # contested pixels (added to the click objects' mask logits).
+        "click_priority_bias": 4.0,
+        # Two tracks this similar (clip IoU) are the same object tracked
+        # twice (e.g. a click on a person the detector also found): keep one.
+        "duplicate_iou": 0.85,
         # Ranking weights (RankWeights schema).
         "ranking": {
             "area": 0.4,
@@ -243,6 +264,7 @@ class SAM3MattePass(UtilityPass):
         self._dtype: Any = None
         # Populated by `run_shot`; consumed by `emit_artifacts`.
         self._instances: list[_DetectedInstance] = []
+        self._priority: dict[int, int] = {}  # track_id -> 1 = user click, 0 = detector
         self._heroes: list[Any] = []  # list[rank.HeroSlot]
         self._concepts_found: list[str] = []
         self._plate_shape: tuple[int, int] = (0, 0)
@@ -312,7 +334,9 @@ class SAM3MattePass(UtilityPass):
 
             self._trk_processor = load_local_first(Sam3TrackerVideoProcessor.from_pretrained, repo)
             trk_dtype = torch.bfloat16 if self._device.type == "cuda" else torch.float32
-            trk_model = load_local_first(Sam3TrackerVideoModel.from_pretrained, repo, dtype=trk_dtype)
+            trk_model = load_local_first(
+                Sam3TrackerVideoModel.from_pretrained, repo, dtype=trk_dtype
+            )
             trk_model.to(self._device).eval()
             self._trk_model = trk_model
             self._trk_dtype = trk_dtype
@@ -550,6 +574,250 @@ class SAM3MattePass(UtilityPass):
 
         return out
 
+    def _track_objects(
+        self, frames: np.ndarray, objs: list[dict[str, Any]], first: int, area_floor: float
+    ) -> None:
+        """Track `objs` (grouped by seed frame) and append the survivors to
+        `self._instances`. Subclasses overriding `_track_instance` (test
+        fakes, or joint_tracking=False) keep the old one-session-per-object
+        path."""
+        n_frames, plate_h, plate_w = (
+            int(frames.shape[0]),
+            int(frames.shape[1]),
+            int(frames.shape[2]),
+        )
+        legacy = (type(self)._track_instance is not SAM3MattePass._track_instance) or not bool(
+            self.params.get("joint_tracking", True)
+        )
+        groups: dict[int, list[dict[str, Any]]] = {}
+        for o in objs:
+            groups.setdefault(int(o["seed_local"]), []).append(o)
+        for seed_l, group in groups.items():
+            if legacy:
+                stacks: dict[int, np.ndarray] = {}
+                for o in group:
+                    if o.get("mask") is not None:
+                        stacks[o["obj_id"]] = self._track_instance(frames, seed_l, o["mask"])
+                    else:
+                        stacks[o["obj_id"]] = self._track_instance(
+                            frames,
+                            seed_l,
+                            None,
+                            points=o.get("points"),
+                            labels=o.get("labels"),
+                            box=o.get("box"),
+                        )
+            else:
+                stacks = self._track_group(frames, group)
+            for o in group:
+                stack = stacks.get(o["obj_id"])
+                if stack is None:
+                    continue
+                if stack.ndim != 3 or stack.shape[1:] != (plate_h, plate_w):
+                    raise ValueError(
+                        f"Track stack for {o['label']!r} ({o['obj_id']}) has shape {stack.shape}, "
+                        f"expected ({n_frames}, {plate_h}, {plate_w})"
+                    )
+                # uint8 (0/1), not float32: the whole-clip stack of every
+                # instance is held at once, so dtype scales peak host RAM.
+                masks = {
+                    first + k: (stack[k] > 0.5).astype(np.uint8) for k in range(stack.shape[0])
+                }
+                if all(m.sum() < area_floor for m in masks.values()):
+                    continue
+                self._instances.append(_DetectedInstance(int(o["obj_id"]), str(o["label"]), masks))
+                self._priority[int(o["obj_id"])] = int(o.get("priority", 0))
+
+    def _track_group(
+        self, frames: np.ndarray, group: list[dict[str, Any]]
+    ) -> dict[int, np.ndarray]:
+        """Track every object of `group` (same seed frame) in ONE tracker
+        session and give each pixel to one object (highest mask logit; user
+        clicks get `click_priority_bias`). Returns obj_id -> (N, H, W) uint8."""
+        import torch
+        from PIL import Image
+
+        self._load_model()
+        assert self._trk_model is not None
+        processor, model = self._trk_processor, self._trk_model
+        N, H, W = int(frames.shape[0]), int(frames.shape[1]), int(frames.shape[2])
+        seed = int(group[0]["seed_local"])
+        frame_pils = [
+            Image.fromarray((np.clip(frames[i], 0.0, 1.0) * 255.0).astype(np.uint8), "RGB")
+            for i in range(N)
+        ]
+        session = processor.init_video_session(
+            video=frame_pils, inference_device=self._device, dtype=self._trk_dtype
+        )
+        mask_objs = [o for o in group if o.get("mask") is not None]
+        if mask_objs:
+            processor.add_inputs_to_inference_session(
+                session,
+                frame_idx=seed,
+                obj_ids=[int(o["obj_id"]) for o in mask_objs],
+                input_masks=[(o["mask"] > 0.5).astype(np.uint8) for o in mask_objs],
+                original_size=(H, W),
+            )
+        for o in group:
+            if o.get("mask") is not None:
+                continue
+            kw: dict[str, Any] = {}
+            if o.get("points"):
+                kw["input_points"] = [[o["points"]]]
+                kw["input_labels"] = [[o.get("labels") or [1] * len(o["points"])]]
+            if o.get("box") is not None:
+                kw["input_boxes"] = [[o["box"]]]
+            processor.add_inputs_to_inference_session(
+                session, frame_idx=seed, obj_ids=int(o["obj_id"]), original_size=(H, W), **kw
+            )
+        # Each add call REPLACES the session's "objects with new inputs"
+        # list; without this only the last-added object would be conditioned
+        # on the seed frame and the others would track from nothing.
+        session.obj_with_new_inputs = [int(o["obj_id"]) for o in group]
+
+        out = {int(o["obj_id"]): np.zeros((N, H, W), dtype=np.uint8) for o in group}
+        bias_of = {
+            int(o["obj_id"]): float(self.params.get("click_priority_bias", 4.0))
+            if o.get("priority", 0)
+            else 0.0
+            for o in group
+        }
+        exclusive = bool(self.params.get("exclusive_masks", True))
+
+        def _consume(step_iter: Any) -> None:
+            for step in step_iter:
+                fi = getattr(step, "frame_idx", None)
+                if fi is None:
+                    fi = getattr(step, "frame_index", None)
+                pm = getattr(step, "pred_masks", None)
+                ids = list(getattr(step, "object_ids", None) or [])
+                if fi is None or pm is None or not ids:
+                    continue
+                post = processor.post_process_masks(
+                    pm.unsqueeze(0) if pm.ndim == 4 else pm,
+                    original_sizes=[(H, W)],
+                    binarize=False,
+                )
+                if not post:
+                    continue
+                logits = post[0]
+                if not hasattr(logits, "reshape"):
+                    logits = torch.as_tensor(np.asarray(logits))
+                logits = logits.reshape(len(ids), H, W).float()
+                present = logits > 0.0
+                if exclusive and len(ids) > 1:
+                    bias = torch.tensor(
+                        [bias_of.get(int(i), 0.0) for i in ids], device=logits.device
+                    )
+                    winner = torch.argmax(logits + bias[:, None, None], dim=0)
+                    for k in range(len(ids)):
+                        present[k] &= winner == k
+                pres = present.cpu().numpy()
+                for k, oid in enumerate(ids):
+                    if int(oid) in out:
+                        out[int(oid)][int(fi)] = pres[k]
+
+        _consume(model.propagate_in_video_iterator(session, start_frame_idx=seed))
+        _consume(model.propagate_in_video_iterator(session, start_frame_idx=seed, reverse=True))
+        return out
+
+    def _redetect(
+        self,
+        frames: np.ndarray,
+        concepts: list[str],
+        stride: int,
+        seed_local: int,
+        first: int,
+        area_floor: float,
+    ) -> None:
+        """Run the detector every `stride` frames; anything mostly NOT
+        covered by an existing track becomes a new track seeded there."""
+        n = int(frames.shape[0])
+        budget = int(self.params.get("max_redetect_tracks", 8))
+        thr = float(self.params.get("redetect_new_coverage", 0.5))
+        next_id = 2001  # own id block: concepts 1.., clicks 1001..
+        import cv2
+
+        r = max(1, round(0.015 * max(frames.shape[1], frames.shape[2])))
+        touch_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+        for k in range(0, n, max(1, stride)):
+            if budget <= 0:
+                break
+            if k == seed_local:
+                continue
+            f = first + k
+            covered = np.zeros(frames.shape[1:3], dtype=bool)
+            for inst in self._instances:
+                m = inst.masks.get(f)
+                if m is not None:
+                    covered |= m > 0
+            new: list[dict[str, Any]] = []
+            for _tid, label, m in self._detect_seed(frames[k], concepts):
+                mb = m > 0.5
+                area = float(mb.sum())
+                if area < area_floor:
+                    continue
+                if float((mb & covered).sum()) / area >= thr:
+                    continue
+                # Partly covered by a track of the SAME label = a piece the
+                # tracker lost (PF0048: the arm holding the rifle dropped out
+                # of the woman's track). Re-attach it to that track instead
+                # of starting a second "person".
+                # "Touching" = overlap with the track grown by ~1.5% of the
+                # long edge: a limb detected alone is adjacent, not inside.
+                merge_into = None
+                best = float(self.params.get("redetect_merge_coverage", 0.1))
+                for inst in self._instances:
+                    im = inst.masks.get(f)
+                    if inst.label != label or im is None or not im.any():
+                        continue
+                    grown = cv2.dilate(im.astype(np.uint8), touch_kernel) > 0
+                    cov = float((mb & grown).sum()) / area
+                    if cov >= best:
+                        best, merge_into = cov, inst.track_id
+                new.append(
+                    {
+                        "obj_id": next_id,
+                        "label": label,
+                        "seed_local": k,
+                        "mask": m,
+                        "priority": 0,
+                        "merge_into": merge_into,
+                    }
+                )
+                next_id += 1
+                covered |= mb  # one new track per thing on this frame
+                if len(new) >= budget:
+                    break
+            if not new:
+                continue
+            budget -= len(new)
+            before = {i.track_id for i in self._instances}
+            self._track_objects(frames, new, first, area_floor)
+            by_id = {i.track_id: i for i in self._instances}
+            started, extended = [], []
+            for o in new:
+                got = by_id.get(int(o["obj_id"]))
+                if got is None or got.track_id in before:
+                    continue
+                host = by_id.get(o["merge_into"]) if o["merge_into"] is not None else None
+                if host is None:
+                    started.append(o["label"])
+                    continue
+                for fr, mm in got.masks.items():
+                    hm = host.masks.get(fr)
+                    host.masks[fr] = mm if hm is None else np.maximum(hm, mm)
+                self._instances.remove(got)
+                self._priority.pop(got.track_id, None)
+                extended.append(f"{o['label']} (track {host.track_id})")
+            if started or extended:
+                _log.info(
+                    "SAM3 matte: re-detection on frame %d - new: %s; re-attached lost parts to: %s",
+                    f,
+                    ", ".join(started) or "none",
+                    ", ".join(extended) or "none",
+                )
+
     # ------------------------------------------------------------------
     # Per-window lifecycle — SAM 3 is VIDEO_CLIP-native, so `preprocess` /
     # `infer` / `postprocess` are convenience paths that delegate to the
@@ -591,8 +859,6 @@ class SAM3MattePass(UtilityPass):
 
         concepts = [str(c) for c in self.params["concepts"]]
         seeds = self._detect_seed(seed_rgb, concepts)
-        if self._user_concepts:
-            _warn_unmatched_concepts(concepts, {label for _tid, label, _m in seeds})
 
         # Pre-flight host-RAM check (fail fast, before the minutes-long track).
         # Peak host RAM is dominated by holding every instance's whole-clip mask
@@ -621,45 +887,29 @@ class SAM3MattePass(UtilityPass):
         if avail is not None and peak_bytes > 0.9 * avail:
             raise MemoryError(_mask_ram_message(n_inst_est, n_frames, plate_h, plate_w, peak_bytes))
 
-        # Track each seed across the clip; accumulate _DetectedInstance.
-        self._instances = []
+        # --- Everything to track: concept seeds + user clicks -------------
+        area_floor = float(self.params["min_area_fraction"]) * plate_h * plate_w
+        objs: list[dict[str, Any]] = []
         for track_id, label, seed_mask in seeds:
             if seed_mask.shape != (plate_h, plate_w):
                 raise ValueError(
                     f"Seed mask for track {track_id} has shape {seed_mask.shape}, "
                     f"expected plate shape {(plate_h, plate_w)}"
                 )
-            stack = self._track_instance(frames, seed_local, seed_mask)
-            if stack.ndim != 3 or stack.shape[1:] != (plate_h, plate_w):
-                raise ValueError(
-                    f"Track stack for {track_id} has shape {stack.shape}, "
-                    f"expected ({n_frames}, {plate_h}, {plate_w})"
-                )
-            # Store binary masks as uint8 (0/1), not float32: mattes are
-            # already hard-edged (binarize=True), so float32 is a 4x waste of
-            # host RAM. The whole-clip stack for every instance is held at once
-            # (here + emit_artifacts), so peak scales N_inst x F x H x W x dtype;
-            # uint8 keeps a long high-detection clip from OOMing the box.
-            # Consumers (cryptomatte / rvm / birefnet) cast back to float32 one
-            # instance at a time, where the cost is bounded.
-            masks = {
-                first + k: (stack[k] > 0.5).astype(np.uint8) for k in range(stack.shape[0])
-            }
-            # Drop instances that fall below the area floor everywhere.
-            area_floor = float(self.params["min_area_fraction"]) * plate_h * plate_w
-            if all(m.sum() < area_floor for m in masks.values()):
-                continue
-            self._instances.append(_DetectedInstance(track_id, label, masks))
+            objs.append(
+                {
+                    "obj_id": track_id,
+                    "label": label,
+                    "seed_local": seed_local,
+                    "mask": seed_mask,
+                    "priority": 0,
+                }
+            )
 
-        # --- Interactive click prompts (click-to-mask, v0.3) ---
-        # Each spec seeds ONE object from user clicks instead of the text
-        # detector; the tracker session + propagation are the same engine.
-        # Coordinates are rescaled from the resolution they were captured at
-        # (`ref_size`) to the frames this pass actually sees, so proxy mode
-        # doesn't shift the clicks. Track ids live in a 1000+ block so they
-        # never collide with detector ids across re-runs. Additive to the
-        # concept path — an empty list changes nothing.
-        click_labels: list[str] = []
+        # Interactive click prompts (click-to-mask). Coordinates are rescaled
+        # from the resolution they were captured at (`ref_size`) to the frames
+        # this pass sees, so proxy mode doesn't shift the clicks. Track ids
+        # live in a 1000+ block so they never collide with detector ids.
         next_click_id = 1001
         for idx, spec in enumerate(self.params.get("prompt_instances") or []):
             name = str(spec.get("name") or f"click_{idx + 1}")
@@ -684,29 +934,46 @@ class SAM3MattePass(UtilityPass):
             )
             if not pts and box is None:
                 continue
-            stack = self._track_instance(
-                frames,
-                seed_local_i,
-                None,
-                points=pts or None,
-                labels=lbls or None,
-                box=box,
+            objs.append(
+                {
+                    "obj_id": next_click_id,
+                    "label": name,
+                    "seed_local": seed_local_i,
+                    "points": pts or None,
+                    "labels": lbls or None,
+                    "box": box,
+                    "priority": 1,
+                }
             )
-            if stack.ndim != 3 or stack.shape[1:] != (plate_h, plate_w):
-                raise ValueError(
-                    f"Click track stack for {name!r} has shape {stack.shape}, "
-                    f"expected ({n_frames}, {plate_h}, {plate_w})"
-                )
-            # uint8 binary masks — see the concept path above.
-            masks = {
-                first + k: (stack[k] > 0.5).astype(np.uint8) for k in range(stack.shape[0])
-            }
-            area_floor = float(self.params["min_area_fraction"]) * plate_h * plate_w
-            if all(m.sum() < area_floor for m in masks.values()):
-                continue
-            self._instances.append(_DetectedInstance(next_click_id, name, masks))
             next_click_id += 1
-            click_labels.append(name)
+
+        self._instances = []
+        self._priority = {}
+        self._track_objects(frames, objs, first, area_floor)
+
+        # --- Re-detection: objects that enter later / the tracker lost ---
+        stride = self.params.get("redetect_stride")
+        if stride and concepts:
+            self._redetect(frames, concepts, int(stride), seed_local, first, area_floor)
+        if self._user_concepts:
+            _warn_unmatched_concepts(concepts, {i.label for i in self._instances})
+
+        # --- One owner per pixel -------------------------------------------
+        if bool(self.params.get("exclusive_masks", True)) and len(self._instances) > 1:
+            self._instances = _dedupe_instances(
+                self._instances, self._priority, float(self.params.get("duplicate_iou", 0.85))
+            )
+            _make_exclusive(self._instances, self._priority)
+            for inst in [i for i in self._instances if not any(m.any() for m in i.masks.values())]:
+                _log.info(
+                    "SAM3 matte: '%s' (track %d) lies entirely under higher-priority objects - dropped.",
+                    inst.label,
+                    inst.track_id,
+                )
+            self._instances = [i for i in self._instances if any(m.any() for m in i.masks.values())]
+        click_labels = list(
+            dict.fromkeys(i.label for i in self._instances if self._priority.get(i.track_id) == 1)
+        )
 
         # Union by label into per-frame channels: text concepts first, then
         # click names (deduped — a click named like a concept unions with it).
@@ -872,6 +1139,68 @@ class SAM3MattePass(UtilityPass):
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
+
+
+def _clip_iou(a: _DetectedInstance, b: _DetectedInstance, step: int = 4) -> float:
+    inter = union = 0.0
+    for f in sorted(set(a.masks) | set(b.masks))[::step]:
+        ma, mb = a.masks.get(f), b.masks.get(f)
+        if ma is None or mb is None:
+            only = ma if ma is not None else mb
+            union += float(only.sum()) if only is not None else 0.0
+            continue
+        x, y = ma > 0, mb > 0
+        inter += float((x & y).sum())
+        union += float((x | y).sum())
+    return inter / union if union > 0 else 0.0
+
+
+def _dedupe_instances(
+    instances: list[_DetectedInstance], priority: dict[int, int], iou_thr: float
+) -> list[_DetectedInstance]:
+    """Drop tracks that are the same object tracked twice (clip IoU above
+    `iou_thr`): the user's click wins over the detector, else the first."""
+    keep: list[_DetectedInstance] = []
+    for inst in sorted(instances, key=lambda i: (-priority.get(i.track_id, 0), i.track_id)):
+        dup = next((k for k in keep if _clip_iou(inst, k) > iou_thr), None)
+        if dup is not None:
+            _log.info(
+                "SAM3 matte: '%s' (track %d) duplicates '%s' (track %d) - kept one.",
+                inst.label,
+                inst.track_id,
+                dup.label,
+                dup.track_id,
+            )
+            continue
+        keep.append(inst)
+    order = {i.track_id: n for n, i in enumerate(instances)}
+    return sorted(keep, key=lambda i: order[i.track_id])
+
+
+def _make_exclusive(instances: list[_DetectedInstance], priority: dict[int, int]) -> None:
+    """Give every contested pixel to ONE instance, in place. Owner order:
+    user clicks first, then the smaller object (clip-mean area: what is held
+    or in front - a rifle over the person, a person in a car window), then
+    the lower track id. Clip-mean (not per-frame) area keeps the owner
+    stable over time, so the seam does not flicker."""
+
+    def mean_area(i: _DetectedInstance) -> float:
+        areas = [float(m.sum()) for m in i.masks.values() if m.any()]
+        return sum(areas) / len(areas) if areas else 0.0
+
+    order = sorted(
+        instances, key=lambda i: (-priority.get(i.track_id, 0), mean_area(i), i.track_id)
+    )
+    frames = sorted({f for i in instances for f in i.masks})
+    for f in frames:
+        present = [i for i in order if f in i.masks and i.masks[f].any()]
+        if len(present) < 2:
+            continue
+        taken = np.zeros(present[0].masks[f].shape, dtype=bool)
+        for inst in present:
+            m = inst.masks[f] > 0
+            inst.masks[f] = (m & ~taken).astype(np.uint8)
+            taken |= m
 
 
 def _pick_seed_frame(n_frames: int, sample_frame: Any) -> int:

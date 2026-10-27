@@ -61,6 +61,36 @@ uses [semantic versioning](https://semver.org/).
   frame); albedo drifts by a global per-channel gain that the pass
   neutralises (`stabilize_gain`). Experimental — per-image model.
 
+### Changed
+- **Roto (SAM 3) is one-owner-per-pixel and re-detects.** Field problem:
+  overlapping mattes and broken edges where objects touch, and objects
+  missed when absent from the seed frame. Root cause: every object was
+  tracked in its OWN session, so masks overlapped freely, and detection ran
+  on one frame only. Now:
+  - objects sharing a seed frame are tracked **jointly** (video encoded
+    once; each pixel goes to the highest-logit object, user clicks get a
+    bias) and every contested pixel has ONE owner across all tracks (click
+    > detector, then the smaller object: rifle over person, person in a car
+    window). `mask.a + mask.b` now adds up instead of overlapping;
+  - **re-detection** every 12 frames (`redetect_stride`) starts tracks for
+    objects that enter later; a same-label detection touching an existing
+    track is re-attached to it (a lost arm), not a new "person";
+  - duplicates (a click on an object the detector also found) collapse to
+    one track; the click wins;
+  - refiners **normalise seams**: where soft alphas of different objects
+    sum above 1, they are scaled to add up to 1.
+  Measured (1024 proxy): PF0048 — the rifle, missed before, is found
+  (frame 1073 re-detection) and tracked 1047-1120; contested pixels 2.0% ->
+  0; alpha-sum>1 pixels after BiRefNet 2.0% -> 0. PF0052 (garage) — the
+  gunman entering at 1082 and the white car, missed before, are tracked.
+  PF0071 — same objects, joint tracking 50 -> 38 s. Cost when re-detection
+  finds more objects: PF0048 full chain 99 -> 108 s, PF0052 73 -> 125 s.
+  Old behaviour: `joint_tracking=False, exclusive_masks=False,
+  redetect_stride=None`.
+- SAM 3.1 evaluated, not adopted yet: its gain is speed with many objects
+  (~7x at 128 objects), quality mixed (-2..+2 pts); transformers' SAM 3.1
+  video model is still a draft PR (#46128) and Meta's repo needs Python 3.12.
+
 ### Fixed
 - The executor no longer fails when a frame has no EXR channels (e.g. SAM 3
   found nothing and the only other pass writes non-EXR sidecars).

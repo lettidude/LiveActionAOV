@@ -198,12 +198,21 @@ def _artifacts_many(n: int, h: int, w: int):
     # Placed in the bottom strip, clear of the person (centre) and vehicle
     # (top-left) rects: overlapping another track would (correctly) trigger
     # the inter-object exclusion and hide what this fixture wants to test.
-    hard[10] = {"label": "car", "frames": list(range(1, n + 1)),
-                "stack": _rect_stack(n, h, w, 3 * h // 4 + 1, h, 0, w // 4)}
-    hard[11] = {"label": "car", "frames": list(range(1, n + 1)),
-                "stack": _rect_stack(n, h, w, 3 * h // 4 + 1, h, 3 * w // 4, w)}
-    hard[12] = {"label": "dog", "frames": list(range(1, n + 1)),
-                "stack": _rect_stack(n, h, w, 0, 2, 3 * w // 4, w)}
+    hard[10] = {
+        "label": "car",
+        "frames": list(range(1, n + 1)),
+        "stack": _rect_stack(n, h, w, 3 * h // 4 + 1, h, 0, w // 4),
+    }
+    hard[11] = {
+        "label": "car",
+        "frames": list(range(1, n + 1)),
+        "stack": _rect_stack(n, h, w, 3 * h // 4 + 1, h, 3 * w // 4, w),
+    }
+    hard[12] = {
+        "label": "dog",
+        "frames": list(range(1, n + 1)),
+        "stack": _rect_stack(n, h, w, 0, 2, 3 * w // 4, w),
+    }
     return art
 
 
@@ -247,7 +256,8 @@ def test_refine_all_masks_does_not_mutate_hero_array() -> None:
     # Bottom-left corner — clear of the vehicle/person rects, so the
     # inter-object exclusion doesn't (correctly) zero it out.
     art["sam3_hard_masks"][0][20] = {
-        "label": "person", "frames": list(range(1, n + 1)),
+        "label": "person",
+        "frames": list(range(1, n + 1)),
         "stack": _rect_stack(n, h, w, 13, 16, 0, 4),
     }
     pass_ = _FakeRVM({"refine_all_masks": True})
@@ -284,14 +294,18 @@ def test_inter_object_exclusion_prevents_roto_overlap() -> None:
     a_stack = _rect_stack(n, h, w, 8, 24, 4, 24)
     b_stack = _rect_stack(n, h, w, 8, 24, 24, 44)
     art = {
-        "sam3_hard_masks": {0: {
-            1: {"label": "a", "frames": [1, 2], "stack": a_stack},
-            2: {"label": "b", "frames": [1, 2], "stack": b_stack},
-        }},
-        "sam3_instances": {0: [
-            {"track_id": 1, "slot": "r", "label": "a", "score": 0.9, "frames": [1, 2]},
-            {"track_id": 2, "slot": "g", "label": "b", "score": 0.8, "frames": [1, 2]},
-        ]},
+        "sam3_hard_masks": {
+            0: {
+                1: {"label": "a", "frames": [1, 2], "stack": a_stack},
+                2: {"label": "b", "frames": [1, 2], "stack": b_stack},
+            }
+        },
+        "sam3_instances": {
+            0: [
+                {"track_id": 1, "slot": "r", "label": "a", "score": 0.9, "frames": [1, 2]},
+                {"track_id": 2, "slot": "g", "label": "b", "score": 0.8, "frames": [1, 2]},
+            ]
+        },
     }
 
     class _GreedyRVM(_FakeRVM):
@@ -314,13 +328,17 @@ def test_inter_object_exclusion_prevents_roto_overlap() -> None:
 def test_exclusion_can_be_disabled() -> None:
     n, h, w = 1, 16, 32
     art = {
-        "sam3_hard_masks": {0: {
-            1: {"label": "a", "frames": [1], "stack": _rect_stack(n, h, w, 4, 12, 2, 14)},
-            2: {"label": "b", "frames": [1], "stack": _rect_stack(n, h, w, 4, 12, 18, 30)},
-        }},
-        "sam3_instances": {0: [
-            {"track_id": 1, "slot": "r", "label": "a", "score": 0.9, "frames": [1]},
-        ]},
+        "sam3_hard_masks": {
+            0: {
+                1: {"label": "a", "frames": [1], "stack": _rect_stack(n, h, w, 4, 12, 2, 14)},
+                2: {"label": "b", "frames": [1], "stack": _rect_stack(n, h, w, 4, 12, 18, 30)},
+            }
+        },
+        "sam3_instances": {
+            0: [
+                {"track_id": 1, "slot": "r", "label": "a", "score": 0.9, "frames": [1]},
+            ]
+        },
     }
 
     class _GreedyRVM(_FakeRVM):
@@ -398,9 +416,9 @@ def test_guardrail_replaces_garbage_band_with_feathered_edge() -> None:
 
     art = {
         "sam3_hard_masks": {0: {1: {"label": "car", "frames": [1], "stack": hard}}},
-        "sam3_instances": {0: [
-            {"track_id": 1, "slot": "r", "label": "car", "score": 0.9, "frames": [1]}
-        ]},
+        "sam3_instances": {
+            0: [{"track_id": 1, "slot": "r", "label": "car", "score": 0.9, "frames": [1]}]
+        },
     }
     p = _GarbageRVM()  # guardrail ON (default)
     p.ingest_artifacts(art)
@@ -458,14 +476,18 @@ def test_duplicate_coverage_does_not_hollow_interiors() -> None:
     n, h, w = 1, 32, 48
     rect = _rect_stack(n, h, w, 8, 24, 10, 34)
     art = {
-        "sam3_hard_masks": {0: {
-            1: {"label": "ARM", "frames": [1], "stack": rect.copy()},
-            2: {"label": "person", "frames": [1], "stack": rect.copy()},
-        }},
-        "sam3_instances": {0: [
-            {"track_id": 1, "slot": "r", "label": "ARM", "score": 0.9, "frames": [1]},
-            {"track_id": 2, "slot": "g", "label": "person", "score": 0.8, "frames": [1]},
-        ]},
+        "sam3_hard_masks": {
+            0: {
+                1: {"label": "ARM", "frames": [1], "stack": rect.copy()},
+                2: {"label": "person", "frames": [1], "stack": rect.copy()},
+            }
+        },
+        "sam3_instances": {
+            0: [
+                {"track_id": 1, "slot": "r", "label": "ARM", "score": 0.9, "frames": [1]},
+                {"track_id": 2, "slot": "g", "label": "person", "score": 0.8, "frames": [1]},
+            ]
+        },
     }
     p = _FakeRVM({"refine_all_masks": True})
     p.ingest_artifacts(art)
@@ -473,3 +495,52 @@ def test_duplicate_coverage_does_not_hollow_interiors() -> None:
     # Interior must survive on BOTH duplicates (fake gives 0.5).
     assert out[1][f"{MASK_PREFIX}ARM"][16, 20] > 0.0, "duplicate hollowed ARM"
     assert out[1][f"{MASK_PREFIX}person"][16, 20] > 0.0, "duplicate hollowed person"
+
+
+def test_seam_alphas_never_sum_above_one() -> None:
+    """Exclusive hard masks + independent soft edges: along a shared border
+    both objects' alphas can be high. After normalisation the layers add up
+    to at most 1 everywhere (no bright seam when the comper adds them)."""
+    n, h, w = 1, 32, 48
+    art = {
+        "sam3_hard_masks": {
+            0: {
+                1: {"label": "rifle", "frames": [1], "stack": _rect_stack(n, h, w, 8, 24, 4, 24)},
+                2: {"label": "person", "frames": [1], "stack": _rect_stack(n, h, w, 8, 24, 24, 44)},
+            }
+        },
+        "sam3_instances": {
+            0: [
+                {"track_id": 1, "slot": "r", "label": "rifle", "score": 0.9, "frames": [1]},
+                {"track_id": 2, "slot": "g", "label": "person", "score": 0.8, "frames": [1]},
+            ]
+        },
+    }
+
+    class _SoftEdgeRVM(_FakeRVM):
+        def _refine_instance(self, plate_stack, hard_stack):  # type: ignore[override]
+            import cv2
+
+            out = np.zeros(hard_stack.shape, np.float32)
+            for t in range(hard_stack.shape[0]):
+                grown = cv2.dilate(hard_stack[t].astype(np.uint8), np.ones((7, 7), np.uint8))
+                out[t] = np.maximum(hard_stack[t] * 1.0, grown * 0.9)
+            return out
+
+    for normalize, expect_ok in ((True, True), (False, False)):
+        p = _SoftEdgeRVM(
+            {
+                "refine_all_masks": True,
+                "exclude_other_instances": False,
+                "fallback_feather": False,
+                "normalize_overlaps": normalize,
+            }
+        )
+        p.ingest_artifacts(art)
+        out = p.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, 1))
+        lab = out[1][f"{MASK_PREFIX}rifle"] + out[1][f"{MASK_PREFIX}person"]
+        hero = out[1][CH_MATTE_R] + out[1][CH_MATTE_G]
+        assert bool(lab.max() <= 1.0 + 1e-6) is expect_ok
+        assert bool(hero.max() <= 1.0 + 1e-6) is expect_ok
+    # Interiors untouched by the normalisation.
+    assert out[1][f"{MASK_PREFIX}rifle"][16, 10] == 1.0
