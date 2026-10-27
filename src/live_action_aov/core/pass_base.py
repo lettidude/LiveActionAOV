@@ -134,6 +134,9 @@ class UtilityPass(ABC):
     produces_sidecars: list[SidecarSpec] = []
     provides_artifacts: list[str] = []
     requires_artifacts: list[str] = []
+    # Soft deps: consumed when an upstream pass provides them, ignored
+    # otherwise (DAG orders the pass after the provider if present).
+    optional_artifacts: list[str] = []
 
     # --- Smoother wiring ---
     # Which of this pass's channels the temporal smoother should touch when
@@ -234,6 +237,17 @@ class UtilityPass(ABC):
         ):
             if getattr(self, attr, None) is not None:
                 setattr(self, attr, None)
+
+    # --- Non-EXR sidecar emission ---
+    def emit_sidecars(self, shot: Any) -> dict[str, Any]:
+        """Write any non-EXR sidecars (JSON / .nk / .ply ...) this pass
+        produces and return `{tag: path}` for the executor to merge into
+        `shot.sidecars`. Called once per shot, after `run_shot`. Default
+        is a no-op. `shot` is typed Any to keep this module free of a
+        circular import on `Shot`.
+        """
+        del shot
+        return {}
 
     # --- Cross-pass artifact consumption ---
     def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:

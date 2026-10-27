@@ -113,6 +113,7 @@ _PREFETCH_EXEMPT = {
     "screen_pull",
     "marigold_v2_albedo",
     "marigold_v2_depth_seethrough",
+    "camera_pycolmap",
 }
 
 

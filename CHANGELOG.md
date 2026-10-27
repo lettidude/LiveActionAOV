@@ -7,6 +7,27 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Camera track** ("Camera" category; plugin `camera_pycolmap`): classical
+  SfM with pycolmap 4 (BSD-3-Clause, PyPI wheels, CPU, no weights). Writes
+  `camera_track/` next to the sidecars: `<shot>.camera.nk` (Nuke Camera2,
+  Y-up, ZXY), `<shot>.camera.json` (record + per-frame reprojection error),
+  `<shot>.points.ply` (sparse cloud) and `<shot>_colmap/` (COLMAP model —
+  what Gaussian-splat trainers read). Frames are CLAHE-normalised before
+  SIFT: on a dark bar interior (ACTIONVFX PF0081) plain SIFT registered
+  2/32 frames, CLAHE + lower peak threshold 64/64. **With Matte on in the
+  same job, every SAM 3 object is dilated and masked out of the features**
+  (matchmove garbage matte for free; `mask_labels` to restrict). Measured on
+  PF0081 (64 frames, 2048x1080 dolly): ~2 min, 0.99 px mean / 0.70 px median
+  reprojection at plate resolution, **verified inside Nuke 16** by projecting
+  the solved points through the imported camera (`scripts/nuke_check_camera.py`).
+  Limits: arbitrary scale, one focal per clip, needs parallax (locked-off /
+  nodal pans cannot triangulate); `SIMPLE_RADIAL` solves k1 but the Nuke
+  camera does not apply it (11 px off at the edges on PF0081 without an
+  undistort), so the default model is `SIMPLE_PINHOLE`.
+- DAG **optional artifacts** (`optional_artifacts`): a pass is ordered after
+  a provider when one is scheduled and runs without it otherwise; and a
+  pass-level `emit_sidecars()` hook for non-EXR outputs.
+
 - **MegaFlow motion backend** ("MegaFlow (large displacement, slower)" in
   the Motion category; plugin `flow_megaflow`). Vendored Apache-2.0 code
   (ETH CVG, ECCV 2026) on a frozen DINOv2 ViT-L/14; same channels and
@@ -26,6 +47,10 @@ uses [semantic versioning](https://semver.org/).
   see-through depth is temporally very stable (0.2-0.4% of range frame to
   frame); albedo drifts by a global per-channel gain that the pass
   neutralises (`stabilize_gain`). Experimental — per-image model.
+
+### Fixed
+- The executor no longer fails when a frame has no EXR channels (e.g. SAM 3
+  found nothing and the only other pass writes non-EXR sidecars).
 
 ## [0.8.0] — 2026-08-13
 

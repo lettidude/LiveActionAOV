@@ -113,6 +113,9 @@ birefnet = ["timm>=0.9", "einops>=0.4", "kornia>=0.7"]
 # torch.hub raises `Missing dependencies: geffnet` at first load.
 dsine = ["geffnet>=1.0"]
 matanyone2 = []
+# Camera track — classical SfM via pycolmap (BSD-3-Clause). PyPI wheels for
+# Windows/Linux/macOS, no C++ build, no CUDA toolkit; SIFT runs on CPU.
+camera = ["pycolmap>=4.2", "opencv-python-headless>=4.7"]
 # `matte` meta-extra — installs both the detector (sam3) and the default
 # commercial-safe refiner (rvm) in one shot.
 matte = ["live-action-aov[sam3]", "live-action-aov[rvm]"]
@@ -133,6 +136,7 @@ all = [
     "live-action-aov[dsine]",
     "live-action-aov[sam3]",
     "live-action-aov[rvm]",
+    "live-action-aov[camera]",
 ]
 
 [project.urls]
@@ -154,6 +158,7 @@ liveaov-gui = "live_action_aov.gui.app:main"
 [project.entry-points."live_action_aov.passes"]
 flow                 = "live_action_aov.passes.flow.raft:RAFTPass"
 flow_megaflow        = "live_action_aov.passes.flow.megaflow:MegaFlowPass"
+camera_pycolmap      = "live_action_aov.passes.camera.pycolmap_track:PyColmapCameraPass"
 depth_anything_v2    = "live_action_aov.passes.depth.depth_anything_v2:DepthAnythingV2Pass"
 video_depth_anything = "live_action_aov.passes.depth.video_depth_anything:VideoDepthAnythingPass"
 depthcrafter         = "live_action_aov.passes.depth.depthcrafter:DepthCrafterPass"

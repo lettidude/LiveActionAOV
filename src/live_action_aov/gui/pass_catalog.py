@@ -192,6 +192,19 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             ("screen_pull",),
         ),
     ],
+    # Camera track: classical SfM (pycolmap, CPU). Writes camera_track/
+    # (Nuke .nk camera + JSON + sparse .ply + COLMAP model), no EXR channels.
+    # With Matte on in the same job, every SAM 3 object is masked out of
+    # the features (matchmove garbage matte for free).
+    "Camera": [
+        ModelEntry(
+            "camera_pycolmap",
+            "Camera track (SfM -> Nuke camera; needs parallax)",
+            "BSD-3-Clause",
+            True,
+            ("camera_pycolmap",),
+        ),
+    ],
     "Cryptomatte": [
         ModelEntry(
             "cryptomatte",

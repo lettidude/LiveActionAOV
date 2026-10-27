@@ -558,12 +558,17 @@ all = [
     { name = "huggingface-hub" },
     { name = "kornia" },
     { name = "opencv-python-headless" },
+    { name = "pycolmap" },
     { name = "timm" },
 ]
 birefnet = [
     { name = "einops" },
     { name = "kornia" },
     { name = "timm" },
+]
+camera = [
+    { name = "opencv-python-headless" },
+    { name = "pycolmap" },
 ]
 depthcrafter = [
     { name = "accelerate" },
@@ -616,6 +621,7 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'video-depth-anything'", specifier = ">=0.20" },
     { name = "kornia", marker = "extra == 'birefnet'", specifier = ">=0.7" },
     { name = "live-action-aov", extras = ["birefnet"], marker = "extra == 'all'" },
+    { name = "live-action-aov", extras = ["camera"], marker = "extra == 'all'" },
     { name = "live-action-aov", extras = ["depthcrafter"], marker = "extra == 'all'" },
     { name = "live-action-aov", extras = ["depthpro"], marker = "extra == 'all'" },
     { name = "live-action-aov", extras = ["dsine"], marker = "extra == 'all'" },
@@ -633,9 +639,11 @@ requires-dist = [
     { name = "oiio-python", specifier = ">=2.5" },
     { name = "opencolorio", specifier = ">=2.3" },
     { name = "opencv-python-headless", specifier = ">=4.7" },
+    { name = "opencv-python-headless", marker = "extra == 'camera'", specifier = ">=4.7" },
     { name = "opencv-python-headless", marker = "extra == 'video-depth-anything'", specifier = ">=4.7" },
     { name = "platformdirs", specifier = ">=4.2" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7" },
+    { name = "pycolmap", marker = "extra == 'camera'", specifier = ">=4.2" },
     { name = "pydantic", specifier = ">=2.5" },
     { name = "pyside6", specifier = ">=6.6" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -653,7 +661,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
-provides-extras = ["dev", "depthcrafter", "normalcrafter", "video-depth-anything", "depthpro", "sam3", "rvm", "birefnet", "dsine", "matanyone2", "matte", "all"]
+provides-extras = ["dev", "depthcrafter", "normalcrafter", "video-depth-anything", "depthpro", "sam3", "rvm", "birefnet", "dsine", "matanyone2", "camera", "matte", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1159,6 +1167,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/04/78/0acd37ca84ce3ddffaa92ef0f571e073faa6d8ff1f0559ab1272188ea2be/psutil-7.2.2-cp36-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:b58fabe35e80b264a4e3bb23e6b96f9e45a3df7fb7eed419ac0e5947c61e47cc", size = 148266, upload-time = "2026-01-28T18:15:31.597Z" },
     { url = "https://files.pythonhosted.org/packages/b4/90/e2159492b5426be0c1fef7acba807a03511f97c5f86b3caeda6ad92351a7/psutil-7.2.2-cp37-abi3-win_amd64.whl", hash = "sha256:eb7e81434c8d223ec4a219b5fc1c47d0417b12be7ea866e24fb5ad6e84b3d988", size = 137737, upload-time = "2026-01-28T18:15:33.849Z" },
     { url = "https://files.pythonhosted.org/packages/8c/c7/7bb2e321574b10df20cbde462a94e2b71d05f9bbda251ef27d104668306a/psutil-7.2.2-cp37-abi3-win_arm64.whl", hash = "sha256:8c233660f575a5a89e6d4cb65d9f938126312bca76d8fe087b947b3a1aaac9ee", size = 134617, upload-time = "2026-01-28T18:15:36.514Z" },
+]
+
+[[package]]
+name = "pycolmap"
+version = "4.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4e/87/0ea99959c82ad918e2f4bd4bc41b2f97d3d061a83b267a2e3b8477171e69/pycolmap-4.2.1-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:73204e55c75ab637231d4ca559153d658ec7eda9dec39a1aacad96fbc0300cb9", size = 20715097, upload-time = "2026-09-29T17:04:22.759Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/b3/a8427abf840e4455611d7be99a47ddf1aab68f96b874ee0706c7e6d128bc/pycolmap-4.2.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:7627f0bab5746d04d94f91fec0dcb4b8ae0d5592853ab7b549cbd7dd021dd90f", size = 38173037, upload-time = "2026-09-29T17:04:25.932Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/48/ca4793173198767e8e73757797346ac71e4a42d1ec5399cdf058cf5b4e22/pycolmap-4.2.1-cp311-cp311-win_amd64.whl", hash = "sha256:9db2c0fef05cf0f9ac981a30c62a01d6bd9c67dab0fbe60a0045ff968180752e", size = 23960818, upload-time = "2026-09-29T17:04:28.727Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/1c/a3a80bb2a2b705b2e94074498fcd8a9de031f16a14fedaeb9a3628e7abb0/pycolmap-4.2.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:1cacb57103909bb0adec666b06122add8ea8024682d83fc5903145e01297f243", size = 20785309, upload-time = "2026-09-29T17:04:33.333Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/9a/a76e54e33730eceecb5da7eca38ad939cd6c69633339b3a53cf7299f7ea9/pycolmap-4.2.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:711cef7bd0d30326a5d75967043371c98667f24db305b8cd5cd19339d02a7073", size = 38191187, upload-time = "2026-09-29T17:04:38.813Z" },
+    { url = "https://files.pythonhosted.org/packages/80/ab/bc60b841c8be56354bfad1b4c7b1f9b15ba92e4f2285f394b3a5dbaa27c7/pycolmap-4.2.1-cp312-cp312-win_amd64.whl", hash = "sha256:b6a562b33bcbf0757c7b28c33b9166e095fa5451f9a4b38236018cf8a8d49380", size = 23973043, upload-time = "2026-09-29T17:04:42.469Z" },
 ]
 
 [[package]]

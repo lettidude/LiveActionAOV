@@ -46,6 +46,10 @@ class PassNode:
     plugin: str
     provides: tuple[str, ...]
     requires: tuple[str, ...]
+    # Soft dependencies: ordered after their provider when one is scheduled,
+    # silently skipped when none is (e.g. the camera pass uses SAM 3 masks
+    # to exclude moving objects only if a SAM 3 pass is in the job).
+    optional: tuple[str, ...] = ()
 
 
 def topological_sort(nodes: list[PassNode]) -> list[PassNode]:
@@ -77,6 +81,12 @@ def topological_sort(nodes: list[PassNode]) -> list[PassNode]:
                 )
             if provider.name == node.name:
                 # self-dep is fine (provides and requires the same artifact internally)
+                continue
+            incoming[node.name].add(provider.name)
+            outgoing[provider.name].add(node.name)
+        for art in node.optional:
+            provider = producer_of.get(art)
+            if provider is None or provider.name == node.name:
                 continue
             incoming[node.name].add(provider.name)
             outgoing[provider.name].add(node.name)

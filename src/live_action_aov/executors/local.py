@@ -214,7 +214,9 @@ class LocalExecutor(Executor):
                 # Pipe upstream artifacts into passes that declare requires.
                 # Default `ingest_artifacts` is a no-op so flow/depth/normals
                 # pay nothing; refiner passes read sam3_hard_masks etc. here.
-                if getattr(cls, "requires_artifacts", None):
+                if getattr(cls, "requires_artifacts", None) or getattr(
+                    cls, "optional_artifacts", None
+                ):
                     instance.ingest_artifacts(artifacts)
 
                 # Colour-maths passes (screen_pull) key on SCENE-LINEAR
@@ -242,6 +244,11 @@ class LocalExecutor(Executor):
                 if "backward_flow" in emitted:
                     for f, arr in emitted["backward_flow"].items():
                         flow_cache.put(shot.name, f, "backward", arr)
+
+                # Non-EXR sidecars (camera .json / .nk / .ply ...). Default
+                # emit_sidecars is a no-op, so EXR-only passes pay nothing.
+                for tag, path in (instance.emit_sidecars(shot) or {}).items():
+                    shot.sidecars[tag] = Path(path)
 
                 # Free this pass's GPU model before the next one loads. Peak
                 # VRAM then tracks the single heaviest pass, not the sum of
@@ -405,6 +412,11 @@ class LocalExecutor(Executor):
                         min(frac, 0.99),
                         f"Writing sidecars ({frame_write_idx}/{total_frames})",
                     )
+                if not channels:
+                    # A frame where no pass emitted pixels (e.g. SAM 3 found
+                    # nothing and the only other pass writes non-EXR
+                    # sidecars, like the camera track): nothing to write.
+                    continue
                 if needs_upscale:
                     channels = _upscale_channels_to_plate(channels, plate_h, plate_w)
                 out_path = sidecar_dir / sidecar_template.format(frame=frame_idx)
@@ -510,6 +522,7 @@ def _node_for(pc: PassConfig, cls: type[UtilityPass]) -> PassNode:
         plugin=pc.name,
         provides=tuple(getattr(cls, "provides_artifacts", ()) or ()),
         requires=tuple(getattr(cls, "requires_artifacts", ()) or ()),
+        optional=tuple(getattr(cls, "optional_artifacts", ()) or ()),
     )
 
 

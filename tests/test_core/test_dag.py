@@ -44,3 +44,16 @@ def test_cycle_raises() -> None:
     b = _node("b", provides=("y",), requires=("x",))
     with pytest.raises(DagCycleError):
         topological_sort([a, b])
+
+
+def test_optional_artifact_orders_after_provider_when_present():
+    cam = PassNode("camera", "camera", provides=(), requires=(), optional=("masks",))
+    sam = PassNode("sam3", "sam3", provides=("masks",), requires=())
+    # Camera listed first, but it must run after the mask provider.
+    assert [n.name for n in topological_sort([cam, sam])] == ["sam3", "camera"]
+
+
+def test_optional_artifact_missing_is_not_an_error():
+    cam = PassNode("camera", "camera", provides=(), requires=(), optional=("masks",))
+    flow = PassNode("flow", "flow", provides=("forward_flow",), requires=())
+    assert [n.name for n in topological_sort([cam, flow])] == ["camera", "flow"]
