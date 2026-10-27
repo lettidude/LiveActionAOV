@@ -24,6 +24,19 @@ uses [semantic versioning](https://semver.org/).
   nodal pans cannot triangulate); `SIMPLE_RADIAL` solves k1 but the Nuke
   camera does not apply it (11 px off at the edges on PF0081 without an
   undistort), so the default model is `SIMPLE_PINHOLE`.
+- **Gaussian splat** ("Camera" category; plugin `splat_gsplat`, gsplat
+  Apache-2.0): trains a 3DGS of the static scene on the shot's own camera
+  solve and re-renders every frame through it -> EXR layer `splat`
+  (`splat.R/G/B` scene-linear clean plate, `splat.A` coverage, `splat.Z`
+  multi-view depth) + `camera_track/<shot>.splat.ply` in the same world as
+  the Nuke camera. SAM 3 objects (Matte on) are excluded from training, so
+  the re-render is the plate without them. PF0081 (64 frames 2048x1080):
+  61 s training, 33.9 dB PSNR on frames held out of training; the reaching
+  arm disappears from the re-render. gsplat needs a wheel built for the
+  tool's torch 2.11 / cu128 (no upstream one): `wheels/` + 
+  `scripts/build_gsplat_wheel.bat` (all NVIDIA archs RTX 20xx-50xx), and
+  install/update scripts now re-install `wheels/*.whl` after `uv sync`.
+  See docs/gaussian_splat.md.
 - DAG **optional artifacts** (`optional_artifacts`): a pass is ordered after
   a provider when one is scheduled and runs without it otherwise; and a
   pass-level `emit_sidecars()` hook for non-EXR outputs.

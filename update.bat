@@ -35,6 +35,14 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+
+REM Locally built / downloaded wheels (wheels\*.whl, e.g. gsplat for the
+REM Gaussian splat pass) are not on PyPI for this torch/CUDA, so `uv sync`
+REM would remove them. Re-install them after every sync.
+for %%W in ("%~dp0wheels\*.whl") do (
+    echo  Re-installing local wheel %%~nxW
+    uv pip install --no-deps "%%W"
+)
 echo.
 
 echo ----------------------------------------------------------------------

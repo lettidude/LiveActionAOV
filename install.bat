@@ -80,6 +80,13 @@ if errorlevel 1 (
 )
 call :log "[OK] Dependencies installed"
 
+REM 4b. Local wheels (wheels\*.whl - e.g. gsplat for the Gaussian splat
+REM     pass; see docs\gaussian_splat.md). Optional: none present = skip.
+for %%W in ("%~dp0wheels\*.whl") do (
+    "%UV_EXE%" pip install --no-deps "%%W" >> %LOG_FILE% 2>&1
+    call :log "[OK] Local wheel installed: %%~nxW"
+)
+
 REM 5. Verify CUDA is actually available. Missing driver or a
 REM    mismatched wheel surface here as a loud warning rather than
 REM    silently breaking the first submit.

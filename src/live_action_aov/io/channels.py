@@ -84,6 +84,18 @@ CH_KEY_B = "key.b"
 CH_KEY_A = "key.a"
 KEY_CHANNELS = (CH_KEY_R, CH_KEY_G, CH_KEY_B, CH_KEY_A)
 
+# --- Gaussian splat re-render (scene-linear, plate colourspace) ---
+# The static scene re-rendered through the solved camera: a clean plate
+# where SAM 3 objects were excluded from training, plus the splat's own
+# multi-view-consistent depth (camera-space Z, camera-track units; 0 where
+# splat.A = 0). Nuke shows them as layer "splat".
+CH_SPLAT_R = "splat.R"
+CH_SPLAT_G = "splat.G"
+CH_SPLAT_B = "splat.B"
+CH_SPLAT_A = "splat.A"
+CH_SPLAT_Z = "splat.Z"
+SPLAT_CHANNELS = (CH_SPLAT_R, CH_SPLAT_G, CH_SPLAT_B, CH_SPLAT_A, CH_SPLAT_Z)
+
 # --- Hero mattes (top-4 soft alpha) ---
 CH_MATTE_R = "matte.r"
 CH_MATTE_G = "matte.g"
@@ -164,6 +176,7 @@ CANONICAL_CHANNEL_ORDER: tuple[str, ...] = (
     *FLOW_CHANNELS,
     *MATTE_CHANNELS,
     *KEY_CHANNELS,
+    *SPLAT_CHANNELS,
     *CRYPTOMATTE_CHANNELS,
 )
 
@@ -205,6 +218,11 @@ __all__ = [
     "CH_P_X",
     "CH_P_Y",
     "CH_P_Z",
+    "CH_SPLAT_A",
+    "CH_SPLAT_B",
+    "CH_SPLAT_G",
+    "CH_SPLAT_R",
+    "CH_SPLAT_Z",
     "CH_Z",
     "CH_Z_RAW",
     "CRYPTOMATTE_CHANNELS",
@@ -218,5 +236,6 @@ __all__ = [
     "MATTE_CHANNELS",
     "NORMAL_CHANNELS",
     "POSITION_CHANNELS",
+    "SPLAT_CHANNELS",
     "is_mask_channel",
 ]

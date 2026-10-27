@@ -72,6 +72,14 @@ log "Installing dependencies (this may take several minutes)..."
 if ! uv sync --python 3.11 --extra dev --extra all >>"$LOG_FILE" 2>&1; then
     fail "uv sync failed" "See $LOG_FILE for details. Common causes: network issues, incompatible torch wheel for platform"
 fi
+
+# Locally built wheels (wheels/*.whl, e.g. gsplat for the Gaussian splat
+# pass) are not in uv.lock, so `uv sync` removes them: re-install.
+for whl in "$(dirname "$0")"/wheels/*.whl; do
+    [ -e "$whl" ] || continue
+    echo "Installing local wheel $(basename "$whl")"
+    uv pip install --no-deps "$whl"
+done
 ok "Dependencies installed"
 
 # 5. Verify CUDA is actually available on Linux (macOS uses MPS so

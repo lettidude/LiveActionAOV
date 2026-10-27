@@ -101,6 +101,8 @@ class PyColmapCameraPass(UtilityPass):
     ]
     # Soft dep: SAM 3 masks exclude moving objects when SAM 3 is in the job.
     optional_artifacts = ["sam3_hard_masks"]
+    # The solve itself, for downstream passes (Gaussian splat).
+    provides_artifacts = ["camera_solve"]
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "matcher": "sequential",  # "sequential" (video) | "exhaustive" (short / unordered)
@@ -191,6 +193,12 @@ class PyColmapCameraPass(UtilityPass):
         for w in q.warnings:
             _log.warning("Camera solve: %s", w)
         return {}
+
+    def emit_artifacts(self) -> dict[str, dict[int, Any]]:
+        if self._solve is None or not self._solve.extrinsics:
+            return {}
+        # Shot-level artifact, stored under the first solved frame.
+        return {"camera_solve": {self._solve.extrinsics[0].frame: self._solve}}
 
     def emit_sidecars(self, shot: Any) -> dict[str, Path]:
         if self._solve is None:

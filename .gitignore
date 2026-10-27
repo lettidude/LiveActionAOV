@@ -37,6 +37,9 @@ htmlcov/
 Thumbs.db
 
 # Our tool
+# Locally built / downloaded wheels (gsplat ...) and their build trees
+wheels/*.whl
+.build/
 install.log
 .live_action_aov/
 sessions/

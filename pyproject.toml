@@ -116,6 +116,11 @@ matanyone2 = []
 # Camera track — classical SfM via pycolmap (BSD-3-Clause). PyPI wheels for
 # Windows/Linux/macOS, no C++ build, no CUDA toolkit; SIFT runs on CPU.
 camera = ["pycolmap>=4.2", "opencv-python-headless>=4.7"]
+# Gaussian splat pass: gsplat itself is NOT here (no PyPI wheel with CUDA
+# kernels for torch 2.11 / cu128) - it comes from wheels/*.whl, installed
+# --no-deps by install/update scripts (docs/gaussian_splat.md). These are
+# its pure-Python runtime deps, so `uv sync` keeps them.
+splat = ["jaxtyping>=0.2", "ninja>=1.11", "rich>=12"]
 # `matte` meta-extra — installs both the detector (sam3) and the default
 # commercial-safe refiner (rvm) in one shot.
 matte = ["live-action-aov[sam3]", "live-action-aov[rvm]"]
@@ -137,6 +142,7 @@ all = [
     "live-action-aov[sam3]",
     "live-action-aov[rvm]",
     "live-action-aov[camera]",
+    "live-action-aov[splat]",
 ]
 
 [project.urls]
@@ -159,6 +165,7 @@ liveaov-gui = "live_action_aov.gui.app:main"
 flow                 = "live_action_aov.passes.flow.raft:RAFTPass"
 flow_megaflow        = "live_action_aov.passes.flow.megaflow:MegaFlowPass"
 camera_pycolmap      = "live_action_aov.passes.camera.pycolmap_track:PyColmapCameraPass"
+splat_gsplat         = "live_action_aov.passes.scene.gsplat_splat:GsplatSplatPass"
 depth_anything_v2    = "live_action_aov.passes.depth.depth_anything_v2:DepthAnythingV2Pass"
 video_depth_anything = "live_action_aov.passes.depth.video_depth_anything:VideoDepthAnythingPass"
 depthcrafter         = "live_action_aov.passes.depth.depthcrafter:DepthCrafterPass"

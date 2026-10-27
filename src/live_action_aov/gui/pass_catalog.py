@@ -204,6 +204,17 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             True,
             ("camera_pycolmap",),
         ),
+        # Gaussian splat of the static scene on top of the camera solve:
+        # clean plate (SAM 3 objects excluded) + multi-view depth. Expands
+        # to the camera track too, so ticking it alone is enough. Needs the
+        # gsplat wheel (docs/gaussian_splat.md).
+        ModelEntry(
+            "splat_gsplat",
+            "Gaussian splat (clean plate + depth; gsplat wheel, minutes)",
+            "Apache-2.0",
+            True,
+            ("camera_pycolmap", "splat_gsplat"),
+        ),
     ],
     "Cryptomatte": [
         ModelEntry(

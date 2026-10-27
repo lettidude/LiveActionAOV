@@ -31,6 +31,14 @@ if ! uv sync --extra all; then
     echo "[ERROR] uv sync failed. See the output above for details."
     exit 1
 fi
+
+# Locally built wheels (wheels/*.whl, e.g. gsplat for the Gaussian splat
+# pass) are not in uv.lock, so `uv sync` removes them: re-install.
+for whl in "$(dirname "$0")"/wheels/*.whl; do
+    [ -e "$whl" ] || continue
+    echo "Re-installing local wheel $(basename "$whl")"
+    uv pip install --no-deps "$whl"
+done
 echo
 
 echo "----------------------------------------------------------------------"

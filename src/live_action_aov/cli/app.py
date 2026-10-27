@@ -114,6 +114,7 @@ _PREFETCH_EXEMPT = {
     "marigold_v2_albedo",
     "marigold_v2_depth_seethrough",
     "camera_pycolmap",
+    "splat_gsplat",
 }
 
 
