@@ -153,6 +153,7 @@ liveaov-gui = "live_action_aov.gui.app:main"
 
 [project.entry-points."live_action_aov.passes"]
 flow                 = "live_action_aov.passes.flow.raft:RAFTPass"
+flow_megaflow        = "live_action_aov.passes.flow.megaflow:MegaFlowPass"
 depth_anything_v2    = "live_action_aov.passes.depth.depth_anything_v2:DepthAnythingV2Pass"
 video_depth_anything = "live_action_aov.passes.depth.video_depth_anything:VideoDepthAnythingPass"
 depthcrafter         = "live_action_aov.passes.depth.depthcrafter:DepthCrafterPass"

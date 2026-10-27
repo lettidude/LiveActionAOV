@@ -42,6 +42,15 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
     # plugin name stays `flow` — only the user-facing label changed.
     "Motion": [
         ModelEntry("flow", "RAFT", "Apache-2.0", True, ("flow",)),
+        # Large-displacement / textureless-robust alternative; ~5x slower
+        # than RAFT and ~6 GB VRAM at 952 px. Bench: see passes/flow/megaflow.py.
+        ModelEntry(
+            "flow_megaflow",
+            "MegaFlow (large displacement, slower)",
+            "Apache-2.0",
+            True,
+            ("flow_megaflow",),
+        ),
     ],
     "Depth": [
         ModelEntry(

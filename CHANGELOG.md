@@ -7,6 +7,15 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **MegaFlow motion backend** ("MegaFlow (large displacement, slower)" in
+  the Motion category; plugin `flow_megaflow`). Vendored Apache-2.0 code
+  (ETH CVG, ECCV 2026) on a frozen DINOv2 ViT-L/14; same channels and
+  artifacts as RAFT. Bench on PF0071 @1024 (RTX 5090): on consecutive
+  frames both are fine (RAFT 68 ms/pair, MegaFlow 320 ms, 1 vs 6 GB VRAM);
+  at 8x frame stride RAFT hallucinates flow on textureless water
+  (forward/backward error 5.2 px) while MegaFlow stays clean (0.67 px).
+  RAFT remains the default; pick MegaFlow for fast action, retimes and
+  textureless plates. Weights: HF Kristen-Z/MegaFlow (prefetch covers it).
 - **Marigold V2 bridge passes** (Apache-2.0 code + weights, Qwen-Image-Edit
   -2509 Apache-2.0 backbone): `marigold_v2_albedo` (Albedo category) and
   `marigold_v2_depth_seethrough` (Depth category — depth that sees through

@@ -98,6 +98,7 @@ _DEFAULT_PREFETCH = [
     "birefnet_refiner",
     "vitmatte_refiner",
     "flow",
+    "flow_megaflow",
 ]
 
 #: Registered passes that intentionally have no weights to prefetch (no
