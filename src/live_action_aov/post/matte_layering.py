@@ -241,14 +241,22 @@ class MatteLayeringPost:
                 d_front = dist_to(front)
                 if float(d_front[hard > 0].min()) <= seam:
                     d_self = dist_to(hard)
-                    fill |= (hard > 0) & (d_front <= seam) & (d_front < d_bg)
-                    fill |= (front > 0) & (d_self <= seam) & (d_self < d_bg)
+                    ff = (hard > 0) & (d_front <= seam) & (d_front < d_bg)
+                    under = (front > 0) & (d_self <= seam) & (d_self < d_bg)
                     # Pixels NEITHER hard mask owns, between the two objects,
                     # where the front object's soft edge says something of
                     # it is there (hair over the car): what shows through is
                     # this object, not background. Real background gaps have
                     # no front alpha and stay empty.
                     gap = (union == 0) & (d_front <= seam) & (d_self <= seam)
+                    # On this object's own SAM pixels, only where its matte is
+                    # there (fading at the contact = the dark line). Where its
+                    # refiner rejected SAM's shape (a spur over the background)
+                    # filling to 1 pasted hard chips onto soft hair, worst when
+                    # the depth order is wrong (shelves ranked in front of the
+                    # person; field report 2026-10-28).
+                    fill |= ff & (a > float(self.params.get("seam_alpha_min", 0.05)))
+                    fill |= under  # under the front's edge: its complement
                     fill |= gap & (bg == 0)  # cracks/pinholes in the contact
                     fill |= gap & (cover > float(self.params.get("gap_cover_min", 0.1)))
             if fill.any():

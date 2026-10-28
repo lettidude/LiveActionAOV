@@ -320,9 +320,11 @@ def test_inter_object_exclusion_prevents_roto_overlap() -> None:
     b = out[1][f"{MASK_PREFIX}b"]
     # Each object keeps alpha on its own core...
     assert a[16, 10] > 0.0 and b[16, 40] > 0.0
-    # ...and is ZERO on the other object's core (deep inside, past the seam).
-    assert a[16, 40] == 0.0, "A's matte leaked over B — overlap bug"
-    assert b[16, 10] == 0.0, "B's matte leaked over A — overlap bug"
+    # ...and is ZERO on the other object's core (deep inside, past the seam
+    # and the soft fade-out), soft only in between.
+    assert a[16, 34] == 0.0, "A's matte leaked over B — overlap bug"
+    assert b[16, 14] == 0.0, "B's matte leaked over A — overlap bug"
+    assert 0.0 < a[16, 28] < 0.8  # fades, no hard cut
 
 
 def test_exclusion_can_be_disabled() -> None:

@@ -429,6 +429,9 @@ class InspectorPanel(QWidget):
         # engine and (for BiRefNet) the weight variant. Objects pinned on
         # the Masks tab override this per object.
         self._default_engine_combo = QComboBox()
+        self._default_engine_combo.addItem(
+            "Auto - ViTMatte + BiRefNet guide (recommended)", ("vitmatte", "")
+        )
         self._default_engine_combo.addItem("BiRefNet Portrait - people/hair", ("birefnet", ""))
         self._default_engine_combo.addItem(
             "BiRefNet Matting - general soft", ("birefnet", "ZhengPeng7/BiRefNet-matting")
@@ -436,7 +439,6 @@ class InspectorPanel(QWidget):
         self._default_engine_combo.addItem(
             "BiRefNet General - cleanest licence", ("birefnet", "ZhengPeng7/BiRefNet")
         )
-        self._default_engine_combo.addItem("ViTMatte (trimap)", ("vitmatte", ""))
         self._default_engine_combo.addItem("Chroma Key (green/blue)", ("chromakey", ""))
         self._default_engine_combo.addItem("RVM", ("rvm", ""))
         self._default_engine_combo.setToolTip(

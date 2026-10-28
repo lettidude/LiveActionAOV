@@ -77,10 +77,10 @@ liveaov-gui
 
 1. **Load plates** — drag plate folders onto the shot list (or File → Add shot). Each shot auto-detects its colourspace and seeds exposure.
 2. **Passes tab** — pick a model per category. For matte, choose a backend:
-   - **SAM3 + RVM** — hard masks + RVM soft alpha (default, commercial-safe).
-   - **SAM3 + BiRefNet (soft edges)** — roto-grade soft alpha (hair, motion blur, fine edges) in `matte.*`. MIT, commercial-safe.
+   - **Default engine: Auto - ViTMatte + BiRefNet guide** (recommended) — SAM 3 finds the object, BiRefNet says where it is sure, ViTMatte resolves every unsure pixel (hair, motion blur, a sloppy SAM edge). Works on people and on objects BiRefNet does not understand (it is ignored there). MIT, commercial-safe.
+   - Other engines (BiRefNet Portrait / Matting / General, Chroma Key, RVM) stay in the same dropdown for A/B or for specific shots (Chroma Key for green/blue screen).
    - The **"SAM 3 detects"** field takes comma-separated concepts (e.g. `person, red car`) driving both the matte and the Cryptomatte.
-   - **Whole + parts**: list a whole and its parts together (`person, hair, jacket, trousers`). `mask.person` stays the full body; `mask.hair`, `mask.jacket`, ... split it among themselves (no dark seam between them) and never leave it. Parts are recognised by name (clothing, body and vehicle parts) when they sit inside a bigger object; a person inside a car stays a separate object.
+   - **Whole + parts**: list a whole and its parts together (`person, hair, jacket, trousers`). `mask.person` stays the full body; `mask.hair`, `mask.jacket`, ... are cut from the person's matte, so they share its outer edge (hair strands included), add up to it exactly and never leave it. Parts are recognised by name (clothing, body and vehicle parts) when they sit inside a bigger object; a person inside a car stays a separate object.
    - Multi-word concepts become channel-safe names: `brick wall` -> `mask.brick_wall`.
 3. **Masks tab (interactive click-to-mask, optional)** — seed an object directly in the viewport:
    - **Drag a box** around it (often the strongest single prompt), and/or **left-click = include**, **right-click = exclude**.

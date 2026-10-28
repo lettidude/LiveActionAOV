@@ -60,7 +60,7 @@ from live_action_aov.core.pass_base import (
     UtilityPass,
 )
 from live_action_aov.core.runtime_env import load_local_first
-from live_action_aov.io.channels import mask_channel
+from live_action_aov.io.channels import CH_Z_RAW, mask_channel
 from live_action_aov.passes.matte.rank import (
     HeroOverride,
     Instance,
@@ -237,6 +237,14 @@ class SAM3MattePass(UtilityPass):
         # one (closes gaps up to this wide). "auto" = 0.4% of the long edge
         # (4 px at 1024, 8 px at 2K); 0 = off.
         "seam_close_px": "auto",
+        # Front-to-back order (who owns a contested pixel, who is held out in
+        # the layering post): "depth" = Depth Anything V2 Small (Apache-2.0)
+        # on a few frames, nearer first; objects at about the same depth (a
+        # rifle in the hands) fall back to "area" = the smaller object in
+        # front. Area alone put thin background shelves IN FRONT of the
+        # person behind whom they stand (field report 2026-10-28).
+        "layer_order": "depth",
+        "depth_order_frames": 5,
         # Parts of an object ("hair", "jacket" inside "person"): a track with a
         # part-like label (`part_labels`) whose mask lies at least this much
         # inside a bigger object of another label is that object's PART. The
@@ -285,6 +293,7 @@ class SAM3MattePass(UtilityPass):
         # track_id -> depth rank, 0 = front. Published in sam3_hard_masks so
         # the matte layering post knows whose edge defines a shared seam.
         self._layer: dict[int, int] = {}
+        self._nearness: dict[int, float] = {}
         # part track_id -> whole track_id ("hair" -> "person").
         self._parent: dict[int, int] = {}
         self._heroes: list[Any] = []  # list[rank.HeroSlot]
@@ -892,6 +901,56 @@ class SAM3MattePass(UtilityPass):
     # Shot-level: detect → track → union → stats → rank
     # ------------------------------------------------------------------
 
+    def _depth_nearness(self, frames: np.ndarray, first: int) -> dict[int, float]:
+        """Per-track nearness in [0, 1] (1 = nearest), the median of Depth
+        Anything V2 Small's per-frame-normalised disparity inside the track's
+        eroded mask, over a few frames. Empty dict when there is nothing to
+        order or the depth model is unavailable (area order then)."""
+        if len(self._instances) < 2:
+            return {}
+        try:
+            import cv2
+            import torch
+
+            from live_action_aov.passes.depth.depth_anything_v2 import DepthAnythingV2Pass
+
+            depth = DepthAnythingV2Pass({"variant": "small"})
+            depth._load_model()
+        except Exception as exc:  # weights missing offline, no GPU, ...
+            _log.warning("SAM3 matte: depth order unavailable (%s) - using area order.", exc)
+            return {}
+        all_f = sorted({f for i in self._instances for f in i.masks})
+        n = max(int(self.params.get("depth_order_frames", 5)), 1)
+        pick = [all_f[int(k)] for k in np.linspace(0, len(all_f) - 1, min(n, len(all_f)))]
+        k3 = np.ones((7, 7), np.uint8)
+        vals: dict[int, list[float]] = {}
+        for f in dict.fromkeys(pick):
+            img = np.clip(frames[f - first], 0.0, 1.0)[None].astype(np.float32)
+            # Raw DA V2 output is relative disparity: larger = nearer.
+            disp = depth.postprocess(depth.infer(depth.preprocess(img)))[CH_Z_RAW]
+            lo, hi = np.percentile(disp, [1, 99])
+            disp = np.clip((disp - lo) / max(float(hi - lo), 1e-6), 0.0, 1.0)
+            for inst in self._instances:
+                m = inst.masks.get(f)
+                if m is None or not m.any():
+                    continue
+                core = cv2.erode((m > 0).astype(np.uint8), k3)
+                sel = core > 0 if core.any() else m > 0
+                vals.setdefault(inst.track_id, []).append(float(np.median(disp[sel])))
+        del depth
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        near = {t: float(np.mean(v)) for t, v in vals.items()}
+        _log.info(
+            "SAM3 matte: depth order (near -> far): %s",
+            ", ".join(
+                f"{i.label}#{i.track_id}={near[i.track_id]:.2f}"
+                for i in sorted(self._instances, key=lambda i: -near.get(i.track_id, 0.0))
+                if i.track_id in near
+            ),
+        )
+        return near
+
     def run_shot(
         self,
         reader: Any,
@@ -1021,7 +1080,12 @@ class SAM3MattePass(UtilityPass):
             self._parent = {c: p for c, p in self._parent.items() if c in live and p in live}
             for c, p in self._parent.items():
                 _log.info("SAM3 matte: track %d is a part of track %d.", c, p)
-            _make_exclusive(self._instances, self._priority, self._parent)
+            self._nearness = (
+                self._depth_nearness(frames, first)
+                if str(self.params.get("layer_order", "depth")) == "depth"
+                else {}
+            )
+            _make_exclusive(self._instances, self._priority, self._parent, self._nearness)
             gap = self.params.get("seam_close_px", "auto")
             gap_px = (
                 max(2, round(0.004 * max(plate_h, plate_w))) if str(gap) == "auto" else int(gap)
@@ -1046,7 +1110,9 @@ class SAM3MattePass(UtilityPass):
             self._parent = {c: p for c, p in self._parent.items() if c in live and p in live}
         self._layer = {
             inst.track_id: rank
-            for rank, inst in enumerate(_layer_order(self._instances, self._priority))
+            for rank, inst in enumerate(
+                _layer_order(self._instances, self._priority, self._nearness)
+            )
         }
         click_labels = list(
             dict.fromkeys(i.label for i in self._instances if self._priority.get(i.track_id) == 1)
@@ -1258,19 +1324,36 @@ def _dedupe_instances(
     return sorted(keep, key=lambda i: order[i.track_id])
 
 
+#: Nearness (0 = far, 1 = near) is compared in steps this wide: closer
+#: than this is "the same depth" and the area rule decides.
+_NEARNESS_STEP = 0.08
+
+
 def _layer_order(
-    instances: list[_DetectedInstance], priority: dict[int, int]
+    instances: list[_DetectedInstance],
+    priority: dict[int, int],
+    nearness: dict[int, float] | None = None,
 ) -> list[_DetectedInstance]:
-    """Front-to-back order: user clicks first, then the smaller object
-    (clip-mean area: what is held or in front - a rifle over the person, a
-    person in front of a car), then the lower track id. Clip-mean (not
-    per-frame) area keeps the order stable over time, so seams don't flicker."""
+    """Front-to-back order: user clicks first, then the NEARER object (when
+    `nearness` is known: per-object median monocular depth), then the
+    smaller object (clip-mean area: what is held or in front - a rifle over
+    the person), then the lower track id. Clip-level values keep the order
+    stable over time, so seams don't flicker."""
+    near = nearness or {}
 
     def mean_area(i: _DetectedInstance) -> float:
         areas = [float(m.sum()) for m in i.masks.values() if m.any()]
         return sum(areas) / len(areas) if areas else 0.0
 
-    return sorted(instances, key=lambda i: (-priority.get(i.track_id, 0), mean_area(i), i.track_id))
+    return sorted(
+        instances,
+        key=lambda i: (
+            -priority.get(i.track_id, 0),
+            -round(near.get(i.track_id, 0.0) / _NEARNESS_STEP),
+            mean_area(i),
+            i.track_id,
+        ),
+    )
 
 
 def _close_seams(instances: list[_DetectedInstance], gap_px: int) -> None:
@@ -1310,12 +1393,13 @@ def _make_exclusive(
     instances: list[_DetectedInstance],
     priority: dict[int, int],
     parent: dict[int, int] | None = None,
+    nearness: dict[int, float] | None = None,
 ) -> None:
     """Give every contested pixel to ONE instance, in place, in
     `_layer_order` (the front object owns the overlap). A whole and its own
     parts (`parent`: part -> whole) do not contest each other."""
     parent = parent or {}
-    order = _layer_order(instances, priority)
+    order = _layer_order(instances, priority, nearness)
     frames = sorted({f for i in instances for f in i.masks})
     for f in frames:
         present = [i for i in order if f in i.masks and i.masks[f].any()]

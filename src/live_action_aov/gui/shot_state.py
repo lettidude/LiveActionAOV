@@ -130,7 +130,7 @@ class ShotState:
     # The RUN's default engine for objects without a per-object pin:
     # "birefnet" | "vitmatte" | "chromakey" | "rvm". BiRefNet weight
     # variants ride on refiner_model.
-    default_engine: str = "birefnet"
+    default_engine: str = "vitmatte"
 
     # Masks-tab PREVIEW override: which refiner engine the seed-frame
     # preview applies, independent of the run choice on the Passes tab —

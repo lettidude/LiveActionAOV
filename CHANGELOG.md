@@ -6,6 +6,34 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **New default matte engine: "Auto - ViTMatte + BiRefNet guide".** SAM 3
+  now says only WHERE an object is, not where its edge is. A trimap is built
+  per frame: sure-inside deep in SAM's mask (never deeper than half the
+  object's own thickness, so poles and thin shelves keep a core), sure-
+  outside far from it, and a wide unsure zone that ViTMatte resolves.
+  BiRefNet Portrait narrows or widens that zone where it is confident, but
+  only when it agrees with SAM (IoU >= 0.75); on objects it does not
+  understand (a rifle, a steel beam) it is ignored. Before, SAM's eroded
+  shape stayed solid and the refiner only touched a thin band around it, so
+  a blobby SAM mask (hair volume filled in) came out with hard, jagged hair
+  and cut-off strands (field report). Old construction: `trimap="band"`.
+- **Parts are cut from the whole's matte** (`parts_from_whole`, default on):
+  `mask.hair` / `mask.jacket` = `mask.person` x a soft ownership map (each
+  pixel to the nearest part, or to the remainder: face, hands). The outer
+  edge is the person's matte, strands beyond SAM's hair mask land in
+  `mask.hair`, and the parts add up to the whole. Parts are no longer
+  refined on their own (each had its own, disagreeing outline).
+- **Front-to-back order from depth** (`layer_order="depth"`, default): SAM 3
+  orders objects by median Depth Anything V2 Small disparity (Apache-2.0,
+  5 frames) instead of "the smaller object is in front". Thin background
+  shelves were ranked in front of the person standing before them, so the
+  layering post held her hair out and pasted hard chips of SAM's shape onto
+  it. Objects at about the same depth (a rifle in the hands) still fall back
+  to the area rule; no depth weights offline -> area order with a warning.
+- Neighbour exclusion fades a refined edge out over the seam width instead
+  of cutting it: a strand over the wall no longer ends on a straight line.
+
 ### Added
 - **Whole + parts roto**: concepts like `person, hair, jacket, trousers` now
   give `mask.person` = the full body and parts that split it among
@@ -26,6 +54,9 @@ uses [semantic versioning](https://semver.org/).
   subject). From a field roto on a small, distant person.
 
 ### Fixed
+- The matte layering post filled SAM's hard shape to 1 next to a touching
+  object even where both refined mattes had rejected it, pasting hard chips
+  onto soft hair edges. It now fills only pixels a matte actually claims.
 - BiRefNet stretched every crop to 1024x1024, so a tall person crop was
   squashed ~2.5:1. The crop now grows to a square from plate context and
   is padded only where the frame ends (`keep_aspect`, on by default).

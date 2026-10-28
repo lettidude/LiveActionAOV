@@ -396,6 +396,11 @@ class RVMRefinerPass(UtilityPass):
     # Shot-level: loop heroes × frames, pack into matte.r/g/b/a
     # ------------------------------------------------------------------
 
+    def _trust_outline(self) -> bool:
+        """True when this engine decides the outline itself (not SAM's edge):
+        the edge guardrail is then skipped. Subclasses override."""
+        return str(self.params.get("outline", "sam")) == "refiner"
+
     def _refine_track(
         self,
         track: dict[str, Any],
@@ -456,10 +461,7 @@ class RVMRefinerPass(UtilityPass):
         # soft instead of random. Trimap/chroma engines rarely trip this.
         # Not when the refiner owns the outline ("refiner" mode): departing
         # from SAM's edge is the point there, and it has its own area net.
-        if (
-            bool(self.params.get("fallback_feather", True))
-            and str(self.params.get("outline", "sam")) != "refiner"
-        ):
+        if bool(self.params.get("fallback_feather", True)) and not self._trust_outline():
             thresh = float(self.params.get("fallback_threshold", 0.40))
             # Decide per TRACK, not per frame: a per-frame decision made the
             # edge FLIP between engine output and feathered fallback across
@@ -615,19 +617,35 @@ class RVMRefinerPass(UtilityPass):
         skip_labels = self.params.get("skip_labels")
         skip = {str(x) for x in skip_labels} if skip_labels else set()
         pack_heroes = bool(self.params.get("pack_heroes", True))
+
+        def _wanted(tid: int) -> bool:
+            tr = self._hard_masks.get(tid)
+            if tr is None:
+                return False
+            lbl = str(tr.get("label", ""))
+            return (only is None or lbl in only) and lbl not in skip
+
+        # Parts are CUT from their whole's alpha (not refined on their own):
+        # the outer edge (hair strands, motion blur) is the whole's matte, the
+        # inner seams between parts come from SAM. Refining "hair" or "jacket"
+        # alone gave every part its own, disagreeing outline (field report).
+        from_whole = bool(self.params.get("parts_from_whole", True))
+        cut_parts = {t for t, p in parent_of.items() if from_whole and _wanted(p) and p in order}
+        order = [t for t in order if t not in cut_parts] + [t for t in order if t in cut_parts]
+        whole_soft: dict[int, np.ndarray] = {}
         for track_id in order:
             track = self._hard_masks.get(track_id)
-            if track is None:
+            if track is None or not _wanted(track_id):
                 continue
-            lbl = str(track.get("label", ""))
-            if only is not None and lbl not in only:
-                continue
-            if lbl in skip:
-                continue
-            soft, refined_frames = self._refine_track(
-                track, frames, frame_to_local, n_frames, plate_h, plate_w, track_id
-            )
-            if occupancy is not None:
+            if track_id in cut_parts and parent_of[track_id] in whole_soft:
+                soft, refined_frames = self._cut_part(
+                    track_id, parent_of, whole_soft, frame_to_local, n_frames, plate_h, plate_w
+                )
+            else:
+                soft, refined_frames = self._refine_track(
+                    track, frames, frame_to_local, n_frames, plate_h, plate_w, track_id
+                )
+            if occupancy is not None and track_id not in cut_parts:
                 own = _dense_core(track)
                 # Exclusion applies ONLY OUTSIDE this object's own hard mask:
                 # it exists to stop the refine band leaking over a NEIGHBOUR.
@@ -643,7 +661,18 @@ class RVMRefinerPass(UtilityPass):
                 ]:
                     if rel is not None and rel in self._hard_masks:
                         others = others - np.minimum(_dense_core(self._hard_masks[rel]), others)
-                soft[(others > 0) & (own_solid == 0)] = 0.0
+                # Fade out over `neighbor_erode` px into the neighbour's core
+                # instead of a hard cut: a flyaway strand over the wall used to
+                # end on a straight edge.
+                for i in range(n_frames):
+                    hit = (others[i] > 0) & (own_solid[i] == 0)
+                    if not hit.any():
+                        continue
+                    depth = cv2.distanceTransform((others[i] > 0).astype(np.uint8), cv2.DIST_L2, 3)
+                    kill = np.clip(depth / max(neighbor_erode, 1), 0.0, 1.0)
+                    soft[i] = np.where(hit, soft[i] * (1.0 - kill), soft[i])
+            if track_id in set(parent_of.values()):
+                whole_soft[track_id] = soft
             label = str(track.get("label", "") or "")
             slot = hero_slot.get(track_id, "")
             channel = _SLOT_TO_CHANNEL.get(slot)
@@ -728,6 +757,71 @@ class RVMRefinerPass(UtilityPass):
                 d[_ch(mask_channel(label))] = acc[i]
             out[f] = d
         return out
+
+    def _cut_part(
+        self,
+        track_id: int,
+        parent_of: dict[int, int],
+        whole_soft: dict[int, np.ndarray],
+        frame_to_local: dict[int, int],
+        n_frames: int,
+        plate_h: int,
+        plate_w: int,
+    ) -> tuple[np.ndarray, list[int]]:
+        """A part's alpha = its whole's alpha x a soft ownership map. Every
+        pixel of the whole goes to the NEAREST of its parts or to the
+        whole's remainder (face, hands), so strands beyond SAM's hair mask
+        still land in mask.hair and the parts add up to the whole."""
+        import cv2
+
+        whole = parent_of[track_id]
+        sibs = sorted(t for t, p in parent_of.items() if p == whole)
+
+        def dense(tid: int) -> np.ndarray:
+            tr = self._hard_masks[tid]
+            out = np.zeros((n_frames, plate_h, plate_w), np.uint8)
+            st = np.asarray(tr.get("stack"))
+            for k, f in enumerate(tr.get("frames") or []):
+                li = frame_to_local.get(int(f))
+                if li is not None:
+                    out[li] = st[k] > 0.5
+            return out
+
+        # Computed per part (no (parts, T, H, W) cache: ~3 GB on a 2K shot).
+        regions = [dense(t) for t in sibs]
+        w_hard = dense(whole)
+        rest = w_hard.copy()
+        for r in regions:
+            rest[r > 0] = 0
+        regions.append(rest)
+        me = sibs.index(track_id)
+        ws = whole_soft[whole]
+        soft = np.zeros((n_frames, plate_h, plate_w), np.float32)
+        for i in range(n_frames):
+            live = (ws[i] > 0) | (w_hard[i] > 0)
+            if not live.any() or not regions[me][i].any():
+                continue
+            ys, xs = np.nonzero(live)
+            y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+            dists = np.stack(
+                [
+                    cv2.distanceTransform(
+                        (r[i, y0:y1, x0:x1] == 0).astype(np.uint8), cv2.DIST_L2, 3
+                    )
+                    if r[i, y0:y1, x0:x1].any()
+                    else np.full((y1 - y0, x1 - x0), 1e9, np.float32)
+                    for r in regions
+                ]
+            )
+            win = np.argmin(dists, axis=0)
+            hot = [
+                cv2.GaussianBlur((win == k).astype(np.float32), (0, 0), 1.5)
+                for k in range(len(regions))
+            ]
+            own = hot[me] / np.maximum(np.sum(hot, axis=0), 1e-6)
+            soft[i, y0:y1, x0:x1] = ws[i, y0:y1, x0:x1] * own
+        frames = [int(f) for f in (self._hard_masks[track_id].get("frames") or [])]
+        return soft, sorted(f for f in frames if f in frame_to_local)
 
     # ------------------------------------------------------------------
     # Artifact emission — expose the refined hero list so the executor

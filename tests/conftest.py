@@ -33,3 +33,12 @@ def test_plate_1080p(tmp_path_factory: pytest.TempPathFactory) -> Path:
     folder = tmp_path_factory.mktemp("test_plate_1080p")
     generate(folder, frame_count=5, width=640, height=360)
     return folder
+
+
+@pytest.fixture(autouse=True)
+def _no_depth_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SAM 3's depth-based layer order loads Depth Anything V2; unit tests use
+    the area order (tests that need nearness inject it)."""
+    from live_action_aov.passes.matte.sam3 import SAM3MattePass
+
+    monkeypatch.setattr(SAM3MattePass, "_depth_nearness", lambda self, frames, first: {})

@@ -108,3 +108,17 @@ def test_close_seams_fills_contact_gap_only() -> None:
     solo = [_DetectedInstance(track_id=3, label="x", masks={1: c.copy()})]
     _close_seams(solo, gap_px=3)
     assert np.array_equal(solo[0].masks[1], c)
+
+
+def test_rejected_sam_spur_is_not_filled_back() -> None:
+    """The back object's SAM mask has a spur next to the front object that its
+    refiner rejected (alpha ~0) and the front does not claim either: it must
+    stay empty, not come back as a hard chip of SAM's shape."""
+    arts, chans, _ = _scene()
+    car_hard = arts["sam3_hard_masks"][0][2]["stack"][0]
+    car_hard[2:6, 26:30] = 1  # spur over the background, touching the person
+    chans[1]["mask.person"][2:6, 26:32] = 0.0
+    post = MatteLayeringPost({"seam_px": 6})
+    post.ingest_artifacts(arts)
+    out = post.apply(chans, None, "shot")[1]
+    assert float(out["mask.car"][2:6, 26:30].max()) == 0.0

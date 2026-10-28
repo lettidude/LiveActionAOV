@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from live_action_aov.passes.matte.vitmatte import ViTMatteRefinerPass
+from live_action_aov.passes.matte.vitmatte import ViTMatteRefinerPass, guided_trimap
 
 
 class _FakeViTMatte(ViTMatteRefinerPass):
     def _load_model(self) -> None:  # type: ignore[override]
         self._model = object()
+
+    def _guide_alpha(self, rgb, binm):  # type: ignore[override]
+        return None  # no BiRefNet in CI
 
     def _vitmatte_alpha(self, crop_rgb, trimap):  # type: ignore[override]
         return np.full(crop_rgb.shape[:2], 0.5, dtype=np.float32)
@@ -35,7 +38,7 @@ def test_trimap_obedient_composite() -> None:
     hard = np.zeros((T, H, W), np.float32)
     hard[:, 20:44, 30:66] = 1.0
 
-    p = _FakeViTMatte({"fg_erode": 4, "band_dilate": 8})
+    p = _FakeViTMatte({"trimap": "band", "fg_erode": 4, "band_dilate": 8})
     soft = p._refine_instance(plate, hard)
 
     assert soft.shape == (T, H, W)
@@ -68,3 +71,42 @@ def test_accepts_uint8_hard_stack() -> None:
     soft = p._refine_instance(plate, hard)
     assert soft.dtype == np.float32
     assert float(soft[0, 16, 24]) == 1.0
+
+
+# --- guided trimap -------------------------------------------------------
+
+
+def _sq(h: int, w: int, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
+    m = np.zeros((h, w), np.uint8)
+    m[y0:y1, x0:x1] = 1
+    return m
+
+
+def test_guided_thin_object_keeps_a_core() -> None:
+    """A pole 6 px wide must keep sure-FG (eroding by the band erased it and
+    ViTMatte rendered thin shelves semi-transparent)."""
+    body = _sq(200, 200, 20, 180, 20, 120)
+    pole = _sq(200, 200, 20, 180, 160, 166)
+    tri = guided_trimap(body | pole, None)
+    assert (tri[100, 160:166] == 255).any()
+    assert tri[100, 70] == 255 and tri[5, 5] == 0
+
+
+def test_guided_follows_birefnet_where_it_agrees() -> None:
+    sam = _sq(200, 200, 40, 160, 40, 160)
+    guide = sam.astype(np.float32)
+    guide[40:60, 40:160] = 0.0  # SAM blob over background (filled hair gap)
+    guide[30:40, 40:160] = 1.0  # strands SAM missed, just outside it
+    tri = guided_trimap(sam, guide)
+    assert tri[50, 100] == 128  # SAM says yes, BiRefNet no -> ViTMatte decides
+    assert tri[35, 100] == 128  # outside SAM but BiRefNet sure -> not background
+    assert tri[100, 100] == 255 and tri[5, 5] == 0
+
+
+def test_guided_ignores_birefnet_that_disagrees() -> None:
+    """Portrait weights on a rifle: near-zero everywhere -> ignored, the trimap
+    is SAM's (a solid core, not 'all background')."""
+    sam = _sq(200, 200, 40, 160, 40, 160)
+    tri = guided_trimap(sam, np.zeros((200, 200), np.float32))
+    assert tri[100, 100] == 255
+    assert tri[100, 36] == 128  # band outside SAM still unknown
