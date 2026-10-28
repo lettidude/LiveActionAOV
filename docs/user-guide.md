@@ -86,9 +86,25 @@ liveaov-gui
    - **Fewer inputs work better** — a box or 2–6 points beats dozens; SAM collapses under too many point constraints.
    - At submit, each object propagates across the shot into a `mask.<name>` channel + a named **Cryptomatte ID**.
 4. **Output tab** — choose where sidecars land (next-to-plate / subfolder / external root) and an optional proxy resolution for fast iterations.
+   The **layout** combo picks one multi-layer EXR (one Read in Nuke) or one EXR per pass in subfolders (`depth/`, `matte/`, `splat/` ...).
 5. **Submit local** — runs the pipeline; a log panel shows progress.
 
 **Sessions** autosave continuously — after a crash, the next launch offers a one-click restore. Use **File → Save / Open session** (`*.laov.json`) for explicit project files; the whole prep round-trips (shots, colour, models, concepts, click points, output routing).
+
+## Opening a run in Nuke — `<shot>.comp.nk`
+
+Every run writes `<shot>.comp.nk` next to the sidecars. Open it (or File → Import Script) and everything is already wired:
+
+| Backdrop | What is in it |
+|---|---|
+| PLATE | the original plate Read |
+| all passes / one per pass | the utility Read(s), `raw` (data, no colour conversion), and one labelled Shuffle2 per pass: every mask on its own, an "every mask" matte, depth / normals / position / flow to RGB, mattes and the splat clean plate to RGBA |
+| camera | the solved Camera2, the point cloud (ReadGeo2 of `camera_track/<shot>.points.obj`) in a Scene, and a ScanlineRender over the plate: drop Cards on the points to check the track |
+| example | with a splat and masks: a Keymix that replaces every masked object with the splat clean plate (watch `splat.alpha`: areas the camera never saw are empty) |
+
+Paths are relative to the script, so the whole output folder can be copied to another machine. In Nuke our `mask.*` layer is called `mask_extra.*` (Nuke reserves `mask`); the script already uses the Nuke names.
+
+The Gaussian splat itself (`camera_track/<shot>.splat.ply`) is for splat-capable tools; in Nuke 16 use the `splat` EXR layer (clean plate, coverage, depth), which is already rendered through the shot camera.
 
 ## Nuke plugin — UtilityRelight
 

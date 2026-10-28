@@ -398,6 +398,11 @@ def test_run_shot_then_emit_sidecars(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert paths["camera"] == cam_dir / "PF0081-03.camera.json"
     assert paths["camera_nk"].read_text(encoding="utf-8").count("Camera2 {") == 1
     assert "element vertex 40" in paths["camera_points"].read_text(encoding="ascii")
+    # OBJ point cloud for Nuke's ReadGeo2: 40 vertices, every one in a `p` element.
+    obj = paths["camera_points_obj"].read_text(encoding="ascii").splitlines()
+    assert sum(ln.startswith("v ") for ln in obj) == 40
+    idx = [int(t) for ln in obj if ln.startswith("p ") for t in ln.split()[1:]]
+    assert sorted(idx) == list(range(1, 41))
     assert (paths["camera_colmap"] / "cameras.bin").exists()
     solve = CameraSolve.model_validate_json(paths["camera"].read_text(encoding="utf-8"))
     assert solve.shot.name == "PF0081-03" and solve.unregistered_frames == [1004]

@@ -108,6 +108,11 @@ class Shot(BaseModel):
     # the delivery would corrupt its exact hash IDs (the writer handles it).
     delivery_compression: str = "zip"
     delivery_dtype: str = "float32"
+    # "multilayer": one EXR per frame with every pass as a layer (one Read in
+    # Nuke). "per_pass": one EXR sequence per pass, each in its own subfolder
+    # (`depth/`, `matte/`, `splat/` ...). Either way a `<shot>.comp.nk`
+    # starter script wires everything up.
+    delivery_layout: str = "multilayer"
 
     status: ShotStatus = "new"
     notes: str = ""
@@ -144,6 +149,13 @@ class Shot(BaseModel):
         base = v.split(":", 1)[0].strip().lower()
         if base not in allowed:
             raise ValueError(f"unknown EXR compression {v!r}; use one of {sorted(allowed)}")
+        return v
+
+    @field_validator("delivery_layout")
+    @classmethod
+    def _check_layout(cls, v: str) -> str:
+        if v not in ("multilayer", "per_pass"):
+            raise ValueError(f"delivery_layout must be 'multilayer' or 'per_pass', got {v!r}")
         return v
 
     @field_validator("delivery_dtype")

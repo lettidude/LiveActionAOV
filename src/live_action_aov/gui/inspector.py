@@ -248,6 +248,15 @@ class InspectorPanel(QWidget):
             "EXR so its IDs are never corrupted."
         )
         self._delivery_combo.currentIndexChanged.connect(self._on_delivery_changed)
+        self._layout_combo = QComboBox()
+        self._layout_combo.addItem("One multi-layer EXR (all passes)", "multilayer")
+        self._layout_combo.addItem("One EXR per pass (subfolders)", "per_pass")
+        self._layout_combo.setToolTip(
+            "Multi-layer: one Read in Nuke, a Shuffle per pass. Per pass: "
+            "depth/, matte/, splat/ ... each its own EXR sequence. Either way "
+            "<shot>.comp.nk opens with everything already wired."
+        )
+        self._layout_combo.currentIndexChanged.connect(self._on_layout_changed)
 
         # --- Reset button ---
         # One-click rollback to the auto-detected colorspace + auto-
@@ -611,6 +620,14 @@ class InspectorPanel(QWidget):
         delivery_hint.setWordWrap(True)
         output_layout.addWidget(delivery_hint)
         output_layout.addWidget(self._delivery_combo)
+        layout_hint = QLabel(
+            "Folder layout. A <shot>.comp.nk Nuke script with every pass, the "
+            "camera and the point cloud is written next to the EXRs."
+        )
+        layout_hint.setStyleSheet("color: #888; font-size: 9pt;")
+        layout_hint.setWordWrap(True)
+        output_layout.addWidget(layout_hint)
+        output_layout.addWidget(self._layout_combo)
         output_layout.addStretch()
         output_tab = _scrollable(output_layout)
 
@@ -873,6 +890,10 @@ class InspectorPanel(QWidget):
             self._delivery_combo.blockSignals(True)
             self._delivery_combo.setCurrentIndex(delivery_index)
             self._delivery_combo.blockSignals(False)
+            layout_index = max(0, self._layout_combo.findData(shot.delivery_layout))
+            self._layout_combo.blockSignals(True)
+            self._layout_combo.setCurrentIndex(layout_index)
+            self._layout_combo.blockSignals(False)
             self._rebuild_resolved_out_label()
 
             # Pass radios reflect the stored enabled_models. The single-
@@ -1280,6 +1301,12 @@ class InspectorPanel(QWidget):
         self._current.delivery_dtype = dtype
         self._broadcast_output_to_all_shots()
 
+    def _on_layout_changed(self, idx: int) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.delivery_layout = str(self._layout_combo.itemData(idx))
+        self._broadcast_output_to_all_shots()
+
     def _on_pick_external_root(self) -> None:
         if self._current is None:
             return
@@ -1312,6 +1339,7 @@ class InspectorPanel(QWidget):
             shot.proxy_long_edge = active.proxy_long_edge
             shot.delivery_compression = active.delivery_compression
             shot.delivery_dtype = active.delivery_dtype
+            shot.delivery_layout = active.delivery_layout
             self._registry.notify_updated(shot)
 
     def _rebuild_resolved_out_label(self) -> None:

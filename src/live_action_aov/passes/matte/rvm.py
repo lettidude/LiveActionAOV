@@ -553,7 +553,15 @@ class RVMRefinerPass(UtilityPass):
         # `occupancy` counts, per pixel, how many tracks' (eroded) hard masks
         # cover it; "other objects" for track A = occupancy minus A's own.
         exclude_others = bool(self.params.get("exclude_other_instances", True))
-        neighbor_erode = max(int(self.params.get("neighbor_exclude_erode", 2)), 0)
+        # The neighbour's mask is eroded before excluding, so this object keeps
+        # its soft edge for that far INTO the neighbour (hair over the car).
+        # "auto" matches the matte layering seam width (1% of the long edge):
+        # the layering post then holds the back object out with that edge.
+        # Beyond it, alpha over a neighbour is a leak and is zeroed.
+        ne = self.params.get("neighbor_exclude_erode", "auto")
+        neighbor_erode = (
+            max(3, round(0.01 * max(plate_h, plate_w))) if str(ne) == "auto" else max(int(ne), 0)
+        )
         occupancy: np.ndarray | None = None
         if exclude_others and len(self._hard_masks) > 1:
             import cv2

@@ -189,6 +189,10 @@ class ShotState:
     # to a lossless float32 sibling by the writer when needed.
     delivery_compression: str = "zip"
     delivery_dtype: str = "float32"
+    # "multilayer" (one EXR, every pass a layer) or "per_pass" (one EXR
+    # sequence per pass in its own subfolder). A <shot>.comp.nk is written
+    # either way.
+    delivery_layout: str = "multilayer"
 
     # Per-shot queue flag. The list panel renders a checkbox beside
     # each shot; Submit local iterates every queued shot in order.

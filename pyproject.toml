@@ -187,6 +187,7 @@ marigold_v2_depth_seethrough = "live_action_aov.passes.intrinsic.marigold_v2:Mar
 temporal_smooth      = "live_action_aov.post.temporal_smooth:TemporalSmoother"
 position_from_depth  = "live_action_aov.post.position_from_depth:PositionFromDepth"
 ssao                 = "live_action_aov.post.ssao:SSAOPost"
+matte_layering       = "live_action_aov.post.matte_layering:MatteLayeringPost"
 
 [project.entry-points."live_action_aov.executors"]
 local    = "live_action_aov.executors.local:LocalExecutor"

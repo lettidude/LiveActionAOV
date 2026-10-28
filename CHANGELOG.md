@@ -37,6 +37,25 @@ uses [semantic versioning](https://semver.org/).
   `scripts/build_gsplat_wheel.bat` (all NVIDIA archs RTX 20xx-50xx), and
   install/update scripts now re-install `wheels/*.whl` after `uv sync`.
   See docs/gaussian_splat.md.
+- **Nuke comp starter script** `<shot>.comp.nk`, written next to the
+  sidecars on every run: the plate, the utility EXR(s), one labelled
+  Shuffle2 per pass (each mask on its own, an "every mask" matte, depth /
+  normals / flow to RGB, the splat clean plate to RGBA) inside backdrops,
+  the camera track with its point cloud in a Scene + ScanlineRender, and,
+  with a splat and masks, a Keymix that swaps the masked objects for the
+  splat clean plate. Paths are relative to the script, so the output folder
+  can be moved. Verified by loading it in Nuke 16 (`-t`): no node errors,
+  every Shuffle equals its source channel, Keymix/ScanlineRender inputs
+  wired right, 3582 points loaded on PF0081. Nuke quirks handled: our
+  `mask.*` shows up as `mask_extra.*` (collision with Nuke's built-in mask
+  layer), custom layers are declared with `add_layer` (otherwise Shuffle2
+  mappings load black).
+- **Output layout option** (GUI Output tab, `Shot.delivery_layout`): one
+  multi-layer EXR (default, as before) or **one EXR per pass in its own
+  subfolder** (`depth/`, `matte/`, `splat/`, `flow/` ...).
+- Camera track also writes `<shot>.points.obj`: Nuke 16's ReadGeo2 reads
+  neither PLY nor USD points; an OBJ with `p` elements loads as a point
+  cloud.
 - DAG **optional artifacts** (`optional_artifacts`): a pass is ordered after
   a provider when one is scheduled and runs without it otherwise; and a
   pass-level `emit_sidecars()` hook for non-EXR outputs.
@@ -87,6 +106,23 @@ uses [semantic versioning](https://semver.org/).
   finds more objects: PF0048 full chain 99 -> 108 s, PF0052 73 -> 125 s.
   Old behaviour: `joint_tracking=False, exclusive_masks=False,
   redetect_stride=None`.
+- **Roto seams between objects are layered like a comp** (new post
+  `matte_layering`, runs last, automatic with Matte). Field problem: a hard
+  dark line between two mattes that touch (person in front of a car).
+  Cause: each object is refined on its own, so at the contact BOTH alphas
+  fall to ~0.5, and SAM leaves a thin unowned line between the masks. Now
+  SAM closes contact gaps up to 0.4% of the long edge (`seam_close_px`),
+  publishes a front-to-back rank, and after refining the front object keeps
+  its own edge while the back object is filled under it near the contact
+  and held out: `back = max(back, fill) * (1 - front)`. Thin unowned cracks
+  between hair strands count as contact, wide empty areas stay background,
+  edges against background are untouched, sums never exceed 1. Refiners now
+  let an object keep its soft edge 1% of the long edge into a neighbour
+  (`neighbor_exclude_erode: auto`, was 2 px) so hair over a car survives.
+  Measured on the replayed BiRefNet output (alpha sum in the contact zone,
+  1024 proxy): PF0052 person/car mean 0.88 -> 0.997, pixels below 0.9 46%
+  -> 0.6%; PF0048 greenscreen/person 0.77 -> 0.99 (below 0.9: 77% -> 2%).
+  Cost ~6-7 s per shot.
 - SAM 3.1 evaluated, not adopted yet: its gain is speed with many objects
   (~7x at 128 objects), quality mixed (-2..+2 pts); transformers' SAM 3.1
   video model is still a draft PR (#46128) and Meta's repo needs Python 3.12.

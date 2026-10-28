@@ -142,7 +142,9 @@ class _SubmitTask(QRunnable):
             # After submit, the shot's sidecar path is populated. Surface
             # the containing folder so the UI can offer "Reveal in
             # Explorer" without inspecting Shot internals.
-            sidecar = self.job.shot.sidecars.get("utility")
+            # The comp script sits at the output root in both layouts (the
+            # first EXR may be inside a per-pass subfolder).
+            sidecar = self.job.shot.sidecars.get("comp") or self.job.shot.sidecars.get("utility")
             sidecar_dir = sidecar.parent if sidecar else self.job.shot.folder
             self._emit(
                 SubmitResult(
@@ -219,6 +221,7 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
         proxy_long_edge=state.proxy_long_edge,
         delivery_compression=state.delivery_compression,
         delivery_dtype=state.delivery_dtype,
+        delivery_layout=state.delivery_layout,
     )
 
 

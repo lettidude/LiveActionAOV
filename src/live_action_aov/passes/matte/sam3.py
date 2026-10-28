@@ -230,6 +230,12 @@ class SAM3MattePass(UtilityPass):
         # Two tracks this similar (clip IoU) are the same object tracked
         # twice (e.g. a click on a person the detector also found): keep one.
         "duplicate_iou": 0.85,
+        # SAM leaves a thin unowned line (~3-8 px at 2K) where two objects
+        # touch: neither logit is positive on the contact pixels. Pixels in a
+        # gap this narrow, between two DIFFERENT objects, go to the nearest
+        # one (closes gaps up to this wide). "auto" = 0.4% of the long edge
+        # (4 px at 1024, 8 px at 2K); 0 = off.
+        "seam_close_px": "auto",
         # Ranking weights (RankWeights schema).
         "ranking": {
             "area": 0.4,
@@ -265,6 +271,9 @@ class SAM3MattePass(UtilityPass):
         # Populated by `run_shot`; consumed by `emit_artifacts`.
         self._instances: list[_DetectedInstance] = []
         self._priority: dict[int, int] = {}  # track_id -> 1 = user click, 0 = detector
+        # track_id -> depth rank, 0 = front. Published in sam3_hard_masks so
+        # the matte layering post knows whose edge defines a shared seam.
+        self._layer: dict[int, int] = {}
         self._heroes: list[Any] = []  # list[rank.HeroSlot]
         self._concepts_found: list[str] = []
         self._plate_shape: tuple[int, int] = (0, 0)
@@ -964,6 +973,12 @@ class SAM3MattePass(UtilityPass):
                 self._instances, self._priority, float(self.params.get("duplicate_iou", 0.85))
             )
             _make_exclusive(self._instances, self._priority)
+            gap = self.params.get("seam_close_px", "auto")
+            gap_px = (
+                max(2, round(0.004 * max(plate_h, plate_w))) if str(gap) == "auto" else int(gap)
+            )
+            if gap_px > 0:
+                _close_seams(self._instances, gap_px)
             for inst in [i for i in self._instances if not any(m.any() for m in i.masks.values())]:
                 _log.info(
                     "SAM3 matte: '%s' (track %d) lies entirely under higher-priority objects - dropped.",
@@ -971,6 +986,10 @@ class SAM3MattePass(UtilityPass):
                     inst.track_id,
                 )
             self._instances = [i for i in self._instances if any(m.any() for m in i.masks.values())]
+        self._layer = {
+            inst.track_id: rank
+            for rank, inst in enumerate(_layer_order(self._instances, self._priority))
+        }
         click_labels = list(
             dict.fromkeys(i.label for i in self._instances if self._priority.get(i.track_id) == 1)
         )
@@ -1096,6 +1115,8 @@ class SAM3MattePass(UtilityPass):
                     "label": inst.label,
                     "frames": frames_sorted,
                     "stack": stack,
+                    # Depth rank (0 = front): who owns a shared seam.
+                    "layer": self._layer.get(inst.track_id, len(hard_masks)),
                 }
         except MemoryError as exc:
             # The pre-flight in run_shot should catch this first, but if the
@@ -1177,20 +1198,58 @@ def _dedupe_instances(
     return sorted(keep, key=lambda i: order[i.track_id])
 
 
-def _make_exclusive(instances: list[_DetectedInstance], priority: dict[int, int]) -> None:
-    """Give every contested pixel to ONE instance, in place. Owner order:
-    user clicks first, then the smaller object (clip-mean area: what is held
-    or in front - a rifle over the person, a person in a car window), then
-    the lower track id. Clip-mean (not per-frame) area keeps the owner
-    stable over time, so the seam does not flicker."""
+def _layer_order(
+    instances: list[_DetectedInstance], priority: dict[int, int]
+) -> list[_DetectedInstance]:
+    """Front-to-back order: user clicks first, then the smaller object
+    (clip-mean area: what is held or in front - a rifle over the person, a
+    person in front of a car), then the lower track id. Clip-mean (not
+    per-frame) area keeps the order stable over time, so seams don't flicker."""
 
     def mean_area(i: _DetectedInstance) -> float:
         areas = [float(m.sum()) for m in i.masks.values() if m.any()]
         return sum(areas) / len(areas) if areas else 0.0
 
-    order = sorted(
-        instances, key=lambda i: (-priority.get(i.track_id, 0), mean_area(i), i.track_id)
-    )
+    return sorted(instances, key=lambda i: (-priority.get(i.track_id, 0), mean_area(i), i.track_id))
+
+
+def _close_seams(instances: list[_DetectedInstance], gap_px: int) -> None:
+    """Fill the thin unowned line SAM leaves where two objects touch, in
+    place. A free pixel within `gap_px` of at least two DIFFERENT objects
+    goes to the nearest one. Concavities of a single object (the gap
+    between an arm and the body) are left alone - only contact lines."""
+    import cv2
+
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * gap_px + 1, 2 * gap_px + 1))
+    frames = sorted({f for i in instances for f in i.masks})
+    for f in frames:
+        present = [i for i in instances if f in i.masks and i.masks[f].any()]
+        if len(present) < 2:
+            continue
+        bins = [(i.masks[f] > 0).astype(np.uint8) for i in present]
+        taken = np.zeros_like(bins[0], dtype=bool)
+        near = np.zeros(bins[0].shape, dtype=np.uint8)
+        for b in bins:
+            taken |= b > 0
+            near += (cv2.dilate(b, k) > 0).astype(np.uint8)
+        gap = (near >= 2) & ~taken
+        if not gap.any():
+            continue
+        dist = np.stack([cv2.distanceTransform(1 - b, cv2.DIST_L2, 3) for b in bins], axis=0)
+        owner = np.argmin(dist, axis=0)
+        ys, xs = np.nonzero(gap)
+        for j, inst in enumerate(present):
+            sel = owner[ys, xs] == j
+            if sel.any():
+                m = (inst.masks[f] > 0).astype(np.uint8)
+                m[ys[sel], xs[sel]] = 1
+                inst.masks[f] = m
+
+
+def _make_exclusive(instances: list[_DetectedInstance], priority: dict[int, int]) -> None:
+    """Give every contested pixel to ONE instance, in place, in
+    `_layer_order` (the front object owns the overlap)."""
+    order = _layer_order(instances, priority)
     frames = sorted({f for i in instances for f in i.masks})
     for f in frames:
         present = [i for i in order if f in i.masks and i.masks[f].any()]

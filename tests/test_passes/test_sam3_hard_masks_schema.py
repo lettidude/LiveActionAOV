@@ -120,17 +120,19 @@ def test_inner_dict_is_keyed_by_plain_int_track_ids(_artifacts) -> None:
         assert type(k) is int, f"track_id key {k!r} is {type(k)}, want plain int"
 
 
-def test_per_track_entry_has_exactly_three_keys(_artifacts) -> None:
+def test_per_track_entry_has_exactly_four_keys(_artifacts) -> None:
     """If someone adds a new field (e.g. `bbox`, `confidence`), update
     this test — CorridorKey needs to know about it before the artifact
     goes live. If someone drops or renames a field, this test is the
-    tripwire."""
+    tripwire. `layer` (depth rank, 0 = front) feeds the matte layering post."""
     inner = next(iter(_artifacts["sam3_hard_masks"].values()))
     for tid, data in inner.items():
-        assert set(data.keys()) == {"label", "frames", "stack"}, (
+        assert set(data.keys()) == {"label", "frames", "stack", "layer"}, (
             f"Track {tid} schema drift: got {sorted(data.keys())!r}, "
-            f"want exactly {{'label', 'frames', 'stack'}}"
+            f"want exactly {{'label', 'frames', 'stack', 'layer'}}"
         )
+    ranks = sorted(int(d["layer"]) for d in inner.values())
+    assert ranks == list(range(len(inner)))
 
 
 def test_label_is_plain_str(_artifacts) -> None:
@@ -173,9 +175,7 @@ def test_stack_is_uint8_3d_aligned_with_frames(_artifacts) -> None:
         # whole-clip stack at once made float32 the dominant host-RAM cost and
         # OOM'd long/high-detection clips. Binary masks lose nothing in uint8;
         # consumers cast to float32 one instance at a time.
-        assert stack.dtype == np.uint8, (
-            f"Track {tid} stack dtype is {stack.dtype}, want uint8"
-        )
+        assert stack.dtype == np.uint8, f"Track {tid} stack dtype is {stack.dtype}, want uint8"
 
 
 def test_stack_values_are_in_zero_one_range(_artifacts) -> None:

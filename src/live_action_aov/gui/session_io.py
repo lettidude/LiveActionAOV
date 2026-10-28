@@ -112,6 +112,7 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
         "proxy_long_edge": s.proxy_long_edge,
         "delivery_compression": s.delivery_compression,
         "delivery_dtype": s.delivery_dtype,
+        "delivery_layout": s.delivery_layout,
         "queued": bool(s.queued),
     }
 
@@ -169,6 +170,7 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         proxy_long_edge=d.get("proxy_long_edge"),
         delivery_compression=str(d.get("delivery_compression", "zip")),
         delivery_dtype=str(d.get("delivery_dtype", "float32")),
+        delivery_layout=str(d.get("delivery_layout", "multilayer")),
         queued=bool(d.get("queued", True)),
     )
 

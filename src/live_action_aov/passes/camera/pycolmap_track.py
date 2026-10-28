@@ -215,13 +215,16 @@ class PyColmapCameraPass(UtilityPass):
         json_path = out_dir / f"{shot.name}.camera.json"
         nk_path = out_dir / f"{shot.name}.camera.nk"
         ply_path = out_dir / f"{shot.name}.points.ply"
+        obj_path = out_dir / f"{shot.name}.points.obj"
         json_path.write_text(self._solve.model_dump_json(indent=2), encoding="utf-8")
         nk_path.write_text(render_nuke_camera_script(self._solve), encoding="utf-8")
         write_points_ply(self._solve, ply_path)
+        write_points_obj(self._solve, obj_path)
         paths: dict[str, Path] = {
             "camera": json_path,
             "camera_nk": nk_path,
             "camera_points": ply_path,
+            "camera_points_obj": obj_path,
         }
         if self._sparse_dir is not None and self._sparse_dir.exists():
             model_dir = out_dir / f"{shot.name}_colmap"
@@ -635,6 +638,22 @@ def write_points_ply(solve: CameraSolve, path: Path) -> None:
         x, y, z = p.xyz  # already in the Y-up GL world
         r, g, b = p.color_rgb
         lines.append(f"{x:.6f} {y:.6f} {z:.6f} {r} {g} {b}")
+    path.write_text("\n".join(lines) + "\n", encoding="ascii")
+
+
+def write_points_obj(solve: CameraSolve, path: Path) -> None:
+    """The sparse cloud as an OBJ point cloud, for Nuke's ReadGeo2 (Nuke reads
+    neither PLY nor USD points in the classic 3D system; verified on Nuke 16).
+    The `p` elements matter: without them ReadGeo2 loads the vertices as
+    nothing at all. Vertex colours ride along as `v x y z r g b`."""
+    lines = ["# LiveActionAOV camera track point cloud (Y-up, same world as the camera)"]
+    for p in solve.points:
+        x, y, z = p.xyz
+        r, g, b = p.color_rgb
+        lines.append(f"v {x:.6f} {y:.6f} {z:.6f} {r / 255:.4f} {g / 255:.4f} {b / 255:.4f}")
+    n = len(solve.points)
+    for i in range(0, n, 64):
+        lines.append("p " + " ".join(str(k + 1) for k in range(i, min(i + 64, n))))
     path.write_text("\n".join(lines) + "\n", encoding="ascii")
 
 

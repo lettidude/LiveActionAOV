@@ -40,6 +40,7 @@ from live_action_aov.io.readers.display_transform_reader import (
 from live_action_aov.io.readers.oiio_exr import OIIOExrReader
 from live_action_aov.io.readers.proxy import wrap_if_proxy
 from live_action_aov.io.writers.exr import ExrSidecarWriter
+from live_action_aov.io.writers.nuke_comp import pass_group
 from live_action_aov.shared.optical_flow.cache import FlowCache
 
 METADATA_NAMESPACE = "liveaov"
@@ -47,7 +48,9 @@ METADATA_NAMESPACE = "liveaov"
 _log = logging.getLogger(__name__)
 
 
-def _retry_io(fn: Callable[[], Any], *, what: str, attempts: int = 3, base_delay: float = 0.5) -> Any:
+def _retry_io(
+    fn: Callable[[], Any], *, what: str, attempts: int = 3, base_delay: float = 0.5
+) -> Any:
     """Run `fn`, retrying transient OS/I/O errors a few times before giving up.
 
     Sidecars often land on a network share (NAS); a brief connection blip
@@ -66,11 +69,16 @@ def _retry_io(fn: Callable[[], Any], *, what: str, attempts: int = 3, base_delay
                 delay = base_delay * (i + 1)
                 _log.warning(
                     "%s failed (attempt %d/%d): %s — retrying in %.1fs",
-                    what, i + 1, attempts, e, delay,
+                    what,
+                    i + 1,
+                    attempts,
+                    e,
+                    delay,
                 )
                 time.sleep(delay)
     assert last is not None
     raise last
+
 
 # Callers pass a function that receives `(fraction_done, label)` per
 # milestone; the GUI routes these to its progress bar + status bar,
@@ -327,9 +335,19 @@ class LocalExecutor(Executor):
                         )
                     )
 
+            # Matte layering resolves shared seams between per-object soft
+            # mattes (front edge + held-out back). It must see the FINAL
+            # alphas, so it always runs last - after any smoother.
+            if artifacts.get("sam3_hard_masks") and "matte_layering" not in existing_post_names:
+                auto_post.append(PostConfig(name="matte_layering", params={}))
+            posts = list(job.post) + auto_post
+            posts = [p for p in posts if p.name != "matte_layering"] + [
+                p for p in posts if p.name == "matte_layering"
+            ]
+
             # --- Post-processors (user-configured + auto-wired smoothers) ---
             applied_post: list[dict[str, Any]] = []
-            for post_cfg in list(job.post) + auto_post:
+            for post_cfg in posts:
                 post_cls = registry._post.get(post_cfg.name)
                 if post_cls is None:
                     raise KeyError(
@@ -337,6 +355,8 @@ class LocalExecutor(Executor):
                         f"Available: {sorted(registry._post)}"
                     )
                 post_instance = post_cls(post_cfg.params)
+                if hasattr(post_instance, "ingest_artifacts"):
+                    post_instance.ingest_artifacts(artifacts)
                 per_frame_channels = post_instance.apply(
                     per_frame_channels, flow_cache, shot.name, shot=shot
                 )
@@ -398,6 +418,8 @@ class LocalExecutor(Executor):
                     break
 
             first_written: Path | None = None
+            per_pass = getattr(shot, "delivery_layout", "multilayer") == "per_pass"
+            written_channels: dict[str, Path] = {}
             total_frames = max(1, len(per_frame_channels))
             for frame_write_idx, (frame_idx, channels) in enumerate(per_frame_channels.items()):
                 # Cancel checkpoint #2: between sidecar writes. Each
@@ -420,6 +442,16 @@ class LocalExecutor(Executor):
                 if needs_upscale:
                     channels = _upscale_channels_to_plate(channels, plate_h, plate_w)
                 out_path = sidecar_dir / sidecar_template.format(frame=frame_idx)
+                if per_pass:
+                    groups: dict[str, dict[str, Any]] = {}
+                    for ch_name, arr in channels.items():
+                        groups.setdefault(pass_group(ch_name), {})[ch_name] = arr
+                    targets = [
+                        (sidecar_dir / g / _per_pass_name(out_path.name, g), chs)
+                        for g, chs in groups.items()
+                    ]
+                else:
+                    targets = [(out_path, channels)]
                 attrs = dict(attrs_base)
                 attrs[f"{METADATA_NAMESPACE}/frame"] = frame_idx
                 for node in ordered:
@@ -444,20 +476,38 @@ class LocalExecutor(Executor):
                     attrs[f"{METADATA_NAMESPACE}/matte/detector"] = matte_detector_cls.name
                 # Retry the write: sidecars usually land on a NAS, and a
                 # momentary share blip shouldn't throw away a multi-pass shot.
-                _retry_io(
-                    partial(
-                        writer.write_frame,
-                        out_path,
-                        channels,
-                        attrs=attrs,
-                        pixel_aspect=shot.pixel_aspect,
-                    ),
-                    what=f"sidecar write {out_path.name}",
-                )
+                for t_path, t_channels in targets:
+                    t_path.parent.mkdir(parents=True, exist_ok=True)
+                    _retry_io(
+                        partial(
+                            writer.write_frame,
+                            t_path,
+                            t_channels,
+                            attrs=attrs,
+                            pixel_aspect=shot.pixel_aspect,
+                        ),
+                        what=f"sidecar write {t_path.name}",
+                    )
+                    for ch_name in t_channels:
+                        written_channels.setdefault(ch_name, t_path)
                 if first_written is None:
-                    first_written = out_path
+                    first_written = targets[0][0] if targets else out_path
 
             shot.sidecars["utility"] = first_written or sidecar_dir
+            try:
+                comp = _write_comp_script(
+                    shot,
+                    sidecar_dir,
+                    sidecar_template,
+                    written_channels,
+                    per_pass,
+                    writer._delivery_corrupts_crypto(),
+                )
+                if comp is not None:
+                    shot.sidecars["comp"] = comp
+            except Exception:
+                # A starter script is a convenience: never fail a finished run on it.
+                _log.warning("could not write the Nuke comp script", exc_info=True)
             shot.status = "done"
             report(1.0, "Done.")
         except CancelledError:
@@ -523,6 +573,81 @@ def _node_for(pc: PassConfig, cls: type[UtilityPass]) -> PassNode:
         provides=tuple(getattr(cls, "provides_artifacts", ()) or ()),
         requires=tuple(getattr(cls, "requires_artifacts", ()) or ()),
         optional=tuple(getattr(cls, "optional_artifacts", ()) or ()),
+    )
+
+
+def _per_pass_name(multilayer_name: str, group: str) -> str:
+    """`shot.utility.1001.exr` -> `shot.<group>.1001.exr` (per-pass layout)."""
+    if ".utility." in multilayer_name:
+        return multilayer_name.replace(".utility.", f".{group}.", 1)
+    stem, dot, ext = multilayer_name.rpartition(".")
+    return f"{stem}.{group}.{ext}" if dot else f"{multilayer_name}.{group}"
+
+
+def _hash_pattern(template: str) -> str:
+    """`shot.utility.{frame:04d}.exr` -> `shot.utility.####.exr`."""
+    import re
+
+    return re.sub(r"\{frame:0?(\d+)d\}", lambda m: "#" * int(m.group(1)), template)
+
+
+def _write_comp_script(
+    shot: Shot,
+    sidecar_dir: Path,
+    sidecar_template: str,
+    written_channels: dict[str, Path],
+    per_pass: bool,
+    crypto_split: bool,
+) -> Path | None:
+    """`<shot>.comp.nk`: every output of the run wired up in Nuke."""
+    from live_action_aov.io.writers.nuke_comp import CompRead, write_comp_script
+
+    if not written_channels and "camera_nk" not in shot.sidecars:
+        return None
+    pattern = _hash_pattern(sidecar_template)
+    crypto = [c for c in written_channels if c.lower().startswith("crypto")]
+    reads: list[CompRead] = []
+    crypto_rel: str | None = None
+    if per_pass:
+        groups: dict[str, list[str]] = {}
+        for ch in written_channels:
+            if ch in crypto:
+                continue
+            groups.setdefault(pass_group(ch), []).append(ch)
+        for g, chs in groups.items():
+            reads.append(
+                CompRead(group=g, rel_pattern=f"{g}/{_per_pass_name(pattern, g)}", channels=chs)
+            )
+        if crypto:
+            base = f"cryptomatte/{_per_pass_name(pattern, 'cryptomatte')}"
+            crypto_rel = base.replace(".exr", ".crypto.exr") if crypto_split else base
+    else:
+        main = [c for c in written_channels if c not in crypto]
+        if main:
+            reads.append(CompRead(group="all passes", rel_pattern=pattern, channels=main))
+        if crypto:
+            crypto_rel = pattern.replace(".exr", ".crypto.exr") if crypto_split else pattern
+    plate = (Path(shot.folder) / shot.sequence_pattern).as_posix()
+    cam = shot.sidecars.get("camera_nk")
+    pts = shot.sidecars.get("camera_points_obj")
+    pts_rel = None
+    if pts is not None:
+        try:
+            pts_rel = Path(pts).relative_to(sidecar_dir).as_posix()
+        except ValueError:
+            pts_rel = None
+    out = Path(sidecar_dir) / f"{shot.name}.comp.nk"
+    return write_comp_script(
+        out,
+        shot_name=shot.name,
+        plate_pattern=plate,
+        frame_range=tuple(shot.frame_range),
+        resolution=tuple(shot.resolution),
+        pixel_aspect=float(shot.pixel_aspect),
+        reads=reads,
+        camera_nk=Path(cam) if cam is not None else None,
+        points_obj_rel=pts_rel,
+        crypto_rel_pattern=crypto_rel,
     )
 
 
