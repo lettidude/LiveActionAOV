@@ -53,3 +53,6 @@ sessions/
 checkpoints/
 models/*.bin
 .tmp_debug/
+
+# Local dev benches / POC outputs (never committed)
+_dev/
