@@ -54,6 +54,14 @@ uses [semantic versioning](https://semver.org/).
   subject). From a field roto on a small, distant person.
 
 ### Fixed
+- ACEScg plates were detected as lin_rec709: OIIO stamps
+  `oiio:ColorSpace = lin_rec709` on every EXR without colour info, and that
+  tag was read before the file's chromaticities. Chromaticities (AP1 ->
+  ACEScg, AP0 -> ACES2065-1) and `acesImageContainerFlag` now come first,
+  and OIIO's default stamp is reported as a guess, not a confident read.
+- Adding a shot reset the Output settings (destination, proxy, delivery) and
+  the colourspace override. A new shot now inherits them from the session;
+  a plate whose header is confident (ARRI LogC4) keeps its own colourspace.
 - The matte layering post filled SAM's hard shape to 1 next to a touching
   object even where both refined mattes had rejected it, pasting hard chips
   onto soft hair edges. It now fills only pixels a matte actually claims.

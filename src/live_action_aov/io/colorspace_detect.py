@@ -10,14 +10,16 @@ they can override it).
 
 Detection ladder, first match wins:
 
+  0. Camera metadata (ARRI / Sony) -> log spaces.
   1. Explicit `colorspace` / `OCIO/colorspace` / `ocio:colorspace`
-     header attribute → "from oiio:ColorSpace header"
-  2. Explicit `oiio:ColorSpace` attribute (OIIO writes this) →
-     "from oiio:ColorSpace header"
-  3. `chromaticities` matching ACES AP1 primaries →
+     header attribute → "from `colorspace` header"
+  2. `acesImageContainerFlag` (ACES container EXR) → ACES2065-1
+  3. `chromaticities` matching ACES AP1 / AP0 / Rec.709 primaries →
      "inferred from chromaticities primaries (ACES AP1)"
-  4. `chromaticities` matching Rec.709 primaries →
-     "inferred from chromaticities primaries (Rec.709)"
+  4. `oiio:ColorSpace`. OIIO stamps `lin_rec709` on EVERY EXR that has no
+     colour information, so that value is reported as NOT confident, and
+     it is read AFTER the chromaticities: reading it first turned every
+     ACEScg plate into lin_rec709 (field report 2026-10-28).
   5. Pixel-range heuristic (max < ~2.0 and median near 0.5) →
      "inferred from pixel-range heuristic (display-referred)"
   6. Default fallback → "no signal — defaulting to lin_rec709"
@@ -57,6 +59,7 @@ SUPPORTED_COLORSPACES: tuple[str, ...] = (
 # Primaries used for chromaticity-based inference. Values are
 # (rx, ry, gx, gy, bx, by, wx, wy) — the 8-tuple EXR writes.
 _ACES_AP1_PRIMARIES = (0.713, 0.293, 0.165, 0.830, 0.128, 0.044, 0.32168, 0.33767)
+_ACES_AP0_PRIMARIES = (0.7347, 0.2653, 0.0, 1.0, 0.0001, -0.0770, 0.32168, 0.33767)
 _REC709_PRIMARIES = (0.640, 0.330, 0.300, 0.600, 0.150, 0.060, 0.3127, 0.3290)
 
 
@@ -104,7 +107,7 @@ def detect_colorspace(
         return camera_hit
 
     # Ladder step 1-2: explicit colorspace attributes (several spellings).
-    for key in ("colorspace", "OCIO/colorspace", "ocio:colorspace", "oiio:ColorSpace"):
+    for key in ("colorspace", "OCIO/colorspace", "ocio:colorspace"):
         v = attrs.get(key)
         if isinstance(v, str) and v:
             normalized = _normalize_colorspace_name(v)
@@ -113,6 +116,14 @@ def detect_colorspace(
                 reason=f"from `{key}` header = {v!r}",
                 confident=True,
             )
+
+    # Ladder step 2: ACES container EXR (SMPTE ST 2065-4) is ACES2065-1.
+    if str(attrs.get("acesImageContainerFlag", "")).strip() in ("1", "True"):
+        return DetectedColorspace(
+            detected="aces2065_1",
+            reason="from `acesImageContainerFlag` header (ACES container)",
+            confident=True,
+        )
 
     # Ladder step 3-4: chromaticity-primary inference.
     chroma = attrs.get("chromaticities")
@@ -130,6 +141,26 @@ def detect_colorspace(
                 reason=f"inferred from chromaticities primaries ({primaries_label})",
                 confident=True,
             )
+
+    # Ladder step 4: OIIO's own tag. Anything but its default stamp is a
+    # real tag (e.g. written by oiiotool); the default is a guess.
+    v = attrs.get("oiio:ColorSpace")
+    if isinstance(v, str) and v:
+        normalized = _normalize_colorspace_name(v)
+        default_stamp = normalized in ("lin_rec709", "linear")
+        return DetectedColorspace(
+            detected=normalized,
+            reason=(
+                f"from `oiio:ColorSpace` header = {v!r}"
+                + (
+                    " - OIIO's default stamp, the file says nothing: set ACEScg by hand "
+                    "if that is what your plates are"
+                    if default_stamp
+                    else ""
+                )
+            ),
+            confident=not default_stamp,
+        )
 
     # Ladder step 5: pixel-range heuristic — soft confidence.
     if sample_pixels is not None and sample_pixels.size > 0:
@@ -256,6 +287,8 @@ def _match_chromaticities(
     between writers."""
     if _chromaticities_match(chroma, _ACES_AP1_PRIMARIES):
         return ("acescg", "ACES AP1")
+    if _chromaticities_match(chroma, _ACES_AP0_PRIMARIES):
+        return ("aces2065_1", "ACES AP0")
     if _chromaticities_match(chroma, _REC709_PRIMARIES):
         return ("lin_rec709", "Rec.709")
     return None

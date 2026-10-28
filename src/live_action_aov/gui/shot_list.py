@@ -174,6 +174,9 @@ class ShotListPanel(QWidget):
             # already in the right exposure neighbourhood.
             exposure_ev=float(auto.get("ev") or 0.0),
         )
+        existing = self._registry.shots()
+        if existing:
+            _inherit_session_settings(shot, existing[-1])
         self._registry.add(shot)
 
     # --- Registry → widget sync ---
@@ -288,6 +291,27 @@ def _apply_status_colour(item: QListWidgetItem, shot: ShotState) -> None:
     colour = _STATUS_COLOURS.get(shot.status)
     brush = QBrush(colour) if colour is not None else QBrush()
     item.setForeground(brush)
+
+
+def _inherit_session_settings(shot: ShotState, template: ShotState) -> None:
+    """A newly added shot takes the session's output routing, proxy and
+    delivery settings from the shots already loaded (they are session-wide:
+    the inspector broadcasts them) instead of resetting to defaults (field
+    report). A colourspace override carries over too, unless the new
+    plate's own header says something confident (e.g. ARRI LogC4)."""
+    for attr in (
+        "output_mode",
+        "output_subfolder_name",
+        "output_external_root",
+        "output_external_name",
+        "proxy_long_edge",
+        "delivery_compression",
+        "delivery_dtype",
+        "delivery_layout",
+    ):
+        setattr(shot, attr, getattr(template, attr))
+    if template.override and not (shot.detected is not None and shot.detected.confident):
+        shot.override = template.override
 
 
 def _format_item_label(shot: ShotState) -> str:

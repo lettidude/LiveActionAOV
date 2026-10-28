@@ -235,3 +235,26 @@ def test_clean_oiio_header_still_works_without_camera_metadata():
     d = detect_colorspace(attrs)
     assert d.detected == "lin_rec709"
     assert "header" in d.reason
+
+
+def test_acescg_chromaticities_beat_oiio_default_stamp():
+    """OIIO stamps lin_rec709 on every EXR; an ACEScg plate that carries AP1
+    chromaticities must still come out ACEScg (field report 2026-10-28)."""
+    attrs = {
+        "oiio:ColorSpace": "lin_rec709",
+        "chromaticities": [0.713, 0.293, 0.165, 0.830, 0.128, 0.044, 0.32168, 0.33767],
+    }
+    d = detect_colorspace(attrs)
+    assert d.detected == "acescg" and d.confident is True
+
+
+def test_aces_container_and_ap0_are_aces2065():
+    assert detect_colorspace({"acesImageContainerFlag": 1}).detected == "aces2065_1"
+    ap0 = [0.7347, 0.2653, 0.0, 1.0, 0.0001, -0.0770, 0.32168, 0.33767]
+    assert detect_colorspace({"chromaticities": ap0}).detected == "aces2065_1"
+
+
+def test_oiio_default_stamp_is_not_confident():
+    d = detect_colorspace({"oiio:ColorSpace": "lin_rec709"})
+    assert d.confident is False
+    assert detect_colorspace({"oiio:ColorSpace": "ACEScg"}).confident is True
