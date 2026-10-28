@@ -6,6 +6,8 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-28
+
 ### Added
 - **Camera track** ("Camera" category; plugin `camera_pycolmap`): classical
   SfM with pycolmap 4 (BSD-3-Clause, PyPI wheels, CPU, no weights). Writes
@@ -369,6 +371,8 @@ uses [semantic versioning](https://semver.org/).
   alongside the `.python-version` pin from 0.4.1 — belt-and-suspenders so the
   venv is never built against an unsupported system Python.
 
+[0.9.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.9.0
+[0.8.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.8.0
 [0.7.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.7.1
 [0.7.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.7.0
 [0.6.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.6.0
