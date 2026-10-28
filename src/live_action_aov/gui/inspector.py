@@ -453,6 +453,16 @@ class InspectorPanel(QWidget):
         )
         self._refine_all_check.toggled.connect(self._on_refine_all_toggled)
 
+        self._outline_check = QCheckBox("BiRefNet decides the outline (SAM only gates leaks)")
+        self._outline_check.setToolTip(
+            "Off: BiRefNet only softens the edge of SAM 3's shape, so a blobby SAM "
+            "mask (filled arm gaps) stays blobby. On: BiRefNet draws the whole "
+            "silhouette and SAM only stops it leaking onto other things; a frame "
+            "where it keeps less than 75% of SAM's area falls back to off. Best on "
+            "small or distant people. BiRefNet engine only."
+        )
+        self._outline_check.toggled.connect(self._on_outline_toggled)
+
         refiner_weights_row = QHBoxLayout()
         self._refiner_weights_label = QLabel("Default engine:")
         refiner_weights_row.addWidget(self._refiner_weights_label)
@@ -460,6 +470,7 @@ class InspectorPanel(QWidget):
         passes_block.addSpacing(8)
         passes_block.addLayout(refiner_weights_row)
         passes_block.addWidget(self._refine_all_check)
+        passes_block.addWidget(self._outline_check)
 
         # "Apply to all shots" — one-click broadcast of the active
         # shot's pass selections to every other shot in the queue.
@@ -934,6 +945,9 @@ class InspectorPanel(QWidget):
             self._refine_all_check.blockSignals(True)
             self._refine_all_check.setChecked(bool(shot.refine_all_masks))
             self._refine_all_check.blockSignals(False)
+            self._outline_check.blockSignals(True)
+            self._outline_check.setChecked(bool(shot.refiner_outline))
+            self._outline_check.blockSignals(False)
 
             rm_index = 0
             want_pair = (shot.default_engine, shot.refiner_model)
@@ -1134,6 +1148,11 @@ class InspectorPanel(QWidget):
         if self._building or self._current is None:
             return
         self._current.refine_all_masks = bool(checked)
+
+    def _on_outline_toggled(self, checked: bool) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.refiner_outline = bool(checked)
 
     def _on_default_engine_changed(self, idx: int) -> None:
         if self._building or self._current is None:
@@ -1410,6 +1429,7 @@ class InspectorPanel(QWidget):
         source = list(self._current.enabled_models)
         source_concepts = self._current.sam3_concepts
         src_refine_all = bool(self._current.refine_all_masks)
+        src_outline = bool(self._current.refiner_outline)
         src_refiner_model = self._current.refiner_model
         src_default_engine = self._current.default_engine
         count = 0
@@ -1419,6 +1439,7 @@ class InspectorPanel(QWidget):
             shot.enabled_models = list(source)
             shot.sam3_concepts = source_concepts
             shot.refine_all_masks = src_refine_all
+            shot.refiner_outline = src_outline
             shot.refiner_model = src_refiner_model
             shot.default_engine = src_default_engine
             self._registry.notify_updated(shot)

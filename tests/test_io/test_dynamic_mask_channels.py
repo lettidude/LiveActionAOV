@@ -83,3 +83,19 @@ def test_writer_accepts_arbitrary_mask_concept_channels(tmp_path: Path) -> None:
         )
     # Concept-list attribute survives.
     assert attrs.get("liveaov/matte/concepts") == "person,vehicle,animal"
+
+
+@pytest.mark.parametrize(
+    ("label", "channel"),
+    [
+        ("person", "mask.person"),
+        ("brick wall", "mask.brick_wall"),  # Nuke reads a space as `_`
+        ("wooden-planks", "mask.wooden_planks"),
+        (" hair ", "mask.hair"),
+        ("!!", "mask.object"),
+    ],
+)
+def test_mask_channel_is_nuke_safe(label: str, channel: str) -> None:
+    from live_action_aov.io.channels import mask_channel
+
+    assert mask_channel(label) == channel

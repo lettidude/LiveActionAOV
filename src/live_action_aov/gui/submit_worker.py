@@ -332,6 +332,8 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
             rp: dict[str, object] = {}
             if state.refine_all_masks:
                 rp["refine_all_masks"] = True
+            if state.refiner_outline and n == "birefnet_refiner":
+                rp["outline"] = "refiner"
             # Weight choice only applies to the BiRefNet-family pass — RVM /
             # MatAnyone have their own model_id defaults that must not be
             # overwritten with a BiRefNet HF id.

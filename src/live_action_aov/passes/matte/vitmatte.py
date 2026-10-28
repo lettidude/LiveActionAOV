@@ -117,9 +117,9 @@ class ViTMatteRefinerPass(RVMRefinerPass):
             iw, ih = max(1, int(w * s)), max(1, int(h * s))
         else:
             iw, ih = w, h
-        img = Image.fromarray(
-            (np.clip(crop_rgb, 0.0, 1.0) * 255.0).astype(np.uint8), "RGB"
-        ).resize((iw, ih), Image.Resampling.BILINEAR)
+        img = Image.fromarray((np.clip(crop_rgb, 0.0, 1.0) * 255.0).astype(np.uint8), "RGB").resize(
+            (iw, ih), Image.Resampling.BILINEAR
+        )
         tri = Image.fromarray(trimap, "L").resize((iw, ih), Image.Resampling.NEAREST)
 
         inputs = self._processor(images=img, trimaps=tri, return_tensors="pt").to(
@@ -128,6 +128,16 @@ class ViTMatteRefinerPass(RVMRefinerPass):
         with torch.no_grad():
             alphas = self._model(**inputs).alphas  # (1, 1, H_pad, W_pad)
         a = alphas[0, 0, :ih, :iw].float().cpu().numpy()  # crop the pad
+        del inputs, alphas
+        # Every crop has its own size, so the CUDA caching allocator keeps
+        # reserving new blocks (25 GiB reserved for 5 GiB used on a 16-frame
+        # test). Next to the other models of a run that overflowed the 32 GB
+        # card into shared system memory and one object took ~10 min. Hand the
+        # cache back once it is far above what is really in use.
+        if self._device.type == "cuda" and torch.cuda.memory_reserved() > 3 * max(
+            torch.cuda.memory_allocated(), 1 << 30
+        ):
+            torch.cuda.empty_cache()
         if (iw, ih) != (w, h):
             a = cv2.resize(a, (w, h), interpolation=cv2.INTER_LINEAR)
         return np.clip(a.astype(np.float32), 0.0, 1.0)
@@ -179,9 +189,7 @@ class ViTMatteRefinerPass(RVMRefinerPass):
             x0, x1 = max(0, x0 - pw), min(W, x1 + pw)
             y0, y1 = max(0, y0 - ph), min(H, y1 + ph)
 
-            alpha_crop = self._vitmatte_alpha(
-                plate_stack[t, y0:y1, x0:x1], trimap[y0:y1, x0:x1]
-            )
+            alpha_crop = self._vitmatte_alpha(plate_stack[t, y0:y1, x0:x1], trimap[y0:y1, x0:x1])
             full = np.zeros((H, W), dtype=np.float32)
             full[y0:y1, x0:x1] = alpha_crop
             # Trimap-obedient composite: known regions are exact, the model

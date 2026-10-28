@@ -120,16 +120,17 @@ def test_inner_dict_is_keyed_by_plain_int_track_ids(_artifacts) -> None:
         assert type(k) is int, f"track_id key {k!r} is {type(k)}, want plain int"
 
 
-def test_per_track_entry_has_exactly_four_keys(_artifacts) -> None:
+def test_per_track_entry_has_exactly_five_keys(_artifacts) -> None:
     """If someone adds a new field (e.g. `bbox`, `confidence`), update
     this test — CorridorKey needs to know about it before the artifact
     goes live. If someone drops or renames a field, this test is the
-    tripwire. `layer` (depth rank, 0 = front) feeds the matte layering post."""
+    tripwire. `layer` (depth rank, 0 = front) feeds the matte layering post;
+    `parent` (whole track id for a part like hair-in-person, else None) too."""
     inner = next(iter(_artifacts["sam3_hard_masks"].values()))
     for tid, data in inner.items():
-        assert set(data.keys()) == {"label", "frames", "stack", "layer"}, (
+        assert set(data.keys()) == {"label", "frames", "stack", "layer", "parent"}, (
             f"Track {tid} schema drift: got {sorted(data.keys())!r}, "
-            f"want exactly {{'label', 'frames', 'stack', 'layer'}}"
+            f"want exactly {{'label', 'frames', 'stack', 'layer', 'parent'}}"
         )
     ranks = sorted(int(d["layer"]) for d in inner.values())
     assert ranks == list(range(len(inner)))

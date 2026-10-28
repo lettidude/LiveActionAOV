@@ -146,3 +146,16 @@ def test_per_object_engine_builds_dedicated_pass() -> None:
     assert cfgs["vitmatte_refiner"].get("only_labels") == ["car"]
     assert cfgs["vitmatte_refiner"].get("pack_heroes") is False
     assert cfgs["vitmatte_refiner"].get("refine_all_masks") is True
+
+
+def test_outline_option_reaches_birefnet_only() -> None:
+    from live_action_aov.gui.submit_worker import _build_pass_configs
+
+    state = _shot()
+    state.enabled_models = ["sam3_birefnet"]
+    state.refiner_outline = True
+    cfgs = {c.name: c.params for c in _build_pass_configs(state)}
+    assert cfgs["birefnet_refiner"].get("outline") == "refiner"
+    state.enabled_models = ["sam3_vitmatte"]
+    cfgs = {c.name: c.params for c in _build_pass_configs(state)}
+    assert "outline" not in (cfgs.get("vitmatte_refiner") or {})

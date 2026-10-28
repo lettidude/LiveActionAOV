@@ -53,7 +53,7 @@ from live_action_aov.io.channels import (
     CH_MATTE_B,
     CH_MATTE_G,
     CH_MATTE_R,
-    MASK_PREFIX,
+    mask_channel,
 )
 
 # Canonical slot -> channel name mapping. Kept here (not in channels.py) so
@@ -454,7 +454,12 @@ class RVMRefinerPass(UtilityPass):
         # the edge band. If the refined band diverges wildly from the hard
         # edge, fall back to a FEATHERED HARD EDGE for that frame: honest and
         # soft instead of random. Trimap/chroma engines rarely trip this.
-        if bool(self.params.get("fallback_feather", True)):
+        # Not when the refiner owns the outline ("refiner" mode): departing
+        # from SAM's edge is the point there, and it has its own area net.
+        if (
+            bool(self.params.get("fallback_feather", True))
+            and str(self.params.get("outline", "sam")) != "refiner"
+        ):
             thresh = float(self.params.get("fallback_threshold", 0.40))
             # Decide per TRACK, not per frame: a per-frame decision made the
             # edge FLIP between engine output and feathered fallback across
@@ -587,6 +592,20 @@ class RVMRefinerPass(UtilityPass):
             for tr in self._hard_masks.values():
                 occupancy += _dense_core(tr)
 
+        # Part -> whole ("hair" inside "person"): they overlap by design, so
+        # neither is the other's neighbour, and a whole's alpha is not scaled
+        # against its parts' (they are not meant to add up).
+        parent_of = {
+            int(t): int(tr["parent"])
+            for t, tr in self._hard_masks.items()
+            if tr.get("parent") is not None and int(tr["parent"]) in self._hard_masks
+        }
+        part_labels = {str(self._hard_masks[t].get("label", "")) for t in parent_of} - {
+            str(tr.get("label", ""))
+            for t, tr in self._hard_masks.items()
+            if int(t) not in parent_of
+        }
+
         # Per-object engine routing: when `only_labels` is set, this refiner
         # instance touches ONLY tracks whose label is in the set — several
         # refiner passes can then split the objects between them (each object
@@ -618,7 +637,13 @@ class RVMRefinerPass(UtilityPass):
                 # Excluding there hollowed both duplicates to edge rings
                 # (field bug: mask.ARM delivered as an outline).
                 own_solid = _dense_core(track, erode=False)
-                soft[((occupancy - own) > 0) & (own_solid == 0)] = 0.0
+                others = occupancy - own
+                for rel in [parent_of.get(track_id)] + [
+                    c for c, p in parent_of.items() if p == track_id
+                ]:
+                    if rel is not None and rel in self._hard_masks:
+                        others = others - np.minimum(_dense_core(self._hard_masks[rel]), others)
+                soft[(others > 0) & (own_solid == 0)] = 0.0
             label = str(track.get("label", "") or "")
             slot = hero_slot.get(track_id, "")
             channel = _SLOT_TO_CHANNEL.get(slot)
@@ -651,9 +676,12 @@ class RVMRefinerPass(UtilityPass):
         # sum above 1 -> a bright seam when the layers are added in comp.
         # Where the sum exceeds 1, scale them so they add up to exactly 1.
         if bool(self.params.get("normalize_overlaps", True)):
+            hero_parts = {hero_slot.get(t, "") for t in parent_of}
             for group in (
-                [channel_stacks[c] for c in _SLOT_TO_CHANNEL.values()] if pack_heroes else [],
-                list(label_soft.values()),
+                [channel_stacks[c] for s, c in _SLOT_TO_CHANNEL.items() if s not in hero_parts]
+                if pack_heroes
+                else [],
+                [v for k, v in label_soft.items() if k not in part_labels],
             ):
                 if len(group) < 2:
                     continue
@@ -697,7 +725,7 @@ class RVMRefinerPass(UtilityPass):
             # clobbered the main engine's hero slots in the executor's
             # channel merge (field bug: matte came out black).
             for label, acc in label_soft.items():
-                d[_ch(f"{MASK_PREFIX}{label}")] = acc[i]
+                d[_ch(mask_channel(label))] = acc[i]
             out[f] = d
         return out
 

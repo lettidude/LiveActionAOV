@@ -118,6 +118,10 @@ class ShotState:
     # param at submit time.
     refine_all_masks: bool = False
 
+    # BiRefNet decides the whole outline (SAM 3 only gates leaks) instead of
+    # just the edge band around SAM's shape. Injected as `outline="refiner"`.
+    refiner_outline: bool = False
+
     # Which soft-edge refiner weights to use, per shot — drives BOTH the
     # Masks-tab preview and the submit. Empty = the pass default (portrait).
     # HF model id string (e.g. "ZhengPeng7/BiRefNet-matting").

@@ -16,6 +16,8 @@ hashed / iterated without accidental mutation.
 
 from __future__ import annotations
 
+import re
+
 # --- Depth ---
 CH_Z = "Z"
 CH_Z_RAW = "Z_raw"
@@ -136,6 +138,15 @@ MASK_PREFIX = "mask."
 pass and written as-is by the ExrSidecarWriter."""
 
 
+def mask_channel(label: str) -> str:
+    """`mask.<label>` with the label made channel-safe: anything but
+    letters, digits and `_` becomes `_` (`"brick wall"` -> `mask.brick_wall`).
+    Nuke does the same on read, so a raw space would leave our comp script
+    pointing at a channel that does not exist."""
+    safe = re.sub(r"[^0-9A-Za-z_]+", "_", label.strip()).strip("_")
+    return f"{MASK_PREFIX}{safe or 'object'}"
+
+
 def is_mask_channel(name: str) -> bool:
     """True if `name` follows the `mask.<concept>` semantic-mask convention."""
     return name.startswith(MASK_PREFIX) and len(name) > len(MASK_PREFIX)
@@ -238,4 +249,5 @@ __all__ = [
     "POSITION_CHANNELS",
     "SPLAT_CHANNELS",
     "is_mask_channel",
+    "mask_channel",
 ]

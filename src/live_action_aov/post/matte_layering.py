@@ -42,6 +42,8 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.io.channels import mask_channel
+
 _log = logging.getLogger(__name__)
 
 _SLOTS = ("r", "g", "b", "a")
@@ -101,8 +103,22 @@ class MatteLayeringPost:
             int(tid): int(tr.get("layer", i)) for i, (tid, tr) in enumerate(self._tracks.items())
         }
         label_tracks: dict[str, list[int]] = {}
+        label_of: dict[int, str] = {}
         for tid, tr in self._tracks.items():
-            label_tracks.setdefault(str(tr.get("label", "")), []).append(int(tid))
+            label = mask_channel(str(tr.get("label", ""))).partition(".")[2]
+            label_tracks.setdefault(label, []).append(int(tid))
+            label_of[int(tid)] = label
+        # Parts ("hair" inside "person"): layered among their siblings, then
+        # kept inside their whole. The whole is layered with everything else.
+        parent_tid = {
+            int(t): int(tr["parent"])
+            for t, tr in self._tracks.items()
+            if tr.get("parent") is not None and int(tr["parent"]) in label_of
+        }
+        part_of: dict[str, str] = {}
+        for label, tids in label_tracks.items():
+            if all(t in parent_tid for t in tids):
+                part_of[label] = label_of[parent_tid[tids[0]]]
 
         touched = 0
         for f, chans in per_frame_channels.items():
@@ -113,11 +129,29 @@ class MatteLayeringPost:
                     groups.setdefault(layer, []).append((name, label_tracks[chan]))
                 elif layer.startswith("matte") and chan in self._slot_track:
                     groups.setdefault(layer, []).append((name, [self._slot_track[chan]]))
-            for members in groups.values():
-                if len(members) < 2 and not any(len(t) > 1 for _, t in members):
-                    continue
-                if self._layer_frame(chans, members, dense, rank, int(f)):
+            for layer, members in groups.items():
+                if layer.startswith("matte"):
+                    members = [m for m in members if m[1][0] not in parent_tid]
+                    family: dict[str, list[tuple[str, list[int]]]] = {}
+                else:
+                    family = {}
+                    for m in members:
+                        whole = part_of.get(m[0].partition(".")[2])
+                        if whole is not None:
+                            family.setdefault(whole, []).append(m)
+                    members = [m for m in members if m[0].partition(".")[2] not in part_of]
+                if (len(members) > 1 or any(len(t) > 1 for _, t in members)) and self._layer_frame(
+                    chans, members, dense, rank, int(f)
+                ):
                     touched += 1
+                for whole, sibs in family.items():
+                    if len(sibs) > 1 or any(len(t) > 1 for _, t in sibs):
+                        self._layer_frame(chans, sibs, dense, rank, int(f))
+                    wname = f"{layer}.{whole}"
+                    if wname in chans:
+                        w = np.clip(np.asarray(chans[wname], dtype=np.float32), 0.0, 1.0)
+                        for name, _ in sibs:
+                            chans[name] = np.minimum(chans[name], w)
         if touched:
             _log.info("matte layering: resolved shared seams on %d frame-groups", touched)
         return per_frame_channels

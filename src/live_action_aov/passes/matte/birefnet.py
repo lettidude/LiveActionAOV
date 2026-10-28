@@ -33,6 +33,7 @@ so CI can inject a numpy-only fake without pulling BiRefNet weights.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
@@ -46,6 +47,8 @@ from live_action_aov.io.channels import (
     CH_MATTE_R,
 )
 from live_action_aov.passes.matte.rvm import RVMRefinerPass
+
+_log = logging.getLogger(__name__)
 
 
 class BiRefNetRefinerPass(RVMRefinerPass):
@@ -91,6 +94,20 @@ class BiRefNetRefinerPass(RVMRefinerPass):
         # the same radius destroyed hole-riddled masks (a reflective car:
         # 64px erode of a holey mask = empty core, no interior guarantee).
         "core_erode": 4,
+        # Who decides the silhouette:
+        # - "sam": BiRefNet only decides the edge band; SAM's (eroded) shape
+        #   stays solid inside it. Safe, but a blobby SAM mask (arm gaps
+        #   filled in) stays blobby.
+        # - "refiner": BiRefNet decides the whole outline; SAM only gates
+        #   leaks (`gate_px` around its mask). A frame where BiRefNet keeps
+        #   less than `min_area_ratio` of SAM's area falls back to "sam".
+        "outline": "sam",
+        "gate_px": "auto",  # "auto" = the hard_mask_dilate band
+        "min_area_ratio": 0.75,
+        # Keep the crop's aspect: grow it to a square with plate context,
+        # pad what the frame edge can't give. Squashing a tall person crop
+        # into 1024x1024 distorted it ~2.5:1 (field report).
+        "keep_aspect": True,
     }
 
     # ------------------------------------------------------------------
@@ -104,8 +121,10 @@ class BiRefNetRefinerPass(RVMRefinerPass):
             import torch
             from transformers import AutoModelForImageSegmentation
 
-            model = load_local_first(AutoModelForImageSegmentation.from_pretrained,
-                str(self.params["model_id"]), trust_remote_code=True
+            model = load_local_first(
+                AutoModelForImageSegmentation.from_pretrained,
+                str(self.params["model_id"]),
+                trust_remote_code=True,
             )
         except ImportError as e:
             # BiRefNet's remote code pulls timm / einops / kornia.
@@ -135,17 +154,26 @@ class BiRefNetRefinerPass(RVMRefinerPass):
 
         size = int(self.params.get("infer_size", 1024))
         h, w = crop_rgb.shape[:2]
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        # Pad to a square (normalised mean = 0) instead of stretching.
+        side = max(h, w) if bool(self.params.get("keep_aspect", True)) else 0
+        py, px = ((side - h) // 2, (side - w) // 2) if side else (0, 0)
+        if side and (h, w) != (side, side):
+            sq = np.empty((side, side, 3), np.float32)
+            sq[:] = mean
+            sq[py : py + h, px : px + w] = np.clip(crop_rgb, 0.0, 1.0)
+            crop_rgb = sq
         pil = Image.fromarray((np.clip(crop_rgb, 0.0, 1.0) * 255.0).astype(np.uint8), "RGB")
         pil = pil.resize((size, size), Image.Resampling.BILINEAR)
         arr = np.asarray(pil, dtype=np.float32) / 255.0
-        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
         arr = (arr - mean) / std
-        ten = (
-            torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(self._device, self._dtype)
-        )
+        ten = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(self._device, self._dtype)
         with torch.no_grad():
             pred = self._model(ten)[-1].sigmoid().float().cpu().numpy()[0, 0]
+        if side:
+            pred = cv2.resize(pred, (side, side), interpolation=cv2.INTER_LINEAR)
+            return pred[py : py + h, px : px + w].astype(np.float32)
         return cv2.resize(pred, (w, h), interpolation=cv2.INTER_LINEAR).astype(np.float32)
 
     def _refine_instance(
@@ -170,6 +198,7 @@ class BiRefNetRefinerPass(RVMRefinerPass):
         pad_frac = float(self.params.get("crop_pad_fraction", 0.12))
 
         out = np.zeros((T, H, W), dtype=np.float32)
+        fallbacks = 0
         for t in range(T):
             binm = (hard_stack[t] > 0.5).astype(np.uint8)
             if int(binm.sum()) == 0:
@@ -190,6 +219,9 @@ class BiRefNetRefinerPass(RVMRefinerPass):
             ph = int((y1 - y0) * pad_frac)
             x0, x1 = max(0, x0 - pw), min(W, x1 + pw)
             y0, y1 = max(0, y0 - ph), min(H, y1 + ph)
+            if bool(self.params.get("keep_aspect", True)):
+                # Square crop from real plate context where the frame allows.
+                x0, x1, y0, y1 = _square_box(x0, x1, y0, y1, W, H)
 
             crop = plate_stack[t, y0:y1, x0:x1]
             alpha_crop = self._birefnet_alpha(crop)
@@ -205,12 +237,49 @@ class BiRefNetRefinerPass(RVMRefinerPass):
             ce = max(int(self.params.get("core_erode", 4)), 0)
             k_core = np.ones((2 * ce + 1, 2 * ce + 1), np.uint8) if ce else None
             core = cv2.erode(binm, k_core) if k_core is not None else binm
-            out[t] = np.clip(
+            bounded = np.clip(
                 np.maximum(full * dil.astype(np.float32), core.astype(np.float32)),
                 0.0,
                 1.0,
             )
+            out[t] = bounded
+            if str(self.params.get("outline", "sam")) == "refiner":
+                gp = self.params.get("gate_px", "auto")
+                g = dilate if str(gp) == "auto" else max(int(gp), 0)
+                gate = (
+                    cv2.dilate(binm, np.ones((2 * g + 1, 2 * g + 1), np.uint8)) if g > 0 else binm
+                )
+                free = np.clip(full * gate.astype(np.float32), 0.0, 1.0)
+                # Safety net: BiRefNet lost the subject on this frame (a pole
+                # across it, a limb it doesn't believe) -> SAM-bounded result.
+                ratio = float((free > 0.5).sum()) / max(int(binm.sum()), 1)
+                if ratio >= float(self.params.get("min_area_ratio", 0.75)):
+                    out[t] = free
+                else:
+                    fallbacks += 1
+        if fallbacks:
+            _log.info(
+                "BiRefNet outline: %d/%d frames kept less than %.0f%% of SAM's area - "
+                "used the SAM-bounded edge there.",
+                fallbacks,
+                T,
+                100 * float(self.params.get("min_area_ratio", 0.75)),
+            )
         return out
+
+
+def _square_box(x0: int, x1: int, y0: int, y1: int, W: int, H: int) -> tuple[int, int, int, int]:
+    """Grow a box to a square around its centre, shifted/clamped to the frame."""
+    side = min(max(x1 - x0, y1 - y0), max(W, H))
+
+    def span(a: int, b: int, n: int) -> tuple[int, int]:
+        s = min(side, n)
+        lo = max(0, min((a + b - s) // 2, n - s))
+        return lo, lo + s
+
+    nx0, nx1 = span(x0, x1, W)
+    ny0, ny1 = span(y0, y1, H)
+    return nx0, nx1, ny0, ny1
 
 
 __all__ = ["BiRefNetRefinerPass"]

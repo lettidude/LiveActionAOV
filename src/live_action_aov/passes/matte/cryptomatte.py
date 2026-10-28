@@ -112,6 +112,21 @@ class CryptomattePass(UtilityPass):
             name_of[tid] = nm
             self._manifest[nm] = name_to_id(nm)[1]
 
+        # A whole ("person") overlaps its parts ("hair", "jacket"); Cryptomatte
+        # wants one owner per pixel, so the whole's ID covers only what its
+        # parts leave (face, hands...).
+        kids: dict[int, list[int]] = {}
+        for tid, info in self._hard_masks.items():
+            p = info.get("parent")
+            if p is not None and int(p) in self._hard_masks:
+                kids.setdefault(int(p), []).append(int(tid))
+
+        def _hard(info: dict[str, Any], f: int) -> np.ndarray | None:
+            frames = list(info.get("frames") or [])
+            if f not in frames:
+                return None
+            return np.asarray(info["stack"][frames.index(f)], dtype=np.float32)
+
         feather = float(self.params.get("feather", 0.0))
         zero_channels = {c: np.zeros((h, w), np.float32) for c in CRYPTOMATTE_CHANNELS}
 
@@ -119,13 +134,16 @@ class CryptomattePass(UtilityPass):
         for f in range(first, last + 1):
             instances: list[tuple[str, np.ndarray]] = []
             for tid, info in self._hard_masks.items():
-                frames = list(info.get("frames") or [])
-                if f not in frames:
-                    continue
                 # Index first, then cast just this frame — casting the whole
                 # (T,H,W) stack to float32 per frame is O(F) wasted work (and
                 # the stack is uint8 now). One (H,W) slice is all we need.
-                m = np.asarray(info["stack"][frames.index(f)], dtype=np.float32)
+                m = _hard(info, f)
+                if m is None:
+                    continue
+                for c in kids.get(int(tid), []):
+                    cm = _hard(self._hard_masks[c], f)
+                    if cm is not None:
+                        m = m * (cm <= 0.5)
                 if feather > 0:
                     m = _feather(m, feather)
                 if float(m.sum()) > 0:

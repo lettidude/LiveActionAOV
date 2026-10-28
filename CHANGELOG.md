@@ -6,6 +6,39 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Whole + parts roto**: concepts like `person, hair, jacket, trousers` now
+  give `mask.person` = the full body and parts that split it among
+  themselves and stay inside it. Before, one-owner-per-pixel left
+  `mask.person` as just face and hands. A track is a part when its label is
+  a clothing / body / vehicle-part word (or listed in `part_labels`) and its
+  mask lies >= 70% inside a bigger object; a person inside a car stays a
+  separate object. SAM 3 joint tracking, the refiners' neighbour exclusion,
+  seam normalisation, the layering post and Cryptomatte (the whole's ID is
+  what its parts leave) all respect it. `sam3_hard_masks` entries gain
+  `parent`.
+- **BiRefNet decides the outline** (Passes tab checkbox; param
+  `outline="refiner"`): BiRefNet draws the whole silhouette and SAM 3 only
+  gates leaks (`gate_px`). Default mode only lets BiRefNet soften the edge
+  of SAM's shape, so a blobby SAM mask (arm gaps filled in) stayed blobby.
+  Safety net: a frame where BiRefNet keeps less than `min_area_ratio`
+  (75%) of SAM's area falls back to the SAM-bounded edge (a pole across the
+  subject). From a field roto on a small, distant person.
+
+### Fixed
+- BiRefNet stretched every crop to 1024x1024, so a tall person crop was
+  squashed ~2.5:1. The crop now grows to a square from plate context and
+  is padded only where the frame ends (`keep_aspect`, on by default).
+- Multi-word concepts (`brick wall`) wrote a `mask.brick wall` channel that
+  Nuke reads as `mask_extra.brick_wall`, so the comp script pointed at a
+  missing channel. Mask channels are now channel-safe: `mask.brick_wall`.
+- ViTMatte crawled on multi-object shots (one object ~10 min, PF0093-05 with
+  10 objects did not finish in an hour): every crop has its own size, so the
+  CUDA cache grew to 25 GiB reserved for 5 GiB used and, next to the run's
+  other models, spilled the 32 GB card into shared system memory. The cache
+  is now released when it runs far above real use (0.4 GiB reserved, same
+  0.3 s per object-frame).
+
 ## [0.9.0] — 2026-10-28
 
 ### Added

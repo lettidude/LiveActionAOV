@@ -80,6 +80,8 @@ liveaov-gui
    - **SAM3 + RVM** — hard masks + RVM soft alpha (default, commercial-safe).
    - **SAM3 + BiRefNet (soft edges)** — roto-grade soft alpha (hair, motion blur, fine edges) in `matte.*`. MIT, commercial-safe.
    - The **"SAM 3 detects"** field takes comma-separated concepts (e.g. `person, red car`) driving both the matte and the Cryptomatte.
+   - **Whole + parts**: list a whole and its parts together (`person, hair, jacket, trousers`). `mask.person` stays the full body; `mask.hair`, `mask.jacket`, ... split it among themselves (no dark seam between them) and never leave it. Parts are recognised by name (clothing, body and vehicle parts) when they sit inside a bigger object; a person inside a car stays a separate object.
+   - Multi-word concepts become channel-safe names: `brick wall` -> `mask.brick_wall`.
 3. **Masks tab (interactive click-to-mask, optional)** — seed an object directly in the viewport:
    - **Drag a box** around it (often the strongest single prompt), and/or **left-click = include**, **right-click = exclude**.
    - **Preview mask (this frame)** runs SAM 3 on the seed frame so you can refine before the full run.
@@ -103,6 +105,8 @@ Every run writes `<shot>.comp.nk` next to the sidecars. Open it (or File → Imp
 | example | with a splat and masks: a Keymix that replaces every masked object with the splat clean plate (watch `splat.alpha`: areas the camera never saw are empty) |
 
 Paths are relative to the script, so the whole output folder can be copied to another machine. In Nuke our `mask.*` layer is called `mask_extra.*` (Nuke reserves `mask`); the script already uses the Nuke names.
+
+Nuke caps a script at **1023 channels in total** (every layer of every Read). One Read with 600 masks, 600 Shuffles and the every-mask matte loads and checks fine in Nuke 16; keep a run (plus whatever else is in your script) under ~1000 channels.
 
 The Gaussian splat itself (`camera_track/<shot>.splat.ply`) is for splat-capable tools; in Nuke 16 use the `splat` EXR layer (clean plate, coverage, depth), which is already rendered through the shot camera.
 

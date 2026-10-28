@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,7 +60,7 @@ from live_action_aov.core.pass_base import (
     UtilityPass,
 )
 from live_action_aov.core.runtime_env import load_local_first
-from live_action_aov.io.channels import MASK_PREFIX
+from live_action_aov.io.channels import mask_channel
 from live_action_aov.passes.matte.rank import (
     HeroOverride,
     Instance,
@@ -236,6 +237,16 @@ class SAM3MattePass(UtilityPass):
         # one (closes gaps up to this wide). "auto" = 0.4% of the long edge
         # (4 px at 1024, 8 px at 2K); 0 = off.
         "seam_close_px": "auto",
+        # Parts of an object ("hair", "jacket" inside "person"): a track with a
+        # part-like label (`part_labels`) whose mask lies at least this much
+        # inside a bigger object of another label is that object's PART. The
+        # whole keeps its full mask (mask.person = the full body), parts share
+        # its pixels only among themselves, and each part stays inside the
+        # whole. 0 = off (everything exclusive).
+        "part_containment": 0.7,
+        # "auto" = clothing / body / vehicle-part words (see _PART_WORDS), or
+        # a list of labels. A person inside a car is NOT a part of the car.
+        "part_labels": "auto",
         # Ranking weights (RankWeights schema).
         "ranking": {
             "area": 0.4,
@@ -274,6 +285,8 @@ class SAM3MattePass(UtilityPass):
         # track_id -> depth rank, 0 = front. Published in sam3_hard_masks so
         # the matte layering post knows whose edge defines a shared seam.
         self._layer: dict[int, int] = {}
+        # part track_id -> whole track_id ("hair" -> "person").
+        self._parent: dict[int, int] = {}
         self._heroes: list[Any] = []  # list[rank.HeroSlot]
         self._concepts_found: list[str] = []
         self._plate_shape: tuple[int, int] = (0, 0)
@@ -692,6 +705,10 @@ class SAM3MattePass(UtilityPass):
             for o in group
         }
         exclusive = bool(self.params.get("exclusive_masks", True))
+        contain = float(self.params.get("part_containment", 0.7) or 0.0)
+        is_part = _part_label_test(self.params.get("part_labels", "auto"))
+        parent = _seed_parents(mask_objs, contain, is_part) if contain > 0 else {}
+        self._parent.update(parent)
 
         def _consume(step_iter: Any) -> None:
             for step in step_iter:
@@ -718,9 +735,32 @@ class SAM3MattePass(UtilityPass):
                     bias = torch.tensor(
                         [bias_of.get(int(i), 0.0) for i in ids], device=logits.device
                     )
-                    winner = torch.argmax(logits + bias[:, None, None], dim=0)
-                    for k in range(len(ids)):
-                        present[k] &= winner == k
+                    eff = logits + bias[:, None, None]
+                    idx = {int(i): k for k, i in enumerate(ids)}
+                    kids: dict[int, list[int]] = {}
+                    for c, p in parent.items():
+                        if c in idx and p in idx:
+                            kids.setdefault(idx[p], []).append(idx[c])
+                    if not kids:
+                        winner = torch.argmax(eff, dim=0)
+                        for k in range(len(ids)):
+                            present[k] &= winner == k
+                    else:
+                        # Wholes compete with everything else, each as the
+                        # union of itself and its parts; parts then split
+                        # their whole's pixels among themselves.
+                        child = {c for cs in kids.values() for c in cs}
+                        roots = [k for k in range(len(ids)) if k not in child]
+                        root_eff = eff.clone()
+                        for p, cs in kids.items():
+                            root_eff[p] = torch.maximum(eff[p], eff[cs].max(dim=0).values)
+                        win = torch.argmax(root_eff[roots], dim=0)
+                        for j, r in enumerate(roots):
+                            present[r] = (root_eff[r] > 0.0) & (win == j)
+                        for p, cs in kids.items():
+                            wk = torch.argmax(eff[cs], dim=0)
+                            for j, c in enumerate(cs):
+                                present[c] = (logits[c] > 0.0) & (wk == j) & present[p]
                 pres = present.cpu().numpy()
                 for k, oid in enumerate(ids):
                     if int(oid) in out:
@@ -958,6 +998,7 @@ class SAM3MattePass(UtilityPass):
 
         self._instances = []
         self._priority = {}
+        self._parent = {}
         self._track_objects(frames, objs, first, area_floor)
 
         # --- Re-detection: objects that enter later / the tracker lost ---
@@ -972,13 +1013,28 @@ class SAM3MattePass(UtilityPass):
             self._instances = _dedupe_instances(
                 self._instances, self._priority, float(self.params.get("duplicate_iou", 0.85))
             )
-            _make_exclusive(self._instances, self._priority)
+            contain = float(self.params.get("part_containment", 0.7) or 0.0)
+            if contain > 0:
+                is_part = _part_label_test(self.params.get("part_labels", "auto"))
+                self._parent.update(_clip_parents(self._instances, self._parent, contain, is_part))
+            live = {i.track_id for i in self._instances}
+            self._parent = {c: p for c, p in self._parent.items() if c in live and p in live}
+            for c, p in self._parent.items():
+                _log.info("SAM3 matte: track %d is a part of track %d.", c, p)
+            _make_exclusive(self._instances, self._priority, self._parent)
             gap = self.params.get("seam_close_px", "auto")
             gap_px = (
                 max(2, round(0.004 * max(plate_h, plate_w))) if str(gap) == "auto" else int(gap)
             )
             if gap_px > 0:
-                _close_seams(self._instances, gap_px)
+                # A whole and its parts overlap by design: close seams between
+                # wholes/independent objects, then between sibling parts.
+                _close_seams([i for i in self._instances if i.track_id not in self._parent], gap_px)
+                for p in set(self._parent.values()):
+                    sibs = [i for i in self._instances if self._parent.get(i.track_id) == p]
+                    if len(sibs) > 1:
+                        _close_seams(sibs, gap_px)
+            _union_parts(self._instances, self._parent)
             for inst in [i for i in self._instances if not any(m.any() for m in i.masks.values())]:
                 _log.info(
                     "SAM3 matte: '%s' (track %d) lies entirely under higher-priority objects - dropped.",
@@ -986,6 +1042,8 @@ class SAM3MattePass(UtilityPass):
                     inst.track_id,
                 )
             self._instances = [i for i in self._instances if any(m.any() for m in i.masks.values())]
+            live = {i.track_id for i in self._instances}
+            self._parent = {c: p for c, p in self._parent.items() if c in live and p in live}
         self._layer = {
             inst.track_id: rank
             for rank, inst in enumerate(_layer_order(self._instances, self._priority))
@@ -1011,7 +1069,7 @@ class SAM3MattePass(UtilityPass):
                         np.maximum(union, m, out=union)
                 if union.any():
                     any_nonzero = True
-                    per_frame[f][f"{MASK_PREFIX}{concept}"] = union
+                    per_frame[f][mask_channel(concept)] = union
             if any_nonzero:
                 concepts_found.add(concept)
         # If a concept produced no mask on any frame, emit nothing for it
@@ -1117,6 +1175,8 @@ class SAM3MattePass(UtilityPass):
                     "stack": stack,
                     # Depth rank (0 = front): who owns a shared seam.
                     "layer": self._layer.get(inst.track_id, len(hard_masks)),
+                    # Whole this track is a part of (None = independent).
+                    "parent": self._parent.get(inst.track_id),
                 }
         except MemoryError as exc:
             # The pre-flight in run_shot should catch this first, but if the
@@ -1246,20 +1306,241 @@ def _close_seams(instances: list[_DetectedInstance], gap_px: int) -> None:
                 inst.masks[f] = m
 
 
-def _make_exclusive(instances: list[_DetectedInstance], priority: dict[int, int]) -> None:
+def _make_exclusive(
+    instances: list[_DetectedInstance],
+    priority: dict[int, int],
+    parent: dict[int, int] | None = None,
+) -> None:
     """Give every contested pixel to ONE instance, in place, in
-    `_layer_order` (the front object owns the overlap)."""
+    `_layer_order` (the front object owns the overlap). A whole and its own
+    parts (`parent`: part -> whole) do not contest each other."""
+    parent = parent or {}
     order = _layer_order(instances, priority)
     frames = sorted({f for i in instances for f in i.masks})
     for f in frames:
         present = [i for i in order if f in i.masks and i.masks[f].any()]
         if len(present) < 2:
             continue
-        taken = np.zeros(present[0].masks[f].shape, dtype=bool)
+        if not parent:
+            taken = np.zeros(present[0].masks[f].shape, dtype=bool)
+            for inst in present:
+                m = inst.masks[f] > 0
+                inst.masks[f] = (m & ~taken).astype(np.uint8)
+                taken |= m
+            continue
+        claimed: list[tuple[int, np.ndarray]] = []
         for inst in present:
             m = inst.masks[f] > 0
-            inst.masks[f] = (m & ~taken).astype(np.uint8)
-            taken |= m
+            blocked = np.zeros(m.shape, dtype=bool)
+            for tid, om in claimed:
+                if parent.get(inst.track_id) == tid or parent.get(tid) == inst.track_id:
+                    continue
+                blocked |= om
+            inst.masks[f] = (m & ~blocked).astype(np.uint8)
+            claimed.append((inst.track_id, m))
+
+
+#: Labels that name a PART of something else. A label is part-like when any
+#: of its words is here ("leather jacket", "front wheel").
+_PART_WORDS = frozenset(
+    [
+        "hair",
+        "head",
+        "face",
+        "eye",
+        "eyes",
+        "mouth",
+        "nose",
+        "ear",
+        "ears",
+        "beard",
+        "neck",
+        "hand",
+        "hands",
+        "arm",
+        "arms",
+        "leg",
+        "legs",
+        "foot",
+        "feet",
+        "finger",
+        "fingers",
+        "skin",
+        "torso",
+        "jacket",
+        "coat",
+        "shirt",
+        "t-shirt",
+        "tshirt",
+        "top",
+        "sweater",
+        "hoodie",
+        "vest",
+        "dress",
+        "skirt",
+        "trousers",
+        "pants",
+        "jeans",
+        "shorts",
+        "shoe",
+        "shoes",
+        "boot",
+        "boots",
+        "sneaker",
+        "sneakers",
+        "sock",
+        "socks",
+        "glove",
+        "gloves",
+        "hat",
+        "cap",
+        "helmet",
+        "hood",
+        "scarf",
+        "tie",
+        "belt",
+        "bag",
+        "backpack",
+        "glasses",
+        "sunglasses",
+        "goggles",
+        "headphones",
+        "earphones",
+        "mask",
+        "sleeve",
+        "sleeves",
+        "collar",
+        "pocket",
+        "strap",
+        "watch",
+        "bracelet",
+        "necklace",
+        "earring",
+        "wheel",
+        "wheels",
+        "tire",
+        "tires",
+        "tyre",
+        "tyres",
+        "window",
+        "windows",
+        "windshield",
+        "windscreen",
+        "door",
+        "doors",
+        "headlight",
+        "headlights",
+        "taillight",
+        "bumper",
+        "hood",
+        "mirror",
+        "roof",
+        "licence",
+        "license",
+        "plate",
+        "grille",
+        "handle",
+    ]
+)
+
+
+def _part_label_test(spec: Any) -> Callable[[str], bool]:
+    if isinstance(spec, (list, tuple, set)):
+        allowed = {str(s).strip().lower() for s in spec}
+        return lambda label: label.strip().lower() in allowed
+    return lambda label: any(
+        w in _PART_WORDS for w in label.lower().replace("-", " ").replace("_", " ").split()
+    )
+
+
+def _seed_parents(
+    objs: list[dict[str, Any]], contain: float, is_part: Callable[[str], bool]
+) -> dict[int, int]:
+    """Part -> whole on the seed frame: an object whose detection mask lies at
+    least `contain` inside a bigger object of another label is its part
+    (the smallest such whole). Parts of parts hang on the outermost whole."""
+    ms = {
+        int(o["obj_id"]): (np.asarray(o["mask"]) > 0.5, str(o.get("label", "")))
+        for o in objs
+        if o.get("mask") is not None
+    }
+    areas = {k: int(m.sum()) for k, (m, _) in ms.items()}
+    parent: dict[int, int] = {}
+    for p, (mp, lp) in ms.items():
+        if areas[p] == 0 or not is_part(lp):
+            continue
+        best = None
+        for w, (mw, lw) in ms.items():
+            if w == p or lw == lp or areas[w] <= areas[p] * 1.1:
+                continue
+            if float((mp & mw).sum()) / areas[p] >= contain and (
+                best is None or areas[w] < areas[best]
+            ):
+                best = w
+        if best is not None:
+            parent[p] = best
+    return _flatten_parents(parent)
+
+
+def _clip_parents(
+    instances: list[_DetectedInstance],
+    known: dict[int, int],
+    contain: float,
+    is_part: Callable[[str], bool],
+) -> dict[int, int]:
+    """Same test over the clip (every 4th frame) for tracks that did not
+    share a seed frame (re-detected later, other tracker session)."""
+    found = dict(known)
+    involved = set(known) | set(known.values())
+    for p in instances:
+        if p.track_id in involved or not is_part(p.label):
+            continue
+        fr = sorted(p.masks)[::4]
+        ap = sum(int(p.masks[f].sum()) for f in fr)
+        if ap == 0:
+            continue
+        best, best_area = None, 0
+        for w in instances:
+            if w.track_id == p.track_id or w.label == p.label or w.track_id in known:
+                continue
+            aw = sum(int(w.masks[f].sum()) for f in fr if f in w.masks)
+            if aw <= ap * 1.1:
+                continue
+            inter = sum(
+                int(((p.masks[f] > 0) & (w.masks[f] > 0)).sum()) for f in fr if f in w.masks
+            )
+            if inter / ap >= contain and (best is None or aw < best_area):
+                best, best_area = w.track_id, aw
+        if best is not None:
+            found[p.track_id] = best
+    return _flatten_parents(found)
+
+
+def _flatten_parents(parent: dict[int, int]) -> dict[int, int]:
+    """One level only: a part of a part hangs on the outermost whole."""
+    out: dict[int, int] = {}
+    for c, p in parent.items():
+        seen = {c}
+        while p in parent and p not in seen:
+            seen.add(p)
+            p = parent[p]
+        out[c] = p
+    return out
+
+
+def _union_parts(instances: list[_DetectedInstance], parent: dict[int, int]) -> None:
+    """A whole covers its parts (in place): mask.person is the full body
+    even where SAM gave a strand of hair only to the hair track."""
+    by_id = {i.track_id: i for i in instances}
+    for c, p in parent.items():
+        ci, pi = by_id.get(c), by_id.get(p)
+        if ci is None or pi is None:
+            continue
+        for f, m in ci.masks.items():
+            if f in pi.masks:
+                pi.masks[f] = ((pi.masks[f] > 0) | (m > 0)).astype(np.uint8)
+            elif m.any():
+                pi.masks[f] = (m > 0).astype(np.uint8)
 
 
 def _pick_seed_frame(n_frames: int, sample_frame: Any) -> int:
