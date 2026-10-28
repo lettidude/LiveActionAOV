@@ -602,11 +602,11 @@ class RVMRefinerPass(UtilityPass):
             for t, tr in self._hard_masks.items()
             if tr.get("parent") is not None and int(tr["parent"]) in self._hard_masks
         }
-        part_labels = {str(self._hard_masks[t].get("label", "")) for t in parent_of} - {
-            str(tr.get("label", ""))
-            for t, tr in self._hard_masks.items()
-            if int(t) not in parent_of
-        }
+        # A label with ANY part track is a part label: a stray, unrelated
+        # "hair" detection elsewhere in frame used to make the whole label
+        # independent, and seam normalisation then split the person's hair
+        # 50/50 with the person (field report, PF0100-02).
+        part_labels = {str(self._hard_masks[t].get("label", "")) for t in parent_of}
 
         # Per-object engine routing: when `only_labels` is set, this refiner
         # instance touches ONLY tracks whose label is in the set — several

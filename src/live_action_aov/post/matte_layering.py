@@ -117,8 +117,12 @@ class MatteLayeringPost:
         }
         part_of: dict[str, str] = {}
         for label, tids in label_tracks.items():
-            if all(t in parent_tid for t in tids):
-                part_of[label] = label_of[parent_tid[tids[0]]]
+            # Any part track makes the label a part label (a stray unrelated
+            # "hair" elsewhere must not turn the person's hair into a root
+            # that holds the person out).
+            parts = [t for t in tids if t in parent_tid]
+            if parts:
+                part_of[label] = label_of[parent_tid[parts[0]]]
 
         touched = 0
         for f, chans in per_frame_channels.items():

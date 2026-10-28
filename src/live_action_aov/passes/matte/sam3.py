@@ -1576,6 +1576,21 @@ def _clip_parents(
     share a seed frame (re-detected later, other tracker session)."""
     found = dict(known)
     involved = set(known) | set(known.values())
+    by_id = {i.track_id: i for i in instances}
+
+    def family(w: _DetectedInstance, f: int) -> np.ndarray | None:
+        # A whole's region includes its known parts: in a joint session the
+        # parts OWN their pixels, so a hair track re-detected later sits on
+        # the first hair track, not on the person's own mask (field report:
+        # PF0100-02 hair split 50/50 with the person).
+        m = w.masks.get(f)
+        out = None if m is None else m > 0
+        for c, pw in known.items():
+            cm = by_id[c].masks.get(f) if pw == w.track_id and c in by_id else None
+            if cm is not None:
+                out = cm > 0 if out is None else out | (cm > 0)
+        return out
+
     for p in instances:
         if p.track_id in involved or not is_part(p.label):
             continue
@@ -1587,11 +1602,12 @@ def _clip_parents(
         for w in instances:
             if w.track_id == p.track_id or w.label == p.label or w.track_id in known:
                 continue
-            aw = sum(int(w.masks[f].sum()) for f in fr if f in w.masks)
+            fams = {f: family(w, f) for f in fr}
+            aw = sum(int(m.sum()) for m in fams.values() if m is not None)
             if aw <= ap * 1.1:
                 continue
             inter = sum(
-                int(((p.masks[f] > 0) & (w.masks[f] > 0)).sum()) for f in fr if f in w.masks
+                int(((p.masks[f] > 0) & m).sum()) for f, m in fams.items() if m is not None
             )
             if inter / ap >= contain and (best is None or aw < best_area):
                 best, best_area = w.track_id, aw

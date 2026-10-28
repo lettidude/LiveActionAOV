@@ -195,3 +195,54 @@ def test_layer_order_nearer_first_then_smaller() -> None:
     order = [i.label for i in _layer_order([person, shelves, rifle], {}, near)]
     assert order == ["rifle", "person", "shelves"]
     assert [i.label for i in _layer_order([person, shelves], {})] == ["shelves", "person"]
+
+
+def test_redetected_part_on_an_owned_part_still_hangs_on_the_whole() -> None:
+    """In a joint session the first hair track owns the hair pixels, so a
+    hair re-detected later lies on that track, not on the person's own mask.
+    It must still become a part of the person (not an independent object
+    that splits the alpha 50/50 with it)."""
+    from live_action_aov.passes.matte.sam3 import _clip_parents, _DetectedInstance, _part_label_test
+
+    person = _rect(14, 40, 20, 40)  # person mask WITHOUT the hair (owned by track 2)
+    hair = _rect(4, 14, 20, 40)
+    inst = [
+        _DetectedInstance(track_id=1, label="person", masks={1: person}),
+        _DetectedInstance(track_id=2, label="hair", masks={1: hair}),
+        _DetectedInstance(track_id=2004, label="hair", masks={1: hair.copy()}),
+    ]
+    out = _clip_parents(inst, {2: 1}, 0.7, _part_label_test("auto"))
+    assert out[2004] == 1
+
+
+def test_stray_same_label_track_does_not_halve_the_whole() -> None:
+    """An unrelated 'hair' detection elsewhere (not a part) must not turn the
+    label independent: seam normalisation then split the person's hair 50/50
+    with the person (PF0100-02)."""
+    from live_action_aov.passes.matte.rvm import RVMRefinerPass
+
+    class _Hard(RVMRefinerPass):
+        def _load_model(self) -> None:  # type: ignore[override]
+            self._model = object()
+
+        def _refine_instance(self, plate_stack, hard_stack):  # type: ignore[override]
+            return hard_stack.astype(np.float32)
+
+    arts = _family_artifacts()
+    stray = _rect(30, 38, 50, 58).astype(np.uint8)
+    arts["sam3_hard_masks"][0][4] = {
+        "label": "hair",
+        "frames": [1],
+        "stack": stray[None],
+        "layer": 3,
+        "parent": None,
+    }
+    p = _Hard({"refine_all_masks": True})
+    p.ingest_artifacts(arts)
+    out = p.run_shot(_Reader(1), frame_range=(1, 1))[1]
+    assert out["mask.person"][8, 30] > 0.99  # the person's hair region
+    assert out["mask.hair"][8, 30] > 0.99
+    post = MatteLayeringPost()
+    post.ingest_artifacts(arts)
+    lay = post.apply({1: dict(out)}, None, "s")[1]
+    assert lay["mask.person"][8, 30] > 0.99  # not held out by its own hair

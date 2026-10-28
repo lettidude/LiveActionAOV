@@ -54,6 +54,11 @@ uses [semantic versioning](https://semver.org/).
   subject). From a field roto on a small, distant person.
 
 ### Fixed
+- A person's hair came out at 0.5 (and the person held out by it) when SAM 3
+  also detected an unrelated "hair" elsewhere in frame: one stray track made
+  the whole label independent, so seam normalisation split hair and person
+  50/50. A label with any part track is now a part label. A part re-detected
+  later on top of an earlier part track also hangs on the whole now.
 - ACEScg plates were detected as lin_rec709: OIIO stamps
   `oiio:ColorSpace = lin_rec709` on every EXR without colour info, and that
   tag was read before the file's chromaticities. Chromaticities (AP1 ->
