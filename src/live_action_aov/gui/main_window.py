@@ -91,7 +91,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._viewport)
         splitter.addWidget(self._inspector)
         # Sensible initial proportions: 220 / 800 / 380 px.
-        splitter.setSizes([220, 800, 380])
+        splitter.setSizes([220, 760, 440])
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         splitter.setCollapsible(2, False)

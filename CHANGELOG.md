@@ -7,6 +7,13 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **One engine menu.** Run engine (Passes tab) and object engine (Masks
+  tab) are the same kind of menu: the recommended engine first, Green /
+  blue screen second, everything else under Advanced. The Masks tab lost
+  "Preview with" and "Apply engine": picking an object's engine pins it and
+  re-previews it in one step. Licence badges are short (✓ / ⚠ NC, full
+  licence in the tooltip) so the inspector needs no horizontal scroll; the
+  BiRefNet-only "outline" option shows only when BiRefNet is the engine.
 - **Output folders.** The output root is always the user's choice (GUI
   Output tab, remembered between sessions; CLI `--out`, now required) -
   nothing is written next to the plate any more. Every run is a new version:

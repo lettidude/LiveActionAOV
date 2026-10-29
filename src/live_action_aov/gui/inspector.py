@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 )
 
 from live_action_aov.core.output_layout import next_version_dir
+from live_action_aov.gui.engine_menu import OBJECT_ENGINES, RUN_ENGINES, EngineButton
 from live_action_aov.gui.pass_catalog import PASS_CATALOG
 from live_action_aov.gui.shot_list import remember_output_root
 from live_action_aov.gui.shot_state import ClickInstance, ShotRegistry, ShotState
@@ -329,9 +330,15 @@ class InspectorPanel(QWidget):
                 self._model_radios[entry.key] = radio
                 row_layout.addWidget(radio)
                 row_layout.addStretch()
+                # Short marker (the full licence is the tooltip) so the
+                # inspector never needs a horizontal scroll.
                 colour = "#5ec864" if entry.commercial else "#e0a040"
-                prefix = "" if entry.commercial else "⚠ "
-                license_marker = QLabel(f"{prefix}{entry.license_tag}")
+                license_marker = QLabel("✓" if entry.commercial else "⚠ NC")
+                license_marker.setToolTip(
+                    f"{entry.license_tag} - commercial use OK"
+                    if entry.commercial
+                    else f"{entry.license_tag} - non-commercial: NOT FOR PRODUCTION USE"
+                )
                 license_marker.setStyleSheet(
                     f"color: {colour}; font-size: 10pt; padding-right: 2px;"
                 )
@@ -384,24 +391,13 @@ class InspectorPanel(QWidget):
         # DEFAULT ENGINE for the run — one dropdown, covering both the
         # engine and (for BiRefNet) the weight variant. Objects pinned on
         # the Masks tab override this per object.
-        self._default_engine_combo = QComboBox()
-        self._default_engine_combo.addItem(
-            "Auto - ViTMatte + BiRefNet guide (recommended)", ("vitmatte", "")
-        )
-        self._default_engine_combo.addItem("BiRefNet Portrait - people/hair", ("birefnet", ""))
-        self._default_engine_combo.addItem(
-            "BiRefNet Matting - general soft", ("birefnet", "ZhengPeng7/BiRefNet-matting")
-        )
-        self._default_engine_combo.addItem(
-            "BiRefNet General - cleanest licence", ("birefnet", "ZhengPeng7/BiRefNet")
-        )
-        self._default_engine_combo.addItem("Chroma Key (green/blue)", ("chromakey", ""))
-        self._default_engine_combo.addItem("RVM", ("rvm", ""))
+        self._default_engine_combo = EngineButton(RUN_ENGINES)
         self._default_engine_combo.setToolTip(
-            "Engine used for every object that has no per-object pin on the "
-            "Masks tab (and for the concept-detected unions)."
+            "Engine used for every object that has no engine of its own "
+            "(Masks tab) and for the concept-detected unions. Other engines "
+            "are under Advanced."
         )
-        self._default_engine_combo.currentIndexChanged.connect(self._on_default_engine_changed)
+        self._default_engine_combo.picked.connect(self._on_default_engine_changed)
 
         self._refine_all_check = QCheckBox("Refine ALL mask.<name> channels at submit (slower)")
         self._refine_all_check.setToolTip(
@@ -687,66 +683,24 @@ class InspectorPanel(QWidget):
         self._mask_points_warn.setVisible(False)
 
         masks_layout.addSpacing(6)
-        # PREVIEW engine override — the run refiner is chosen on the Passes
-        # tab; here you can preview with ANY engine to eye-compare per shot
-        # before committing. "Same as run" mirrors the Passes choice.
-        self._preview_refiner_combo = QComboBox()
-        self._preview_refiner_combo.addItem("Same as run (Passes tab)", "auto")
-        self._preview_refiner_combo.addItem("SAM3 hard mask (no refiner)", "none")
-        self._preview_refiner_combo.addItem("ViTMatte (trimap)", "vitmatte")
-        self._preview_refiner_combo.addItem("BiRefNet Portrait", "birefnet:")
-        self._preview_refiner_combo.addItem(
-            "BiRefNet Matting", "birefnet:ZhengPeng7/BiRefNet-matting"
-        )
-        self._preview_refiner_combo.addItem("BiRefNet General", "birefnet:ZhengPeng7/BiRefNet")
-        self._preview_refiner_combo.addItem("RMBG-2.0", "birefnet:briaai/RMBG-2.0")
-        self._preview_refiner_combo.addItem("RVM", "rvm")
-        self._preview_refiner_combo.addItem("Chroma Key (green/blue)", "chromakey")
-        self._preview_refiner_combo.setToolTip(
-            "Which refiner the 'Preview mask' button applies — preview-only, "
-            "does NOT change what the submit runs (that's the Passes tab). "
-            "Use it to eye-compare algorithms on this shot, then pick the "
-            "final one in Passes."
-        )
-        self._preview_refiner_combo.currentIndexChanged.connect(self._on_preview_refiner_changed)
-        preview_with_row = QHBoxLayout()
-        preview_with_row.addWidget(QLabel("Preview with:"))
-        preview_with_row.addWidget(self._preview_refiner_combo, stretch=1)
-        masks_layout.addLayout(preview_with_row)
-
         # Note mirroring what the RUN will use — how the two tabs communicate.
         self._preview_refiner_note = QLabel("")
         self._preview_refiner_note.setStyleSheet("color: #888; font-size: 8pt;")
         self._preview_refiner_note.setWordWrap(True)
         masks_layout.addWidget(self._preview_refiner_note)
-        # Preview + Apply side by side: try engines in the preview, then one
-        # click pins the current preview engine onto the ACTIVE object — no
-        # hunting the Engine dropdown further down.
-        self._apply_engine_btn = QPushButton("Apply engine")
-        self._apply_engine_btn.setToolTip(
-            "Pin the current 'Preview with' engine onto the selected object "
-            "(same as picking it in the Engine dropdown below)."
-        )
-        self._apply_engine_btn.clicked.connect(self._on_apply_preview_engine)
         pv_row = QHBoxLayout()
         pv_row.addWidget(self._mask_preview_btn, stretch=1)
-        pv_row.addWidget(self._apply_engine_btn)
         masks_layout.addLayout(pv_row)
         # Per-object ENGINE, BESIDE the list: the weight belongs to the
         # LAYER, not the shot — portrait on the person, trimap/chroma on
         # the car, in one run. Selecting a row shows its engine here.
-        self._mask_engine_combo = QComboBox()
-        self._mask_engine_combo.addItem("Default (run engine)", "")
-        self._mask_engine_combo.addItem("ViTMatte (trimap)", "vitmatte")
-        self._mask_engine_combo.addItem("BiRefNet", "birefnet")
-        self._mask_engine_combo.addItem("Chroma Key", "chromakey")
-        self._mask_engine_combo.addItem("RVM", "rvm")
+        self._mask_engine_combo = EngineButton(OBJECT_ENGINES)
         self._mask_engine_combo.setToolTip(
-            "Soft-edge engine for THIS object only. Default follows the "
-            "Passes-tab run engine; a pinned engine refines this object's "
-            "mask.<name> at submit and drives its preview."
+            "Soft-edge engine for THIS object only (Default = the run engine on "
+            "the Passes tab). Picking one re-previews the object with it; the "
+            "submit refines its mask.<name> with the same engine."
         )
-        self._mask_engine_combo.currentIndexChanged.connect(self._on_mask_engine_changed)
+        self._mask_engine_combo.picked.connect(self._on_mask_engine_changed)
         engine_col = QVBoxLayout()
         engine_col.addWidget(QLabel("Engine:"))
         engine_col.addWidget(self._mask_engine_combo)
@@ -909,23 +863,9 @@ class InspectorPanel(QWidget):
             self._small_objects_combo.setCurrentIndex(max(so, 0))
             self._small_objects_combo.blockSignals(False)
 
-            rm_index = 0
-            want_pair = (shot.default_engine, shot.refiner_model)
-            for i in range(self._default_engine_combo.count()):
-                if tuple(self._default_engine_combo.itemData(i)) == want_pair:
-                    rm_index = i
-                    break
-            self._default_engine_combo.blockSignals(True)
-            self._default_engine_combo.setCurrentIndex(rm_index)
-            self._default_engine_combo.blockSignals(False)
-            pr_index = 0
-            for i in range(self._preview_refiner_combo.count()):
-                if self._preview_refiner_combo.itemData(i) == shot.preview_refiner:
-                    pr_index = i
-                    break
-            self._preview_refiner_combo.blockSignals(True)
-            self._preview_refiner_combo.setCurrentIndex(pr_index)
-            self._preview_refiner_combo.blockSignals(False)
+            self._default_engine_combo.set_current((shot.default_engine, shot.refiner_model))
+            # The preview follows each object's engine (no separate preview pick).
+            shot.preview_refiner = "auto"
             self._update_preview_refiner_note()
 
             # Click-to-mask object list (Masks tab).
@@ -1099,18 +1039,10 @@ class InspectorPanel(QWidget):
             return
         self._current.small_objects = str(self._small_objects_combo.itemData(idx) or "auto")
 
-    def _on_default_engine_changed(self, idx: int) -> None:
+    def _on_default_engine_changed(self, data: tuple[str, str]) -> None:
         if self._building or self._current is None:
             return
-        data = self._default_engine_combo.itemData(idx) or ("birefnet", "")
-        self._current.default_engine = str(data[0])
-        self._current.refiner_model = str(data[1])
-        self._update_preview_refiner_note()
-
-    def _on_preview_refiner_changed(self, idx: int) -> None:
-        if self._building or self._current is None:
-            return
-        self._current.preview_refiner = str(self._preview_refiner_combo.itemData(idx) or "auto")
+        self._current.default_engine, self._current.refiner_model = str(data[0]), str(data[1])
         self._update_preview_refiner_note()
 
     def _update_preview_refiner_note(self) -> None:
@@ -1120,6 +1052,8 @@ class InspectorPanel(QWidget):
             self._preview_refiner_note.setText("")
             return
         enabled = shot.enabled_models or []
+        # BiRefNet-only option: shown only when BiRefNet is the run engine.
+        self._outline_check.setVisible(shot.default_engine == "birefnet")
         self._default_engine_combo.setEnabled("sam3_matte_on" in enabled)
         self._small_objects_combo.setEnabled("sam3_matte_on" in enabled)
         self._small_objects_label.setEnabled("sam3_matte_on" in enabled)
@@ -1129,12 +1063,10 @@ class InspectorPanel(QWidget):
                 "Matte is OFF (Passes tab) - previews work, but the submit writes no mattes."
             )
             return
-        label = self._default_engine_combo.currentText().split(" - ")[0]
+        label = self._default_engine_combo.short_label()
         pinned = sum(1 for ci in shot.click_instances if ci.refiner)
         extra = f"; {pinned} object(s) pinned to their own engine" if pinned else ""
-        self._preview_refiner_note.setText(
-            f"Run default engine: {label}{extra}  (set per object below)"
-        )
+        self._preview_refiner_note.setText(f"Run engine: {label}{extra}  (set per object below)")
 
     def _on_mask_new(self) -> None:
         if self._current is None:
@@ -1193,51 +1125,23 @@ class InspectorPanel(QWidget):
         self._mask_name_edit.setText(inst.name if inst is not None else "")
         self._mask_name_edit.blockSignals(False)
         want = getattr(inst, "refiner", "") if inst is not None else ""
-        eng_idx = 0
-        for i in range(self._mask_engine_combo.count()):
-            if self._mask_engine_combo.itemData(i) == want:
-                eng_idx = i
-                break
-        self._mask_engine_combo.blockSignals(True)
-        self._mask_engine_combo.setCurrentIndex(eng_idx)
-        self._mask_engine_combo.blockSignals(False)
+        self._mask_engine_combo.set_current((want or "", ""))
         self.active_click_instance_changed.emit(inst)
 
-    def _on_apply_preview_engine(self) -> None:
-        """Pin the current preview engine to the active object."""
-        if self._current is None:
-            return
-        inst = self._active_mask_instance()
-        if inst is None:
-            return
-        pv = str(self._preview_refiner_combo.currentData() or "auto")
-        mapping = {"vitmatte": "vitmatte", "rvm": "rvm", "chromakey": "chromakey"}
-        if pv.startswith("birefnet"):
-            engine = "birefnet"
-        else:
-            engine = mapping.get(pv, "")  # auto / none -> back to default
-        inst.refiner = engine
-        item = self._mask_list.currentItem()
-        if item is not None:
-            item.setText(self._mask_item_text(inst))
-        # Mirror in the Engine dropdown below.
-        for i in range(self._mask_engine_combo.count()):
-            if self._mask_engine_combo.itemData(i) == engine:
-                self._mask_engine_combo.blockSignals(True)
-                self._mask_engine_combo.setCurrentIndex(i)
-                self._mask_engine_combo.blockSignals(False)
-                break
-
-    def _on_mask_engine_changed(self, idx: int) -> None:
+    def _on_mask_engine_changed(self, data: tuple[str, str]) -> None:
         if self._building or self._current is None:
             return
         inst = self._active_mask_instance()
         if inst is None:
             return
-        inst.refiner = str(self._mask_engine_combo.itemData(idx) or "")
+        inst.refiner = str(data[0])
         item = self._mask_list.currentItem()
         if item is not None:
             item.setText(self._mask_item_text(inst))
+        self._update_preview_refiner_note()
+        # Try-and-see in one step: re-preview the object with its new engine.
+        if inst.points or inst.box is not None:
+            self.mask_preview_requested.emit()
 
     def _on_mask_name_edited(self, text: str) -> None:
         """Rename the selected object. The name becomes the mask.<name>

@@ -405,3 +405,53 @@ def test_preview_loader_is_serialized_single_thread() -> None:
     from PySide6.QtCore import QThreadPool
 
     assert loader._pool is not QThreadPool.globalInstance()
+
+
+def test_engine_menu_recommended_first_rest_advanced(qapp: QApplication) -> None:
+    from live_action_aov.gui.engine_menu import RUN_ENGINES, EngineButton
+
+    btn = EngineButton(RUN_ENGINES)
+    top = btn.menu().actions()
+    assert top[0].text().startswith("Auto (recommended)")
+    adv = [a for a in top if a.menu() is not None]
+    assert len(adv) == 1 and adv[0].text() == "Advanced"
+    assert len(top) == 3  # Auto, Green/blue screen, Advanced
+    assert btn.text() == "Auto (recommended)"
+    btn.set_current(("birefnet", "ZhengPeng7/BiRefNet"))
+    assert btn.text() == "BiRefNet General"
+
+
+def test_object_engine_pick_pins_and_repreviews(qapp: QApplication) -> None:
+    """Picking an object's engine is one step: pinned + previewed (no Apply)."""
+    from live_action_aov.gui.inspector import InspectorPanel
+
+    reg = ShotRegistry()
+    panel = InspectorPanel(reg)
+    shot = _shot()
+    reg.add(shot)
+    panel._on_mask_new()
+    inst = shot.click_instances[0]
+    inst.points.append((5.0, 6.0, 1))
+    previews: list[bool] = []
+    panel.mask_preview_requested.connect(lambda: previews.append(True))
+    chroma = next(a for a in panel._mask_engine_combo.menu().actions() if "Chroma" in a.text())
+    chroma.trigger()
+    assert inst.refiner == "chromakey"
+    assert previews == [True]
+    assert "ChromaKey" in panel._mask_list.currentItem().text()
+
+
+def test_run_engine_pick_sets_engine_and_weights(qapp: QApplication) -> None:
+    from live_action_aov.gui.inspector import InspectorPanel
+
+    reg = ShotRegistry()
+    panel = InspectorPanel(reg)
+    shot = _shot()
+    reg.add(shot)
+    adv = next(a for a in panel._default_engine_combo.menu().actions() if a.menu() is not None)
+    general = next(a for a in adv.menu().actions() if "General" in a.text())
+    general.trigger()
+    assert (shot.default_engine, shot.refiner_model) == ("birefnet", "ZhengPeng7/BiRefNet")
+    assert not panel._outline_check.isHidden()  # BiRefNet-only option shows
+    panel._default_engine_combo.menu().actions()[0].trigger()
+    assert shot.default_engine == "vitmatte" and panel._outline_check.isHidden()
