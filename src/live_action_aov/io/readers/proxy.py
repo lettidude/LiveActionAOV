@@ -69,6 +69,11 @@ class ProxyReader(ImageSequenceReader):
     def pixel_aspect(self) -> float:
         return self._inner.pixel_aspect()
 
+    def full_res_reader(self) -> ImageSequenceReader:
+        """The wrapped reader: the original plate, for the few frames where
+        detail matters more than speed (SAM 3 detection on small subjects)."""
+        return self._inner
+
     def read_frame(self, frame: int) -> tuple[np.ndarray, dict[str, Any]]:
         pixels, attrs = self._inner.read_frame(frame)
         if self._scale >= 1.0:

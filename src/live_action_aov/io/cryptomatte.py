@@ -103,6 +103,54 @@ def encode(
     return channels, manifest
 
 
+def encode_crops(
+    instances: list[tuple[str, int, int, np.ndarray]],
+    shape: tuple[int, int],
+    typename: str = CRYPTOMATTE_TYPENAME,
+    levels: int = CRYPTOMATTE_LEVELS,
+) -> dict[str, np.ndarray]:
+    """`encode` for objects given as crops: [(name, y0, x0, coverage crop)].
+
+    Same channels as `encode` (up to the order of exactly tied coverages),
+    but work and memory scale with the objects' boxes, not objects x plate:
+    a crowd of 200 people at 4K stacked full-frame was ~6.6 GB per frame
+    plus a 200-deep per-pixel argsort. Ranks are kept by insertion.
+    """
+    h, w = shape
+    ranks = levels * 2
+    tot = np.zeros((h, w), np.float32)
+    for _n, y0, x0, c in instances:
+        tot[y0 : y0 + c.shape[0], x0 : x0 + c.shape[1]] += np.clip(c, 0.0, 1.0)
+    # Normalize per-pixel coverage so overlaps sum to <=1 (disjoint unaffected).
+    scale = np.where(tot > 1.0, 1.0 / np.maximum(tot, 1e-8), 1.0).astype(np.float32)
+    out_id = np.zeros((ranks, h, w), np.float32)
+    out_cov = np.zeros((ranks, h, w), np.float32)
+    for name, y0, x0, c in instances:
+        y1, x1 = y0 + c.shape[0], x0 + c.shape[1]
+        cov = np.clip(c, 0.0, 1.0).astype(np.float32) * scale[y0:y1, x0:x1]
+        idv = np.full(cov.shape, name_to_id(name)[0], np.float32)
+        rid, rcov = out_id[:, y0:y1, x0:x1], out_cov[:, y0:y1, x0:x1]
+        for r in range(ranks):
+            swap = cov > rcov[r]
+            if not swap.any():
+                continue
+            old_c, old_i = rcov[r].copy(), rid[r].copy()
+            rcov[r] = np.where(swap, cov, old_c)
+            rid[r] = np.where(swap, idv, old_i)
+            cov = np.where(swap, old_c, cov)
+            idv = np.where(swap, old_i, idv)
+    channels: dict[str, np.ndarray] = {}
+    pr, pg, pb = _preview_color(out_id[0])
+    channels[f"{typename}.R"], channels[f"{typename}.G"], channels[f"{typename}.B"] = pr, pg, pb
+    for lvl in range(levels):
+        a, b = 2 * lvl, 2 * lvl + 1
+        channels[f"{typename}{lvl:02d}.R"] = out_id[a]
+        channels[f"{typename}{lvl:02d}.G"] = out_cov[a]
+        channels[f"{typename}{lvl:02d}.B"] = out_id[b]
+        channels[f"{typename}{lvl:02d}.A"] = out_cov[b]
+    return channels
+
+
 def header_metadata(typename: str, manifest: dict[str, str]) -> dict[str, str]:
     """The `cryptomatte/<keyhash>/*` EXR header attributes Nuke needs."""
     kh = keyhash(typename)
@@ -114,4 +162,4 @@ def header_metadata(typename: str, manifest: dict[str, str]) -> dict[str, str]:
     }
 
 
-__all__ = ["encode", "header_metadata", "keyhash", "name_to_id"]
+__all__ = ["encode", "encode_crops", "header_metadata", "keyhash", "name_to_id"]

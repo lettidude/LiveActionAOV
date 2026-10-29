@@ -271,6 +271,8 @@ def _sam3_matte_params(state: ShotState) -> dict[str, Any]:
     interactive click prompts. Both may be present (named clicks alongside
     concept categories). An empty dict means the pass uses its own defaults."""
     params: dict[str, Any] = {}
+    if (state.small_objects or "auto") != "auto":  # "auto" is the pass default
+        params["small_objects"] = state.small_objects
     concepts = _parse_concepts(state.sam3_concepts)
     if concepts:
         params["concepts"] = concepts

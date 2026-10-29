@@ -89,9 +89,11 @@ def test_hero_slots_are_layered_by_track() -> None:
 
 
 def test_close_seams_fills_contact_gap_only() -> None:
-    a = np.zeros((H, W), np.uint8)
+    # Objects 100 px tall: a 4 px gap is a contact line (each side reaches
+    # min(gap_px, 6% of its height)).
+    a = np.zeros((100, W), np.uint8)
     a[:, :28] = 1  # gap cols 28..31 between the two objects
-    b = np.zeros((H, W), np.uint8)
+    b = np.zeros((100, W), np.uint8)
     b[:, 32:] = 1
     c = np.zeros((H, W), np.uint8)  # one object with a narrow notch of its own
     insts = [
@@ -108,6 +110,21 @@ def test_close_seams_fills_contact_gap_only() -> None:
     solo = [_DetectedInstance(track_id=3, label="x", masks={1: c.copy()})]
     _close_seams(solo, gap_px=3)
     assert np.array_equal(solo[0].masks[1], c)
+
+
+def test_close_seams_leaves_ground_between_small_people() -> None:
+    """Two 80 px people 12 px apart (a crowd at 4K): that is sand, not a
+    contact line, even with the 4K default reach of 16 px."""
+    a = np.zeros((200, 200), np.uint8)
+    a[60:140, 50:70] = 1
+    b = np.zeros((200, 200), np.uint8)
+    b[60:140, 82:102] = 1
+    insts = [
+        _DetectedInstance(track_id=1, label="person", masks={1: a.copy()}),
+        _DetectedInstance(track_id=2, label="person", masks={1: b.copy()}),
+    ]
+    _close_seams(insts, gap_px=16)
+    assert np.array_equal(insts[0].masks[1], a) and np.array_equal(insts[1].masks[1], b)
 
 
 def test_rejected_sam_spur_is_not_filled_back() -> None:

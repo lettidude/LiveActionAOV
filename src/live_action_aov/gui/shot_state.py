@@ -122,6 +122,10 @@ class ShotState:
     # just the edge band around SAM's shape. Injected as `outline="refiner"`.
     refiner_outline: bool = False
 
+    # Small subjects (crowds): "off" | "auto" | "max" - SAM 3 also looks at
+    # zoomed tiles of the frame. Injected as the sam3_matte `small_objects`.
+    small_objects: str = "auto"
+
     # Which soft-edge refiner weights to use, per shot — drives BOTH the
     # Masks-tab preview and the submit. Empty = the pass default (portrait).
     # HF model id string (e.g. "ZhengPeng7/BiRefNet-matting").

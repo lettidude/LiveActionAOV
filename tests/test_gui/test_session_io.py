@@ -49,6 +49,7 @@ def _full_shot(folder: Path) -> ShotState:
         sam3_concepts="person, red car",
         refine_all_masks=True,
         refiner_outline=True,
+        small_objects="max",
         refiner_model="ZhengPeng7/BiRefNet-matting",
         default_engine="rvm",
         preview_refiner="vitmatte",
@@ -97,6 +98,7 @@ def test_shot_dict_roundtrip_preserves_everything(tmp_path: Path) -> None:
     assert restored.sam3_concepts == "person, red car"
     assert restored.refine_all_masks is True
     assert restored.refiner_outline is True
+    assert restored.small_objects == "max"
     assert restored.refiner_model == "ZhengPeng7/BiRefNet-matting"
     assert restored.default_engine == "rvm"
     assert restored.preview_refiner == "vitmatte"

@@ -61,6 +61,15 @@ from live_action_aov.core.pass_base import (
 )
 from live_action_aov.core.runtime_env import load_local_first
 from live_action_aov.io.channels import CH_Z_RAW, mask_channel
+from live_action_aov.passes.matte.boxmask import (
+    BoxMask,
+    LazyStack,
+    MaskDict,
+    boxes_touch,
+    inter_area,
+    paint_max,
+    union_box,
+)
 from live_action_aov.passes.matte.rank import (
     HeroOverride,
     Instance,
@@ -177,7 +186,14 @@ class _DetectedInstance:
 
     track_id: int
     label: str
-    masks: dict[int, np.ndarray]  # frame_idx -> (H, W) float32 in [0, 1]
+    # frame_idx -> (H, W) 0/1 mask, stored as its bounding-box crop
+    # (BoxMask): a crowd of tiny people at 4K would otherwise hold ~8 MB per
+    # person per frame. Plain arrays assigned in are compressed.
+    masks: dict[int, Any]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.masks, MaskDict):
+            self.masks = MaskDict(self.masks)
 
 
 class SAM3MattePass(UtilityPass):
@@ -208,6 +224,35 @@ class SAM3MattePass(UtilityPass):
         "concepts": ["person", "vehicle", "tree", "building", "sky", "water", "animal"],
         "confidence_threshold": 0.4,
         "min_area_fraction": 0.005,  # drop instances smaller than 0.5% of plate
+        # Small subjects (a crowd on a beach). SAM 3 sees ~1008 px, so a 4K
+        # plate reaches it 4x smaller and people under ~100 px vanish. "auto"
+        # ALSO runs the detector on 2x2 overlapping tiles of plates 1800 px
+        # and up, "max" on 3x3 (each tile reaches the model zoomed in); "off"
+        # = full frame only. Tiles on, the size floor is `min_object_px` (box
+        # height in plate px) instead of `min_area_fraction`, which dropped
+        # anyone shorter than ~1/5 of the frame (ALEXA 65 beach plate: 0 of
+        # ~180 people; 3x3 tiles find ~90% of those 12-96 px tall).
+        "small_objects": "auto",
+        "tile_overlap": 0.2,
+        "min_object_px": 10,
+        # Re-detection budget when tiles are on (a crowd keeps arriving).
+        "small_redetect_tracks": 64,
+        # Objects post-processed together in a joint tracker session (bounds
+        # GPU memory with crowds).
+        "tracker_chunk": 24,
+        # At most this many objects per tracker session: the tracker attends
+        # over every object of a session at once, so VRAM grows with the
+        # count (126 people, 100 frames at a 1K proxy: 17.4 GB in one
+        # session). Bigger groups are split by position (neighbours stay
+        # together and still compete for pixels).
+        "tracker_max_objects": 32,
+        # Sessions with more objects than this keep the tracker's memory bank
+        # in host RAM (same speed; 126 people at a 1K proxy: 13 GB VRAM peak
+        # instead of 30).
+        "tracker_state_cpu_above": 8,
+        # Detection masks are upsampled at most to this long edge, then
+        # scaled per box (VRAM: a 4K frame's candidates at once took ~9 GB).
+        "detect_post_px": 2048,
         "sample_frame": "middle",  # "first" | "middle" | "last" | int
         # Re-run the detector every N frames and start a track for anything
         # not already covered (objects entering after the seed frame, or lost
@@ -218,6 +263,10 @@ class SAM3MattePass(UtilityPass):
         # A new detection overlapping a same-label track by at least this
         # much is a lost PART of it (re-attached), not a new object.
         "redetect_merge_coverage": 0.1,
+        # ...but only a PIECE: at most this fraction of the track's own area.
+        # A whole new person standing next to another (a crowd) is not a
+        # lost arm of them (beach plate: dozens of people merged in pairs).
+        "redetect_merge_max_ratio": 0.6,
         # Track all objects that share a seed frame in ONE tracker session
         # (video encoded once, not once per object) and give each pixel to
         # ONE object: the per-object sessions let masks overlap freely
@@ -385,12 +434,155 @@ class SAM3MattePass(UtilityPass):
     # Detection + tracking — split so tests can override either.
     # ------------------------------------------------------------------
 
+    def _tile_grid(self, h: int, w: int) -> int:
+        """Detector tiles per side for this frame size (1 = full frame only)."""
+        mode = str(self.params.get("small_objects", "auto")).lower()
+        if mode == "max":
+            return 3
+        if mode == "auto":
+            # Tiles reach the model zoomed in only when the frame is bigger
+            # than its ~1008 px input.
+            return 2 if max(h, w) >= 1200 else 1
+        return 1
+
+    def _detect_frame(
+        self, frames: np.ndarray, k: int, concepts: list[str]
+    ) -> list[tuple[int, str, Any]]:
+        """Detect on local frame `k`. In proxy mode the detector reads the
+        ORIGINAL plate (same colour transform) and the masks are scaled to
+        the proxy: SAM 3's tracker works at ~1008 px either way, but a 1K
+        proxy hides people the 4K plate shows (beach plate, 24-48 px tall:
+        6/31 found on the proxy, 31/31 on the plate)."""
+        h, w = int(frames.shape[1]), int(frames.shape[2])
+        reader = getattr(self, "_reader", None)
+        full = getattr(reader, "read_frame_full_res", None)
+        if full is not None and str(self.params.get("small_objects", "auto")).lower() != "off":
+            img = np.asarray(full(self._first + k)[0], dtype=np.float32)
+            if img.shape[:2] != (h, w):
+                self._det_hw = (int(img.shape[0]), int(img.shape[1]))
+                return [
+                    (t, lb, BoxMask.from_dense(m).resized((h, w)))
+                    for t, lb, m in self._detect_seed(img, concepts)
+                ]
+        return [
+            (t, lb, BoxMask.from_dense(m)) for t, lb, m in self._detect_seed(frames[k], concepts)
+        ]
+
+    def _size_ok(self, m: BoxMask, h: int, w: int) -> bool:
+        """The size floor: box height with tiles on, area fraction without.
+
+        Decided by the frames DETECTION ran on (the original plate in proxy
+        mode), with `min_object_px` scaled to this (h, w): the 1K-proxy
+        beach tracked 131 people and then dropped every one of them on the
+        area floor, because the proxy itself is too small for tiles."""
+        dh, dw = getattr(self, "_det_hw", None) or (h, w)
+        if self._tile_grid(dh, dw) > 1:
+            px = max(2.0, float(self.params.get("min_object_px", 10)) * h / float(dh))
+            return m.height >= px and m.sum() >= max(1, int(px * px) // 4)
+        return m.sum() >= float(self.params["min_area_fraction"]) * h * w
+
+    def _full_hw(self) -> tuple[int, int]:
+        """Size of the original plate (the proxy's source), if known."""
+        reader = getattr(self, "_reader", None)
+        full = getattr(getattr(reader, "_base", None), "full_res_reader", None)
+        if full is None:
+            return self._plate_shape
+        w, h = full().resolution()
+        return int(h), int(w)
+
+    def _zoom_on_plate(
+        self,
+        frames: np.ndarray,
+        k: int,
+        pts: list[list[float]],
+        lbls: list[int],
+        box: list[float] | None,
+    ) -> BoxMask | None:
+        """`_zoom_click_seed` on the original plate in proxy mode (clicks and
+        mask scaled), on the frames themselves otherwise."""
+        h, w = int(frames.shape[1]), int(frames.shape[2])
+        full = getattr(getattr(self, "_reader", None), "read_frame_full_res", None)
+        fh, fw = self._full_hw()
+        if full is None or (fh, fw) == (h, w):
+            return self._zoom_click_seed(frames[k], pts, lbls, box)
+        sx, sy = fw / w, fh / h
+        img = np.asarray(full(self._first + k)[0], dtype=np.float32)
+        z = self._zoom_click_seed(
+            img,
+            [[p[0] * sx, p[1] * sy] for p in pts],
+            lbls,
+            None if box is None else [box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy],
+        )
+        return None if z is None else z.resized((h, w))
+
+    def _zoom_click_seed(
+        self,
+        frame: np.ndarray,
+        points: list[list[float]],
+        labels: list[int],
+        box: list[float] | None,
+    ) -> BoxMask | None:
+        """Segment a clicked object inside a zoomed window around the click.
+
+        None when there is nothing to gain (a big object) or the object runs
+        out of the window: the click then seeds the tracker as usual."""
+        H, W = int(frame.shape[0]), int(frame.shape[1])
+        win = _click_window(points, labels, box, H, W)
+        if win is None:
+            return None
+        import torch
+        from PIL import Image
+
+        y0, x0, y1, x1 = win
+        h, w = y1 - y0, x1 - x0
+        self._load_model()
+        processor, model = self._trk_processor, self._trk_model
+        pil = Image.fromarray(
+            (np.clip(frame[y0:y1, x0:x1], 0.0, 1.0) * 255.0).astype(np.uint8), "RGB"
+        )
+        session = processor.init_video_session(
+            video=[pil], inference_device=self._device, dtype=self._trk_dtype
+        )
+        kw: dict[str, Any] = {}
+        if points:
+            kw["input_points"] = [[[[p[0] - x0, p[1] - y0] for p in points]]]
+            kw["input_labels"] = [[labels or [1] * len(points)]]
+        if box is not None:
+            kw["input_boxes"] = [[[box[0] - x0, box[1] - y0, box[2] - x0, box[3] - y0]]]
+        processor.add_inputs_to_inference_session(
+            session, frame_idx=0, obj_ids=1, original_size=(h, w), **kw
+        )
+        m = None
+        with torch.no_grad():
+            for step in model.propagate_in_video_iterator(session, start_frame_idx=0):
+                pm = step.pred_masks
+                post = processor.post_process_masks(
+                    pm.unsqueeze(0) if pm.ndim == 4 else pm,
+                    original_sizes=[(h, w)],
+                    binarize=False,
+                )
+                m = (post[0].reshape(-1, h, w)[0].float() > 0.0).cpu().numpy()
+                break
+        if m is None or not m.any():
+            return None
+        # Touching a window side that is not the frame edge: the object is
+        # bigger than the window - let the full-frame click handle it.
+        if (
+            (y0 > 0 and m[0].any())
+            or (y1 < H and m[-1].any())
+            or (x0 > 0 and m[:, 0].any())
+            or (x1 < W and m[:, -1].any())
+        ):
+            return None
+        return BoxMask.from_crop((H, W), y0, x0, m.astype(np.uint8))
+
     def _detect_seed(
         self,
         seed_frame: np.ndarray,
         concepts: list[str],
-    ) -> list[tuple[int, str, np.ndarray]]:
-        """Run SAM 3 on one frame, return a list of (track_id, label, mask).
+    ) -> list[tuple[int, str, Any]]:
+        """Run SAM 3 on one frame (and its tiles, see `small_objects`),
+        return a list of (track_id, label, BoxMask).
 
         Single-image, open-vocabulary instance segmentation: for each
         concept in `concepts`, run one forward pass and collect every
@@ -412,50 +604,93 @@ class SAM3MattePass(UtilityPass):
         device = self._device
 
         H, W = int(seed_frame.shape[0]), int(seed_frame.shape[1])
-        # Processor expects PIL RGB uint8 (or a torch/numpy tensor the
-        # image processor can rescale). PIL is the least-surprising path.
-        arr_u8 = (np.clip(seed_frame, 0.0, 1.0) * 255.0).astype(np.uint8)
-        pil = Image.fromarray(arr_u8, "RGB")
-
         threshold = float(self.params.get("confidence_threshold", 0.4))
         mask_threshold = 0.5
-        area_floor = float(self.params["min_area_fraction"]) * H * W
 
-        seeds: list[tuple[int, str, np.ndarray]] = []
-        next_track_id = 1
-        for concept in concepts:
+        # Windows: the full frame, plus overlapping tiles for small subjects.
+        g = self._tile_grid(H, W)
+        windows = [(0, 0, H, W)]
+        if g > 1:
+            ov = float(self.params.get("tile_overlap", 0.2))
+            th, tw = H / (g - (g - 1) * ov), W / (g - (g - 1) * ov)
+            for iy in range(g):
+                for ix in range(g):
+                    y0, x0 = int(iy * th * (1 - ov)), int(ix * tw * (1 - ov))
+                    windows.append((y0, x0, min(H, int(y0 + th)), min(W, int(x0 + tw))))
+
+        def _run(concept: str, y0: int, x0: int, y1: int, x1: int) -> list[tuple[float, Any]]:
+            # Processor expects PIL RGB uint8 (or a torch/numpy tensor the
+            # image processor can rescale). PIL is the least-surprising path.
+            crop = seed_frame[y0:y1, x0:x1]
+            pil = Image.fromarray((np.clip(crop, 0.0, 1.0) * 255.0).astype(np.uint8), "RGB")
             inputs = processor(images=pil, text=concept, return_tensors="pt").to(device)
             with torch.no_grad():
                 outputs = model(**inputs)
             # target_sizes is (H, W) not (W, H) — the post-processor
             # asserts this ordering when upsampling the mask logits.
+            # Capped at `detect_post_px`: SAM's masks come from ~288 px
+            # logits, and upsampling every candidate of a 4K frame at once
+            # took ~9 GB of VRAM; each kept mask is scaled up in its box.
+            wh, ww = y1 - y0, x1 - x0
+            cap = int(self.params.get("detect_post_px", 2048))
+            sc = min(1.0, cap / float(max(wh, ww)))
+            ph, pw = max(1, round(wh * sc)), max(1, round(ww * sc))
             results = processor.post_process_instance_segmentation(
                 outputs,
                 threshold=threshold,
                 mask_threshold=mask_threshold,
-                target_sizes=[(H, W)],
+                target_sizes=[(ph, pw)],
             )
             if not results:
-                continue
-            result = results[0]
-            masks = result.get("masks")
-            scores = result.get("scores")
+                return []
+            masks, scores = results[0].get("masks"), results[0].get("scores")
             if masks is None or scores is None:
-                continue
-            n = int(masks.shape[0]) if hasattr(masks, "shape") else 0
-            for i in range(n):
+                return []
+            tile = (y0, x0, y1, x1) != (0, 0, H, W)
+            out: list[tuple[float, Any]] = []
+            for i in range(int(masks.shape[0]) if hasattr(masks, "shape") else 0):
                 m = masks[i]
-                mask_np = (
-                    m.float().cpu().numpy()
-                    if hasattr(m, "float")
-                    else np.asarray(m, dtype=np.float32)
-                ).astype(np.float32)
-                # Belt-and-braces area floor — the ranker will drop them
-                # too, but skipping here saves a tracker session.
-                if float(mask_np.sum()) < area_floor:
+                mask_np = m.float().cpu().numpy() if hasattr(m, "float") else np.asarray(m)
+                local = BoxMask.from_dense(np.asarray(mask_np) > 0.5)
+                if not local.crop.size:
                     continue
-                seeds.append((next_track_id, concept, mask_np))
+                if (ph, pw) != (wh, ww):
+                    local = local.resized((wh, ww))
+                bm = BoxMask((H, W), y0 + local.y0, x0 + local.x0, local.crop)
+                if tile:
+                    # Cut by an INNER tile border: the overlapping neighbour
+                    # tile (or the full frame) has it whole.
+                    by0, bx0, by1, bx1 = bm.box
+                    if (
+                        (by0 <= y0 + 1 and y0 > 0)
+                        or (bx0 <= x0 + 1 and x0 > 0)
+                        or (by1 >= y1 - 1 and y1 < H)
+                        or (bx1 >= x1 - 1 and x1 < W)
+                    ):
+                        continue
+                score = float(scores[i])
+                out.append((score, bm))
+            return out
+
+        seeds: list[tuple[int, str, Any]] = []
+        next_track_id = 1
+        for concept in concepts:
+            full = _run(concept, *windows[0])
+            tiled = [d for win in windows[1:] for d in _run(concept, *win)]
+            for _score, bm in _merge_detections(full, tiled):
+                # Belt-and-braces size floor — the ranker will drop them
+                # too, but skipping here saves a tracker session.
+                if not self._size_ok(bm, H, W):
+                    continue
+                seeds.append((next_track_id, concept, bm))
                 next_track_id += 1
+        if g > 1:
+            _log.info(
+                "SAM3 matte: detection on the full frame + %dx%d tiles: %d object(s).",
+                g,
+                g,
+                len(seeds),
+            )
         return seeds
 
     def _track_instance(
@@ -606,7 +841,11 @@ class SAM3MattePass(UtilityPass):
         return out
 
     def _track_objects(
-        self, frames: np.ndarray, objs: list[dict[str, Any]], first: int, area_floor: float
+        self,
+        frames: np.ndarray,
+        objs: list[dict[str, Any]],
+        first: int,
+        area_floor: float | None = None,
     ) -> None:
         """Track `objs` (grouped by seed frame) and append the survivors to
         `self._instances`. Subclasses overriding `_track_instance` (test
@@ -625,7 +864,7 @@ class SAM3MattePass(UtilityPass):
             groups.setdefault(int(o["seed_local"]), []).append(o)
         for seed_l, group in groups.items():
             if legacy:
-                stacks: dict[int, np.ndarray] = {}
+                stacks: dict[int, Any] = {}
                 for o in group:
                     if o.get("mask") is not None:
                         stacks[o["obj_id"]] = self._track_instance(frames, seed_l, o["mask"])
@@ -639,32 +878,41 @@ class SAM3MattePass(UtilityPass):
                             box=o.get("box"),
                         )
             else:
-                stacks = self._track_group(frames, group)
+                stacks = {}
+                for part in _session_chunks(group, int(self.params.get("tracker_max_objects", 32))):
+                    stacks.update(self._track_group(frames, part))
             for o in group:
                 stack = stacks.get(o["obj_id"])
                 if stack is None:
                     continue
-                if stack.ndim != 3 or stack.shape[1:] != (plate_h, plate_w):
+                if isinstance(stack, np.ndarray):
+                    ok = stack.ndim == 3 and stack.shape[1:] == (plate_h, plate_w)
+                    shape = stack.shape
+                else:  # list of BoxMasks (joint session)
+                    ok = len(stack) == n_frames and all(
+                        m.shape == (plate_h, plate_w) for m in stack
+                    )
+                    shape = (len(stack), *(stack[0].shape if len(stack) else ()))
+                if not ok:
                     raise ValueError(
-                        f"Track stack for {o['label']!r} ({o['obj_id']}) has shape {stack.shape}, "
+                        f"Track stack for {o['label']!r} ({o['obj_id']}) has shape {shape}, "
                         f"expected ({n_frames}, {plate_h}, {plate_w})"
                     )
-                # uint8 (0/1), not float32: the whole-clip stack of every
-                # instance is held at once, so dtype scales peak host RAM.
-                masks = {
-                    first + k: (stack[k] > 0.5).astype(np.uint8) for k in range(stack.shape[0])
-                }
-                if all(m.sum() < area_floor for m in masks.values()):
+                # Stored as box crops (MaskDict): the whole-clip masks of
+                # every instance are held at once, so this bounds host RAM.
+                masks = MaskDict((first + k, stack[k]) for k in range(len(stack)))
+                if area_floor is None:
+                    if not any(self._size_ok(m, plate_h, plate_w) for m in masks.values()):
+                        continue
+                elif all(m.sum() < area_floor for m in masks.values()):
                     continue
                 self._instances.append(_DetectedInstance(int(o["obj_id"]), str(o["label"]), masks))
                 self._priority[int(o["obj_id"])] = int(o.get("priority", 0))
 
-    def _track_group(
-        self, frames: np.ndarray, group: list[dict[str, Any]]
-    ) -> dict[int, np.ndarray]:
+    def _track_group(self, frames: np.ndarray, group: list[dict[str, Any]]) -> dict[int, list[Any]]:
         """Track every object of `group` (same seed frame) in ONE tracker
         session and give each pixel to one object (highest mask logit; user
-        clicks get `click_priority_bias`). Returns obj_id -> (N, H, W) uint8."""
+        clicks get `click_priority_bias`). Returns obj_id -> N BoxMasks."""
         import torch
         from PIL import Image
 
@@ -677,8 +925,15 @@ class SAM3MattePass(UtilityPass):
             Image.fromarray((np.clip(frames[i], 0.0, 1.0) * 255.0).astype(np.uint8), "RGB")
             for i in range(N)
         ]
+        chunk = max(1, int(self.params.get("tracker_chunk", 24)))
         session = processor.init_video_session(
-            video=frame_pils, inference_device=self._device, dtype=self._trk_dtype
+            video=frame_pils,
+            inference_device=self._device,
+            # A crowd's per-object memory bank lives in host RAM.
+            inference_state_device=(
+                "cpu" if len(group) > int(self.params.get("tracker_state_cpu_above", 8)) else None
+            ),
+            dtype=self._trk_dtype,
         )
         mask_objs = [o for o in group if o.get("mask") is not None]
         if mask_objs:
@@ -686,7 +941,7 @@ class SAM3MattePass(UtilityPass):
                 session,
                 frame_idx=seed,
                 obj_ids=[int(o["obj_id"]) for o in mask_objs],
-                input_masks=[(o["mask"] > 0.5).astype(np.uint8) for o in mask_objs],
+                input_masks=[(np.asarray(o["mask"]) > 0.5).astype(np.uint8) for o in mask_objs],
                 original_size=(H, W),
             )
         for o in group:
@@ -706,7 +961,8 @@ class SAM3MattePass(UtilityPass):
         # on the seed frame and the others would track from nothing.
         session.obj_with_new_inputs = [int(o["obj_id"]) for o in group]
 
-        out = {int(o["obj_id"]): np.zeros((N, H, W), dtype=np.uint8) for o in group}
+        empty = BoxMask((H, W))
+        out: dict[int, list[Any]] = {int(o["obj_id"]): [empty] * N for o in group}
         bias_of = {
             int(o["obj_id"]): float(self.params.get("click_priority_bias", 4.0))
             if o.get("priority", 0)
@@ -719,6 +975,29 @@ class SAM3MattePass(UtilityPass):
         parent = _seed_parents(mask_objs, contain, is_part) if contain > 0 else {}
         self._parent.update(parent)
 
+        def _up(pm: Any, sl: slice, n: int) -> Any:
+            """Logits of objects `sl` upsampled to the plate: (n, H, W)."""
+            post = processor.post_process_masks(
+                pm[sl].unsqueeze(0) if pm.ndim == 4 else pm[sl],
+                original_sizes=[(H, W)],
+                binarize=False,
+            )
+            lg = post[0] if post else torch.zeros((n, H, W))
+            if not hasattr(lg, "reshape"):
+                lg = torch.as_tensor(np.asarray(lg))
+            return lg.reshape(n, H, W).float()
+
+        def _store(fi: int, oid: int, pres: Any) -> None:
+            """One object's (H, W) bool tensor -> its BoxMask, cropped on device."""
+            rows = torch.nonzero(pres.any(dim=1)).flatten()
+            if rows.numel() == 0:
+                return
+            cols = torch.nonzero(pres.any(dim=0)).flatten()
+            y0, y1 = int(rows[0]), int(rows[-1]) + 1
+            x0, x1 = int(cols[0]), int(cols[-1]) + 1
+            crop = pres[y0:y1, x0:x1].to(torch.uint8).cpu().numpy()
+            out[oid][fi] = BoxMask((H, W), y0, x0, crop)
+
         def _consume(step_iter: Any) -> None:
             for step in step_iter:
                 fi = getattr(step, "frame_idx", None)
@@ -728,17 +1007,40 @@ class SAM3MattePass(UtilityPass):
                 ids = list(getattr(step, "object_ids", None) or [])
                 if fi is None or pm is None or not ids:
                     continue
-                post = processor.post_process_masks(
-                    pm.unsqueeze(0) if pm.ndim == 4 else pm,
-                    original_sizes=[(H, W)],
-                    binarize=False,
-                )
-                if not post:
+                n_obj = len(ids)
+                if n_obj > chunk and not parent:
+                    # Crowd: never hold every object's plate-size logits at
+                    # once. Pass 1 finds each pixel's winner chunk by chunk,
+                    # pass 2 re-upsamples and keeps winners only.
+                    bias_all = torch.tensor([bias_of.get(int(i), 0.0) for i in ids])
+                    win = None
+                    if exclusive:
+                        best = None
+                        for c0 in range(0, n_obj, chunk):
+                            c1 = min(n_obj, c0 + chunk)
+                            lg = _up(pm, slice(c0, c1), c1 - c0)
+                            lg += bias_all[c0:c1].to(lg.device)[:, None, None]
+                            v, k = lg.max(dim=0)
+                            if best is None:
+                                best, win = v, k
+                            else:
+                                assert win is not None
+                                upd = v > best
+                                best = torch.where(upd, v, best)
+                                win = torch.where(upd, k + c0, win)
+                            del lg, v, k
+                    for c0 in range(0, n_obj, chunk):
+                        c1 = min(n_obj, c0 + chunk)
+                        lg = _up(pm, slice(c0, c1), c1 - c0)
+                        for j in range(c1 - c0):
+                            pres = lg[j] > 0.0
+                            if win is not None:
+                                pres &= win == (c0 + j)
+                            if int(ids[c0 + j]) in out:
+                                _store(int(fi), int(ids[c0 + j]), pres)
+                        del lg
                     continue
-                logits = post[0]
-                if not hasattr(logits, "reshape"):
-                    logits = torch.as_tensor(np.asarray(logits))
-                logits = logits.reshape(len(ids), H, W).float()
+                logits = _up(pm, slice(0, n_obj), n_obj)
                 present = logits > 0.0
                 if exclusive and len(ids) > 1:
                     bias = torch.tensor(
@@ -770,10 +1072,9 @@ class SAM3MattePass(UtilityPass):
                             wk = torch.argmax(eff[cs], dim=0)
                             for j, c in enumerate(cs):
                                 present[c] = (logits[c] > 0.0) & (wk == j) & present[p]
-                pres = present.cpu().numpy()
                 for k, oid in enumerate(ids):
                     if int(oid) in out:
-                        out[int(oid)][int(fi)] = pres[k]
+                        _store(int(fi), int(oid), present[k])
 
         _consume(model.propagate_in_video_iterator(session, start_frame_idx=seed))
         _consume(model.propagate_in_video_iterator(session, start_frame_idx=seed, reverse=True))
@@ -786,17 +1087,23 @@ class SAM3MattePass(UtilityPass):
         stride: int,
         seed_local: int,
         first: int,
-        area_floor: float,
+        area_floor: float | None = None,
     ) -> None:
         """Run the detector every `stride` frames; anything mostly NOT
         covered by an existing track becomes a new track seeded there."""
         n = int(frames.shape[0])
-        budget = int(self.params.get("max_redetect_tracks", 8))
+        H, W = int(frames.shape[1]), int(frames.shape[2])
+        tiles_on = self._tile_grid(H, W) > 1
+        budget = int(
+            self.params.get("small_redetect_tracks", 64)
+            if tiles_on
+            else self.params.get("max_redetect_tracks", 8)
+        )
         thr = float(self.params.get("redetect_new_coverage", 0.5))
         next_id = 2001  # own id block: concepts 1.., clicks 1001..
         import cv2
 
-        r = max(1, round(0.015 * max(frames.shape[1], frames.shape[2])))
+        r = max(1, round(0.015 * max(H, W)))
         touch_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
         for k in range(0, n, max(1, stride)):
             if budget <= 0:
@@ -804,18 +1111,19 @@ class SAM3MattePass(UtilityPass):
             if k == seed_local:
                 continue
             f = first + k
-            covered = np.zeros(frames.shape[1:3], dtype=bool)
+            covered = np.zeros((H, W), dtype=np.uint8)
             for inst in self._instances:
                 m = inst.masks.get(f)
                 if m is not None:
-                    covered |= m > 0
+                    paint_max(covered, BoxMask.from_dense(m))
             new: list[dict[str, Any]] = []
-            for _tid, label, m in self._detect_seed(frames[k], concepts):
-                mb = m > 0.5
+            for _tid, label, m in self._detect_frame(frames, k, concepts):
+                mb = BoxMask.from_dense(m)
                 area = float(mb.sum())
-                if area < area_floor:
+                if area <= 0 or (area_floor is not None and area < area_floor):
                     continue
-                if float((mb & covered).sum()) / area >= thr:
+                by0, bx0, by1, bx1 = mb.box
+                if float((mb.crop & covered[by0:by1, bx0:bx1]).sum()) / area >= thr:
                     continue
                 # Partly covered by a track of the SAME label = a piece the
                 # tracker lost (PF0048: the arm holding the rifle dropped out
@@ -825,12 +1133,19 @@ class SAM3MattePass(UtilityPass):
                 # long edge: a limb detected alone is adjacent, not inside.
                 merge_into = None
                 best = float(self.params.get("redetect_merge_coverage", 0.1))
+                max_ratio = float(self.params.get("redetect_merge_max_ratio", 0.6))
                 for inst in self._instances:
                     im = inst.masks.get(f)
                     if inst.label != label or im is None or not im.any():
                         continue
-                    grown = cv2.dilate(im.astype(np.uint8), touch_kernel) > 0
-                    cov = float((mb & grown).sum()) / area
+                    im = BoxMask.from_dense(im)
+                    if area > max_ratio * im.sum():
+                        continue
+                    if not boxes_touch(im, mb, margin=r + 1):
+                        continue
+                    wy0, wx0, wy1, wx1 = union_box([im, mb], r + 1, (H, W)) or (0, 0, H, W)
+                    grown = cv2.dilate(im.window(wy0, wx0, wy1, wx1), touch_kernel) > 0
+                    cov = float((mb.window(wy0, wx0, wy1, wx1).astype(bool) & grown).sum()) / area
                     if cov >= best:
                         best, merge_into = cov, inst.track_id
                 new.append(
@@ -844,7 +1159,7 @@ class SAM3MattePass(UtilityPass):
                     }
                 )
                 next_id += 1
-                covered |= mb  # one new track per thing on this frame
+                paint_max(covered, mb)  # one new track per thing on this frame
                 if len(new) >= budget:
                     break
             if not new:
@@ -864,7 +1179,7 @@ class SAM3MattePass(UtilityPass):
                     continue
                 for fr, mm in got.masks.items():
                     hm = host.masks.get(fr)
-                    host.masks[fr] = mm if hm is None else np.maximum(hm, mm)
+                    host.masks[fr] = mm if hm is None else _box_or(hm, mm)
                 self._instances.remove(got)
                 self._priority.pop(got.track_id, None)
                 extended.append(f"{o['label']} (track {host.track_id})")
@@ -934,21 +1249,22 @@ class SAM3MattePass(UtilityPass):
                 m = inst.masks.get(f)
                 if m is None or not m.any():
                     continue
-                core = cv2.erode((m > 0).astype(np.uint8), k3)
-                sel = core > 0 if core.any() else m > 0
-                vals.setdefault(inst.track_id, []).append(float(np.median(disp[sel])))
+                bm = BoxMask.from_dense(m)
+                y0, x0, y1, x1 = bm.box
+                core = cv2.erode(np.pad(bm.crop, 3), k3)[3:-3, 3:-3]
+                sel = core > 0 if core.any() else bm.crop > 0
+                vals.setdefault(inst.track_id, []).append(float(np.median(disp[y0:y1, x0:x1][sel])))
         del depth
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         near = {t: float(np.mean(v)) for t, v in vals.items()}
-        _log.info(
-            "SAM3 matte: depth order (near -> far): %s",
-            ", ".join(
-                f"{i.label}#{i.track_id}={near[i.track_id]:.2f}"
-                for i in sorted(self._instances, key=lambda i: -near.get(i.track_id, 0.0))
-                if i.track_id in near
-            ),
-        )
+        ranked = [
+            f"{i.label}#{i.track_id}={near[i.track_id]:.2f}"
+            for i in sorted(self._instances, key=lambda i: -near.get(i.track_id, 0.0))
+            if i.track_id in near
+        ]
+        more = f" ... (+{len(ranked) - 12} more)" if len(ranked) > 12 else ""
+        _log.info("SAM3 matte: depth order (near -> far): %s%s", ", ".join(ranked[:12]), more)
         return near
 
     def run_shot(
@@ -963,10 +1279,16 @@ class SAM3MattePass(UtilityPass):
         self._plate_shape = (plate_h, plate_w)
 
         seed_local = _pick_seed_frame(n_frames, self.params["sample_frame"])
-        seed_rgb = frames[seed_local]
 
         concepts = [str(c) for c in self.params["concepts"]]
-        seeds = self._detect_seed(seed_rgb, concepts)
+        # Box crops (test fakes and older overrides return dense masks).
+        self._reader, self._first = reader, first
+        self._plate_shape = (plate_h, plate_w)
+        on_plate = callable(getattr(reader, "read_frame_full_res", None)) and (
+            str(self.params.get("small_objects", "auto")).lower() != "off"
+        )
+        self._det_hw = self._full_hw() if on_plate else (plate_h, plate_w)
+        seeds = self._detect_frame(frames, seed_local, concepts)
 
         # Pre-flight host-RAM check (fail fast, before the minutes-long track).
         # Peak host RAM is dominated by holding every instance's whole-clip mask
@@ -980,8 +1302,17 @@ class SAM3MattePass(UtilityPass):
             if (s.get("points") or s.get("box"))
         )
         n_inst_est = len(seeds) + n_clicks
-        per_inst_bytes = n_frames * plate_h * plate_w  # uint8 = 1 byte/px
-        peak_bytes = 2 * n_inst_est * per_inst_bytes
+        # Masks are kept as box crops (uint8): budget each object at 4x its
+        # seed box (it moves / turns), clicks at a quarter of the plate.
+        plate_px = plate_h * plate_w
+        per_frame_bytes = (
+            sum(
+                min(plate_px, 4 * int(np.prod(np.subtract(m.box[2:], m.box[:2]))))
+                for _t, _l, m in seeds
+            )
+            + n_clicks * plate_px // 4
+        )
+        peak_bytes = n_frames * per_frame_bytes
         if n_inst_est:
             _log.info(
                 "SAM3 matte: %d instance(s), %dx%d, %d frames -> ~%.1f GiB peak host RAM",
@@ -996,7 +1327,8 @@ class SAM3MattePass(UtilityPass):
             raise MemoryError(_mask_ram_message(n_inst_est, n_frames, plate_h, plate_w, peak_bytes))
 
         # --- Everything to track: concept seeds + user clicks -------------
-        area_floor = float(self.params["min_area_fraction"]) * plate_h * plate_w
+        # Size floor: `_size_ok` (box height with tiles on, area fraction off).
+        area_floor = None
         objs: list[dict[str, Any]] = []
         for track_id, label, seed_mask in seeds:
             if seed_mask.shape != (plate_h, plate_w):
@@ -1042,17 +1374,28 @@ class SAM3MattePass(UtilityPass):
             )
             if not pts and box is None:
                 continue
-            objs.append(
-                {
-                    "obj_id": next_click_id,
-                    "label": name,
-                    "seed_local": seed_local_i,
-                    "points": pts or None,
-                    "labels": lbls or None,
-                    "box": box,
-                    "priority": 1,
-                }
-            )
+            obj: dict[str, Any] = {
+                "obj_id": next_click_id,
+                "label": name,
+                "seed_local": seed_local_i,
+                "points": pts or None,
+                "labels": lbls or None,
+                "box": box,
+                "priority": 1,
+            }
+            # A click on a small subject: segment it inside a zoomed window
+            # around the click and seed the tracker with that mask (on the
+            # full frame SAM sees a 40 px person at 4K as 10 px).
+            if self._tile_grid(plate_h, plate_w) > 1 or self._tile_grid(*self._full_hw()) > 1:
+                zoomed = self._zoom_on_plate(frames, seed_local_i, pts, lbls, box)
+                if zoomed is not None:
+                    obj.update(mask=zoomed, points=None, labels=None, box=None)
+                    _log.info(
+                        "SAM3 matte: click '%s' segmented in a zoomed window (%d px tall).",
+                        name,
+                        zoomed.height,
+                    )
+            objs.append(obj)
             next_click_id += 1
 
         self._instances = []
@@ -1132,7 +1475,7 @@ class SAM3MattePass(UtilityPass):
                         continue
                     m = inst.masks.get(f)
                     if m is not None:
-                        np.maximum(union, m, out=union)
+                        paint_max(union, BoxMask.from_dense(m), 1.0)
                 if union.any():
                     any_nonzero = True
                     per_frame[f][mask_channel(concept)] = union
@@ -1179,17 +1522,16 @@ class SAM3MattePass(UtilityPass):
         centralities: list[float] = []
         motion_energies: list[float] = []
         for f, mask in inst.masks.items():
-            s = float(mask.sum())
+            bm = BoxMask.from_dense(mask)
+            s = float(bm.sum())
             if s <= 0.0:
                 continue
             area_fractions.append(s / plate_area)
             # Centroid -> distance from center -> 1 - (d / half_diag) clipped.
-            ys, xs = np.where(mask > 0.5)
-            if ys.size == 0:
-                ys, xs = np.where(mask > 0)
+            ys, xs = np.nonzero(bm.crop)
             if ys.size:
-                cy = float(ys.mean())
-                cx = float(xs.mean())
+                cy = float(ys.mean()) + bm.y0
+                cx = float(xs.mean()) + bm.x0
                 dx = cx - plate_w / 2.0
                 dy = cy - plate_h / 2.0
                 d = math.hypot(dx, dy)
@@ -1197,15 +1539,16 @@ class SAM3MattePass(UtilityPass):
             # Motion energy from forward_flow[f] if available.
             fwd = self._forward_flow.get(f)
             if fwd is not None and fwd.shape[-2:] == (plate_h, plate_w):
-                mag = np.sqrt(fwd[0] ** 2 + fwd[1] ** 2)
-                masked = mag[mask > 0.5]
+                y0, x0, y1, x1 = bm.box
+                mag = np.sqrt(fwd[0, y0:y1, x0:x1] ** 2 + fwd[1, y0:y1, x0:x1] ** 2)
+                masked = mag[bm.crop > 0]
                 if masked.size:
                     motion_energies.append(float(masked.mean()) / max(plate_diag, 1.0))
 
         return Instance(
             track_id=inst.track_id,
             label=inst.label,
-            frames=sorted(f for f, m in inst.masks.items() if float(m.sum()) > 0.0),
+            frames=sorted(f for f, m in inst.masks.items() if m.any()),
             area_fraction=_mean_or_zero(area_fractions),
             centrality=_mean_or_zero(centralities),
             motion_energy=_mean_or_zero(motion_energies),
@@ -1230,11 +1573,10 @@ class SAM3MattePass(UtilityPass):
                 frames_sorted = sorted(inst.masks)
                 if not frames_sorted:
                     continue
-                # Keep the stack uint8 (0/1) — consumers cast per-instance. See
-                # the storage note in run_shot; this is the second of the two
-                # whole-clip materializations, and the one that peaked ~70 GB in
-                # float32.
-                stack = np.stack([inst.masks[f] for f in frames_sorted], axis=0)
+                # A LazyStack over the instance's own box crops: no second
+                # copy. Consumers get dense (T, H, W) uint8 via np.asarray()
+                # one track at a time, or the crops via `stack.box(k)`.
+                stack = LazyStack([inst.masks[f] for f in frames_sorted], (plate_h, plate_w))
                 hard_masks[inst.track_id] = {
                     "label": inst.label,
                     "frames": frames_sorted,
@@ -1296,9 +1638,10 @@ def _clip_iou(a: _DetectedInstance, b: _DetectedInstance, step: int = 4) -> floa
             only = ma if ma is not None else mb
             union += float(only.sum()) if only is not None else 0.0
             continue
-        x, y = ma > 0, mb > 0
-        inter += float((x & y).sum())
-        union += float((x | y).sum())
+        ba, bb = BoxMask.from_dense(ma), BoxMask.from_dense(mb)
+        i = inter_area(ba, bb)
+        inter += i
+        union += ba.sum() + bb.sum() - i
     return inter / union if union > 0 else 0.0
 
 
@@ -1358,35 +1701,59 @@ def _layer_order(
 
 def _close_seams(instances: list[_DetectedInstance], gap_px: int) -> None:
     """Fill the thin unowned line SAM leaves where two objects touch, in
-    place. A free pixel within `gap_px` of at least two DIFFERENT objects
-    goes to the nearest one. Concavities of a single object (the gap
-    between an arm and the body) are left alone - only contact lines."""
+    place. A free pixel within reach of at least two DIFFERENT objects goes
+    to the nearest one. Concavities of a single object (the gap between an
+    arm and the body) are left alone - only contact lines.
+
+    Each object reaches `gap_px` at most, and 6% of its own box height: in
+    a crowd, 16 px of sand between two 80 px people at 4K is real ground,
+    not a contact line (it came out as triangular sand shards)."""
     import cv2
 
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * gap_px + 1, 2 * gap_px + 1))
+    kernels: dict[int, np.ndarray] = {}
+
+    def kernel(g: int) -> np.ndarray:
+        if g not in kernels:
+            kernels[g] = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * g + 1, 2 * g + 1))
+        return kernels[g]
+
     frames = sorted({f for i in instances for f in i.masks})
     for f in frames:
         present = [i for i in instances if f in i.masks and i.masks[f].any()]
         if len(present) < 2:
             continue
-        bins = [(i.masks[f] > 0).astype(np.uint8) for i in present]
-        taken = np.zeros_like(bins[0], dtype=bool)
-        near = np.zeros(bins[0].shape, dtype=np.uint8)
-        for b in bins:
-            taken |= b > 0
-            near += (cv2.dilate(b, k) > 0).astype(np.uint8)
-        gap = (near >= 2) & ~taken
-        if not gap.any():
-            continue
-        dist = np.stack([cv2.distanceTransform(1 - b, cv2.DIST_L2, 3) for b in bins], axis=0)
-        owner = np.argmin(dist, axis=0)
-        ys, xs = np.nonzero(gap)
-        for j, inst in enumerate(present):
-            sel = owner[ys, xs] == j
-            if sel.any():
-                m = (inst.masks[f] > 0).astype(np.uint8)
-                m[ys[sel], xs[sel]] = 1
-                inst.masks[f] = m
+        # Only objects whose boxes come within the gap can share a seam:
+        # work cluster by cluster, inside the cluster's window (a crowd of
+        # 200 people is 200 small windows, not 200 full-frame transforms).
+        boxes = [BoxMask.from_dense(i.masks[f]) for i in present]
+        for cl in _touch_clusters(boxes, 2 * gap_px + 1):
+            if len(cl) < 2:
+                continue
+            shape = boxes[cl[0]].shape
+            wy0, wx0, wy1, wx1 = union_box([boxes[j] for j in cl], gap_px + 1, shape) or (
+                0,
+                0,
+                *shape,
+            )
+            bins = [boxes[j].window(wy0, wx0, wy1, wx1) for j in cl]
+            taken = np.zeros(bins[0].shape, dtype=bool)
+            near = np.zeros(bins[0].shape, dtype=np.uint8)
+            for j, b in zip(cl, bins, strict=True):
+                g = min(gap_px, max(1, round(0.06 * boxes[j].height)))
+                taken |= b > 0
+                near += (cv2.dilate(b, kernel(g)) > 0).astype(np.uint8)
+            gap = (near >= 2) & ~taken
+            if not gap.any():
+                continue
+            dist = np.stack([cv2.distanceTransform(1 - b, cv2.DIST_L2, 3) for b in bins], axis=0)
+            owner = np.argmin(dist, axis=0)
+            ys, xs = np.nonzero(gap)
+            for j, b in zip(cl, bins, strict=True):
+                sel = owner[ys, xs] == cl.index(j)
+                if sel.any():
+                    b = b.copy()
+                    b[ys[sel], xs[sel]] = 1
+                    present[j].masks[f] = BoxMask.from_crop(shape, wy0, wx0, b)
 
 
 def _make_exclusive(
@@ -1405,23 +1772,29 @@ def _make_exclusive(
         present = [i for i in order if f in i.masks and i.masks[f].any()]
         if len(present) < 2:
             continue
+        shape = BoxMask.from_dense(present[0].masks[f]).shape
         if not parent:
-            taken = np.zeros(present[0].masks[f].shape, dtype=bool)
+            taken = np.zeros(shape, dtype=np.uint8)
             for inst in present:
-                m = inst.masks[f] > 0
-                inst.masks[f] = (m & ~taken).astype(np.uint8)
-                taken |= m
+                bm = BoxMask.from_dense(inst.masks[f])
+                y0, x0, y1, x1 = bm.box
+                inst.masks[f] = BoxMask.from_crop(
+                    shape, y0, x0, bm.crop & (1 - taken[y0:y1, x0:x1])
+                )
+                np.maximum(taken[y0:y1, x0:x1], bm.crop, out=taken[y0:y1, x0:x1])
             continue
-        claimed: list[tuple[int, np.ndarray]] = []
+        claimed: list[tuple[int, BoxMask]] = []
         for inst in present:
-            m = inst.masks[f] > 0
-            blocked = np.zeros(m.shape, dtype=bool)
+            bm = BoxMask.from_dense(inst.masks[f])
+            y0, x0, y1, x1 = bm.box
+            blocked = np.zeros(bm.crop.shape, dtype=np.uint8)
             for tid, om in claimed:
                 if parent.get(inst.track_id) == tid or parent.get(tid) == inst.track_id:
                     continue
-                blocked |= om
-            inst.masks[f] = (m & ~blocked).astype(np.uint8)
-            claimed.append((inst.track_id, m))
+                if boxes_touch(om, bm):
+                    blocked |= om.window(y0, x0, y1, x1)
+            inst.masks[f] = BoxMask.from_crop(shape, y0, x0, bm.crop & (1 - blocked))
+            claimed.append((inst.track_id, bm))
 
 
 #: Labels that name a PART of something else. A label is part-like when any
@@ -1544,7 +1917,7 @@ def _seed_parents(
     least `contain` inside a bigger object of another label is its part
     (the smallest such whole). Parts of parts hang on the outermost whole."""
     ms = {
-        int(o["obj_id"]): (np.asarray(o["mask"]) > 0.5, str(o.get("label", "")))
+        int(o["obj_id"]): (BoxMask.from_dense(o["mask"]), str(o.get("label", "")))
         for o in objs
         if o.get("mask") is not None
     }
@@ -1557,7 +1930,7 @@ def _seed_parents(
         for w, (mw, lw) in ms.items():
             if w == p or lw == lp or areas[w] <= areas[p] * 1.1:
                 continue
-            if float((mp & mw).sum()) / areas[p] >= contain and (
+            if float(inter_area(mp, mw)) / areas[p] >= contain and (
                 best is None or areas[w] < areas[best]
             ):
                 best = w
@@ -1602,18 +1975,135 @@ def _clip_parents(
         for w in instances:
             if w.track_id == p.track_id or w.label == p.label or w.track_id in known:
                 continue
+            if not any(
+                f in w.masks
+                and boxes_touch(BoxMask.from_dense(p.masks[f]), BoxMask.from_dense(w.masks[f]))
+                for f in fr
+            ) and not any(pw == w.track_id for pw in known.values()):
+                continue
             fams = {f: family(w, f) for f in fr}
             aw = sum(int(m.sum()) for m in fams.values() if m is not None)
             if aw <= ap * 1.1:
                 continue
-            inter = sum(
-                int(((p.masks[f] > 0) & m).sum()) for f, m in fams.items() if m is not None
-            )
+            inter = sum(int(((p.masks[f] > 0) & m).sum()) for f, m in fams.items() if m is not None)
             if inter / ap >= contain and (best is None or aw < best_area):
                 best, best_area = w.track_id, aw
         if best is not None:
             found[p.track_id] = best
     return _flatten_parents(found)
+
+
+def _click_window(
+    points: list[list[float]], labels: list[int], box: list[float] | None, h: int, w: int
+) -> tuple[int, int, int, int] | None:
+    """Square window (y0, x0, y1, x1) to segment a click in, zoomed in: 3x
+    the click spread (or 1.6x the box), at least 1/8 of the long edge, at
+    most half of it. None for a big object (zooming gains nothing)."""
+    long_edge = max(h, w)
+    if box is not None:
+        cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+        size = 1.6 * max(box[2] - box[0], box[3] - box[1])
+    else:
+        fg = [p for p, lb in zip(points, labels or [1] * len(points), strict=False) if lb == 1]
+        fg = fg or points
+        if not fg:
+            return None
+        xs, ys = [p[0] for p in fg], [p[1] for p in fg]
+        cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+        size = 3.0 * max(max(xs) - min(xs), max(ys) - min(ys))
+    if size > 0.5 * long_edge:
+        return None
+    s = int(max(size, long_edge / 8.0))
+    sh, sw = min(s, h), min(s, w)
+    y0 = int(min(max(cy - sh / 2.0, 0), h - sh))
+    x0 = int(min(max(cx - sw / 2.0, 0), w - sw))
+    return y0, x0, y0 + sh, x0 + sw
+
+
+def _session_chunks(group: list[dict[str, Any]], max_n: int) -> list[list[dict[str, Any]]]:
+    """Split a tracker group into sessions of at most `max_n` objects,
+    ordered left to right by seed position so neighbours share a session.
+    Clicks (no mask) go with the first chunk."""
+    if max_n <= 0 or len(group) <= max_n:
+        return [group]
+
+    def cx(o: dict[str, Any]) -> float:
+        m = o.get("mask")
+        if m is None:
+            return -1.0
+        y0, x0, y1, x1 = BoxMask.from_dense(m).box
+        return (x0 + x1) / 2.0
+
+    ordered = sorted(group, key=cx)
+    return [ordered[i : i + max_n] for i in range(0, len(ordered), max_n)]
+
+
+def _box_or(a: Any, b: Any) -> BoxMask:
+    """Union of two masks without going full-frame."""
+    ba, bb = BoxMask.from_dense(a), BoxMask.from_dense(b)
+    win = union_box([ba, bb], 0, ba.shape)
+    if win is None:
+        return ba
+    y0, x0, y1, x1 = win
+    return BoxMask.from_crop(ba.shape, y0, x0, ba.window(*win) | bb.window(*win))
+
+
+def _touch_clusters(boxes: list[BoxMask], margin: int) -> list[list[int]]:
+    """Groups of masks whose boxes come within `margin` px (union-find)."""
+    root = list(range(len(boxes)))
+
+    def find(i: int) -> int:
+        while root[i] != i:
+            root[i] = root[root[i]]
+            i = root[i]
+        return i
+
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            if boxes_touch(boxes[i], boxes[j], margin):
+                root[find(i)] = find(j)
+    groups: dict[int, list[int]] = {}
+    for i in range(len(boxes)):
+        groups.setdefault(find(i), []).append(i)
+    return list(groups.values())
+
+
+def _merge_detections(
+    full: list[tuple[float, BoxMask]], tiled: list[tuple[float, BoxMask]]
+) -> list[tuple[float, BoxMask]]:
+    """One detection per object from the full frame + its tiles.
+
+    A full-frame mask holding two or more tile detections is a GROUP (SAM 3
+    sometimes returns several distant people as one instance): drop it,
+    keep the individuals. Then greedy by score: a detection overlapping an
+    already kept one (IoU >= 0.5, or 80% of the smaller inside the other)
+    is the same object seen twice. Without tiles: the full frame as is."""
+    if not tiled:
+        return list(full)
+    groups = set()
+    for k, (_s, fm) in enumerate(full):
+        fa = fm.sum()
+        inside = [
+            t for _ts, t in tiled if t.sum() < 0.6 * fa and inter_area(t, fm) >= 0.8 * t.sum()
+        ]
+        if len(inside) >= 2:
+            groups.add(k)
+    cands = [d for k, d in enumerate(full) if k not in groups] + list(tiled)
+    kept: list[tuple[float, BoxMask]] = []
+    for score, m in sorted(cands, key=lambda d: -d[0]):
+        a = m.sum()
+        dup = False
+        for _ks, km in kept:
+            if not boxes_touch(m, km):
+                continue
+            i = inter_area(m, km)
+            ka = km.sum()
+            if i / max(a + ka - i, 1) >= 0.5 or i >= 0.8 * min(a, ka):
+                dup = True
+                break
+        if not dup:
+            kept.append((score, m))
+    return kept
 
 
 def _flatten_parents(parent: dict[int, int]) -> dict[int, int]:

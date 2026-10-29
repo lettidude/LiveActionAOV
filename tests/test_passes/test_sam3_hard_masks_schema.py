@@ -33,6 +33,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from live_action_aov.passes.matte.boxmask import LazyStack
 from live_action_aov.passes.matte.sam3 import SAM3MattePass
 
 # ---------------------------------------------------------------------------
@@ -163,8 +164,10 @@ def test_frames_is_sorted_list_of_plain_ints(_artifacts) -> None:
 def test_stack_is_uint8_3d_aligned_with_frames(_artifacts) -> None:
     inner = next(iter(_artifacts["sam3_hard_masks"].values()))
     for tid, data in inner.items():
-        stack = data["stack"]
-        assert isinstance(stack, np.ndarray), f"Track {tid} stack is {type(stack)}, want np.ndarray"
+        # A LazyStack (box crops, so a crowd fits in RAM) that np.asarray()
+        # turns into the dense (T, H, W) uint8 array, one track at a time.
+        assert isinstance(data["stack"], LazyStack), f"Track {tid} stack is {type(data['stack'])}"
+        stack = np.asarray(data["stack"])
         assert stack.ndim == 3, f"Track {tid} stack.ndim = {stack.ndim}, want 3"
         # T dimension must match len(frames) exactly — a consumer does
         # `stack[i]` → mask at `frames[i]`, so mismatched lengths are fatal.

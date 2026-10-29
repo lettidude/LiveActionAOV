@@ -38,7 +38,8 @@ from live_action_aov.core.pass_base import (
     UtilityPass,
 )
 from live_action_aov.io.channels import CRYPTOMATTE_CHANNELS, CRYPTOMATTE_TYPENAME
-from live_action_aov.io.cryptomatte import encode, header_metadata, name_to_id
+from live_action_aov.io.cryptomatte import encode_crops, header_metadata, name_to_id
+from live_action_aov.passes.matte.boxmask import BoxMask, stack_box
 
 
 class CryptomattePass(UtilityPass):
@@ -121,36 +122,45 @@ class CryptomattePass(UtilityPass):
             if p is not None and int(p) in self._hard_masks:
                 kids.setdefault(int(p), []).append(int(tid))
 
-        def _hard(info: dict[str, Any], f: int) -> np.ndarray | None:
-            frames = list(info.get("frames") or [])
-            if f not in frames:
+        index = {
+            tid: {int(fr): k for k, fr in enumerate(info.get("frames") or [])}
+            for tid, info in self._hard_masks.items()
+        }
+
+        def _hard(tid: int, f: int) -> BoxMask | None:
+            # One frame of one track, as its box crop (a crowd of hundreds
+            # of objects never goes full-frame).
+            k = index[tid].get(f)
+            if k is None:
                 return None
-            return np.asarray(info["stack"][frames.index(f)], dtype=np.float32)
+            bm = stack_box(self._hard_masks[tid]["stack"], k)
+            return bm if bm.crop.size else None
 
         feather = float(self.params.get("feather", 0.0))
+        pad = int(np.ceil(3 * feather)) + 1 if feather > 0 else 0
         zero_channels = {c: np.zeros((h, w), np.float32) for c in CRYPTOMATTE_CHANNELS}
 
         out: dict[int, dict[str, np.ndarray]] = {}
         for f in range(first, last + 1):
-            instances: list[tuple[str, np.ndarray]] = []
-            for tid, info in self._hard_masks.items():
-                # Index first, then cast just this frame — casting the whole
-                # (T,H,W) stack to float32 per frame is O(F) wasted work (and
-                # the stack is uint8 now). One (H,W) slice is all we need.
-                m = _hard(info, f)
-                if m is None:
+            instances: list[tuple[str, int, int, np.ndarray]] = []
+            for tid in self._hard_masks:
+                bm = _hard(tid, f)
+                if bm is None:
                     continue
+                y0, x0, y1, x1 = bm.box
+                y0, x0 = max(0, y0 - pad), max(0, x0 - pad)
+                y1, x1 = min(h, y1 + pad), min(w, x1 + pad)
+                m = bm.window(y0, x0, y1, x1).astype(np.float32)
                 for c in kids.get(int(tid), []):
-                    cm = _hard(self._hard_masks[c], f)
+                    cm = _hard(c, f)
                     if cm is not None:
-                        m = m * (cm <= 0.5)
+                        m = m * (cm.window(y0, x0, y1, x1) == 0)
                 if feather > 0:
                     m = _feather(m, feather)
                 if float(m.sum()) > 0:
-                    instances.append((name_of[tid], m))
+                    instances.append((name_of[tid], y0, x0, m))
             if instances:
-                channels, _ = encode(instances, typename=CRYPTOMATTE_TYPENAME)
-                out[f] = channels
+                out[f] = encode_crops(instances, (h, w), typename=CRYPTOMATTE_TYPENAME)
             else:
                 # No objects this frame — emit the full zero layer so the
                 # channel set is consistent across the clip.

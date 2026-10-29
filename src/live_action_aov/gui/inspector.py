@@ -465,12 +465,31 @@ class InspectorPanel(QWidget):
         )
         self._outline_check.toggled.connect(self._on_outline_toggled)
 
+        # Small subjects: SAM 3 also detects on zoomed tiles of the frame.
+        self._small_objects_combo = QComboBox()
+        self._small_objects_combo.addItem("Auto - zoomed 2x2 tiles on 2K+ plates", "auto")
+        self._small_objects_combo.addItem("Max - zoomed 3x3 tiles (crowds, far people)", "max")
+        self._small_objects_combo.addItem("Off - full frame only", "off")
+        self._small_objects_combo.setToolTip(
+            "SAM 3 sees about 1000 px: on a 4K plate a 40 px person reaches it as 10 px "
+            "and is missed. Auto/Max also run detection on overlapping zoomed tiles "
+            "(the tracker always follows the full frame), and keep objects down to "
+            "~10 px tall. Max finds ~90% of 12-96 px people; costs a few seconds per "
+            "re-detection frame. Small objects keep SAM's edge (anti-aliased)."
+        )
+        self._small_objects_combo.currentIndexChanged.connect(self._on_small_objects_changed)
+        small_row = QHBoxLayout()
+        self._small_objects_label = QLabel("Small objects:")
+        small_row.addWidget(self._small_objects_label)
+        small_row.addWidget(self._small_objects_combo, stretch=1)
+
         refiner_weights_row = QHBoxLayout()
         self._refiner_weights_label = QLabel("Default engine:")
         refiner_weights_row.addWidget(self._refiner_weights_label)
         refiner_weights_row.addWidget(self._default_engine_combo, stretch=1)
         passes_block.addSpacing(8)
         passes_block.addLayout(refiner_weights_row)
+        passes_block.addLayout(small_row)
         passes_block.addWidget(self._refine_all_check)
         passes_block.addWidget(self._outline_check)
 
@@ -950,6 +969,10 @@ class InspectorPanel(QWidget):
             self._outline_check.blockSignals(True)
             self._outline_check.setChecked(bool(shot.refiner_outline))
             self._outline_check.blockSignals(False)
+            self._small_objects_combo.blockSignals(True)
+            so = self._small_objects_combo.findData(shot.small_objects or "auto")
+            self._small_objects_combo.setCurrentIndex(max(so, 0))
+            self._small_objects_combo.blockSignals(False)
 
             rm_index = 0
             want_pair = (shot.default_engine, shot.refiner_model)
@@ -1156,6 +1179,11 @@ class InspectorPanel(QWidget):
             return
         self._current.refiner_outline = bool(checked)
 
+    def _on_small_objects_changed(self, idx: int) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.small_objects = str(self._small_objects_combo.itemData(idx) or "auto")
+
     def _on_default_engine_changed(self, idx: int) -> None:
         if self._building or self._current is None:
             return
@@ -1178,6 +1206,8 @@ class InspectorPanel(QWidget):
             return
         enabled = shot.enabled_models or []
         self._default_engine_combo.setEnabled("sam3_matte_on" in enabled)
+        self._small_objects_combo.setEnabled("sam3_matte_on" in enabled)
+        self._small_objects_label.setEnabled("sam3_matte_on" in enabled)
         self._refiner_weights_label.setEnabled("sam3_matte_on" in enabled)
         if "sam3_matte_on" not in enabled:
             self._preview_refiner_note.setText(
@@ -1432,6 +1462,7 @@ class InspectorPanel(QWidget):
         source_concepts = self._current.sam3_concepts
         src_refine_all = bool(self._current.refine_all_masks)
         src_outline = bool(self._current.refiner_outline)
+        src_small = self._current.small_objects
         src_refiner_model = self._current.refiner_model
         src_default_engine = self._current.default_engine
         count = 0
@@ -1442,6 +1473,7 @@ class InspectorPanel(QWidget):
             shot.sam3_concepts = source_concepts
             shot.refine_all_masks = src_refine_all
             shot.refiner_outline = src_outline
+            shot.small_objects = src_small
             shot.refiner_model = src_refiner_model
             shot.default_engine = src_default_engine
             self._registry.notify_updated(shot)

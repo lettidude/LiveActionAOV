@@ -114,6 +114,12 @@ def test_no_clicks_no_concepts_leaves_defaults() -> None:
     assert sam3.params == {}
 
 
+def test_small_objects_option_reaches_sam3() -> None:
+    state = _shot(enabled_models=["sam3_matte_on"], small_objects="max")
+    sam3 = next(c for c in _build_pass_configs(state) if c.name == "sam3_matte")
+    assert sam3.params["small_objects"] == "max"
+
+
 def test_clicks_without_concepts_disable_default_concepts() -> None:
     """Click objects + empty concepts field -> clicks ONLY: the built-in
     default concepts would duplicate a clicked object under another label

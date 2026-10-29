@@ -7,6 +7,17 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **Hard masks are stored as box crops** (`BoxMask` / `LazyStack`): the
+  `sam3_hard_masks` `stack` is now a lazy (T, H, W) uint8 stack -
+  `np.asarray(stack)` / `stack[k]` still give dense arrays, `stack.box(k)`
+  the crop. 130 people x 100 frames at 4K went from ~160 GB of host RAM to
+  under 1 GB. Exclusivity, seam closing, layering and Cryptomatte now work
+  per object box (Cryptomatte via `encode_crops`), so crowds stay fast.
+- Objects under `refine_min_px` (auto: 8% of plate height, at least 96 px)
+  are not edge-refined in all-masks mode: SAM's mask goes into
+  `mask.<label>` anti-aliased. Hero slots are always refined. (On a 1K
+  proxy, refining 40-90 px people gave soft halos with the sand between
+  them.)
 - **New default matte engine: "Auto - ViTMatte + BiRefNet guide".** SAM 3
   now says only WHERE an object is, not where its edge is. A trimap is built
   per frame: sure-inside deep in SAM's mask (never deeper than half the
@@ -35,6 +46,36 @@ uses [semantic versioning](https://semver.org/).
   of cutting it: a strand over the wall no longer ends on a straight line.
 
 ### Added
+- **Small objects / crowds** (`small_objects`, GUI "Small objects: Auto / Max
+  / Off", default Auto). SAM 3 sees ~1008 px, so a 4K plate reaches it 4x
+  smaller, and the 0.5%-of-frame size floor dropped anyone shorter than ~1/5
+  of the frame: the ALEXA 65 beach plate gave 0 people out of ~180. Now the
+  detector also runs on overlapping zoomed tiles (2x2 on 2K+ plates, 3x3 on
+  Max) at the seed frame and every re-detection; detections are merged
+  (tile-border cuts and SAM's multi-person "group" masks dropped) and the
+  floor becomes a box height (`min_object_px`, 10 px). Measured 3x3 recall:
+  ~90% of people 12-96 px tall vs ~10-40% full-frame. Tracking stays on the
+  full frame (IDs survive crossing tiles); a crowd's tracker memory bank
+  moves to host RAM and masks are post-processed in chunks
+  (`tracker_chunk`). A click on a small subject is segmented in a zoomed
+  window around it. **In proxy mode detection reads the original plate**
+  (same colour transform; masks scaled to the proxy for tracking, which
+  runs at ~1008 px inside SAM 3 anyway), and the size floor follows the
+  resolution detection ran on: a 1K proxy of the 4K beach now delivers the
+  same ~130 people as the full-res run (before: none at all). "Auto" tiles
+  any frame from 1200 px up.
+- **VRAM for crowds on ordinary GPUs.** Big groups are tracked in sessions
+  of at most `tracker_max_objects` (32, split by position so neighbours
+  still compete for pixels), the tracker's memory bank moves to host RAM
+  above 8 objects, and detection masks are upsampled at most to 2048 px
+  (`detect_post_px`). 126 people x 100 frames at a 1K proxy: SAM 3 peak
+  21 GB -> ~8-10 GB, same speed. Every pass now logs its peak VRAM.
+- Crowds: a re-detected person standing next to another is a new track, not
+  a "lost part" of them (`redetect_merge_max_ratio`: only pieces up to 60%
+  of the track's area are re-attached), and seam closing reaches at most 6%
+  of each object's height (16 px of sand between two 80 px people at 4K was
+  filled with triangular shards).
+
 - **Whole + parts roto**: concepts like `person, hair, jacket, trousers` now
   give `mask.person` = the full body and parts that split it among
   themselves and stay inside it. Before, one-owner-per-pixel left

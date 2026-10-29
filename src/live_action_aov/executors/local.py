@@ -236,7 +236,12 @@ class LocalExecutor(Executor):
                     reader, DisplayTransformedReader
                 ):
                     pass_reader = LinearizedReader(reader)
+                _reset_vram_peak()
                 frame_outputs = instance.run_shot(pass_reader, shot.frame_range)
+                peak = _vram_peak_gib()
+                if peak is not None:
+                    # Which pass decides the GPU a job needs (small cards).
+                    _log.info("%s: peak VRAM %.1f GB", node.name, peak)
                 for frame_idx, channels in frame_outputs.items():
                     per_frame_channels.setdefault(frame_idx, {}).update(channels)
 
@@ -524,6 +529,28 @@ class LocalExecutor(Executor):
             shot.status = "failed"
             raise
         return job
+
+
+def _reset_vram_peak() -> None:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
+
+
+def _vram_peak_gib() -> float | None:
+    """Peak VRAM torch reserved since the last reset (None without CUDA)."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return float(torch.cuda.max_memory_reserved()) / 2**30
+    except Exception:
+        pass
+    return None
 
 
 def _free_gpu_memory() -> None:

@@ -55,6 +55,7 @@ from live_action_aov.io.channels import (
     CH_MATTE_R,
     mask_channel,
 )
+from live_action_aov.passes.matte.boxmask import stack_box
 
 # Canonical slot -> channel name mapping. Kept here (not in channels.py) so
 # rank.py remains a pure-Python helper with no dependency on the writer's
@@ -149,6 +150,38 @@ def clean_mask_specks(mask: np.ndarray, min_frac: float = 0.02, min_px: int = 12
     return keep
 
 
+def _median_height(track: dict[str, Any]) -> float:
+    """Median box height (plate px) of a track over the frames it is in."""
+    st = track.get("stack")
+    hs = [stack_box(st, k).height for k in range(len(track.get("frames") or []))]
+    hs = [h for h in hs if h > 0]
+    return float(np.median(hs)) if hs else 0.0
+
+
+def _paint_antialiased(
+    acc: np.ndarray, track: dict[str, Any], frame_to_local: dict[int, int]
+) -> None:
+    """max() a track's hard mask, lightly anti-aliased, into acc (T, H, W)."""
+    import cv2
+
+    st = track.get("stack")
+    for k, fr in enumerate(track.get("frames") or []):
+        li = frame_to_local.get(int(fr))
+        if li is None:
+            continue
+        bm = stack_box(st, k)
+        if not bm.crop.size:
+            continue
+        y0, x0, y1, x1 = bm.box
+        p = 2
+        py0, px0 = max(0, y0 - p), max(0, x0 - p)
+        py1, px1 = min(acc.shape[1], y1 + p), min(acc.shape[2], x1 + p)
+        hard = bm.window(py0, px0, py1, px1).astype(np.float32)
+        # Solid inside, a soft half-pixel outside: an anti-aliased edge.
+        soft = np.maximum(cv2.GaussianBlur(hard, (0, 0), 0.6), hard)
+        np.maximum(acc[li, py0:py1, px0:px1], soft, out=acc[li, py0:py1, px0:px1])
+
+
 def adaptive_band_px(mask: np.ndarray, frac: float, min_px: int, max_px: int) -> int:
     """Resolution-independent edge-band width: a fraction of sqrt(mask
     AREA), clamped. Area (not bbox diagonal) so long-THIN objects (a rifle)
@@ -210,6 +243,15 @@ class RVMRefinerPass(UtilityPass):
         # Off by default — it costs one refine per track, so a 12-object shot
         # is ~3x the hero-only cost. The premium "all-objects soft" delivery.
         "refine_all_masks": False,
+        # Objects smaller than this (median box height, plate px) are not
+        # edge-refined in all-masks mode: a 40 px person in a crowd has no
+        # hair edge to save, and a crowd of 200 refined one by one took far
+        # longer than the rest of the job. Their SAM mask goes into
+        # `mask.<label>` with a light anti-alias. Hero slots are always
+        # refined. "auto" = 8% of the plate height, but never under 96 px
+        # (86 -> 96 px at 1080, 155 at 4K): on a 1K proxy, 40-90 px people
+        # came out as soft halos with the sand between them. 0 = refine all.
+        "refine_min_px": "auto",
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -579,20 +621,31 @@ class RVMRefinerPass(UtilityPass):
                 else None
             )
 
-            def _dense_core(tr: dict[str, Any], erode: bool = True) -> np.ndarray:
-                dense = np.zeros((n_frames, plate_h, plate_w), dtype=np.uint8)
-                st = np.asarray(tr.get("stack"))
+            def _paint_core(dst: np.ndarray, tr: dict[str, Any], erode: bool = True) -> None:
+                """Add a track's (eroded) hard mask into `dst`, box by box."""
+                st = tr.get("stack")
+                pad = neighbor_erode + 1
                 for k_i, fr in enumerate(tr.get("frames") or []):
                     li = frame_to_local.get(int(fr))
                     if li is None:
                         continue
-                    b = (st[k_i] > 0.5).astype(np.uint8)
-                    dense[li] = cv2.erode(b, nk) if (erode and nk is not None) else b
+                    bm = stack_box(st, k_i)
+                    if not bm.crop.size:
+                        continue
+                    c = bm.crop
+                    if erode and nk is not None:
+                        c = cv2.erode(np.pad(c, pad), nk)[pad:-pad, pad:-pad]
+                    y0, x0, y1, x1 = bm.box
+                    dst[li, y0:y1, x0:x1] += c
+
+            def _dense_core(tr: dict[str, Any], erode: bool = True) -> np.ndarray:
+                dense = np.zeros((n_frames, plate_h, plate_w), dtype=np.uint8)
+                _paint_core(dense, tr, erode)
                 return dense
 
             occupancy = np.zeros((n_frames, plate_h, plate_w), dtype=np.uint8)
             for tr in self._hard_masks.values():
-                occupancy += _dense_core(tr)
+                _paint_core(occupancy, tr)
 
         # Part -> whole ("hair" inside "person"): they overlap by design, so
         # neither is the other's neighbour, and a whole's alpha is not scaled
@@ -633,9 +686,28 @@ class RVMRefinerPass(UtilityPass):
         cut_parts = {t for t, p in parent_of.items() if from_whole and _wanted(p) and p in order}
         order = [t for t in order if t not in cut_parts] + [t for t in order if t in cut_parts]
         whole_soft: dict[int, np.ndarray] = {}
+        rmp = self.params.get("refine_min_px", "auto")
+        refine_min = max(96, round(0.08 * plate_h)) if str(rmp) == "auto" else int(rmp)
+        n_small = 0
         for track_id in order:
             track = self._hard_masks.get(track_id)
             if track is None or not _wanted(track_id):
+                continue
+            if (
+                refine_all
+                and refine_min > 0
+                and track_id not in hero_slot
+                and track_id not in parent_of
+                and track_id not in set(parent_of.values())
+                and _median_height(track) < refine_min
+            ):
+                label = str(track.get("label", "") or "")
+                if label:
+                    acc = label_soft.setdefault(
+                        label, np.zeros((n_frames, plate_h, plate_w), np.float32)
+                    )
+                    _paint_antialiased(acc, track, frame_to_local)
+                    n_small += 1
                 continue
             if track_id in cut_parts and parent_of[track_id] in whole_soft:
                 soft, refined_frames = self._cut_part(
@@ -697,6 +769,13 @@ class RVMRefinerPass(UtilityPass):
                     # Copy when this soft is also retained as a hero channel, so
                     # a later union max() doesn't mutate the hero's array.
                     label_soft[label] = soft.copy() if is_hero else soft
+
+        if n_small:
+            _log.info(
+                "refiner: %d small object(s) under %d px kept SAM's edge (anti-aliased).",
+                n_small,
+                refine_min,
+            )
 
         # --- Seam normalisation ------------------------------------------
         # SAM 3 masks are exclusive (one owner per pixel), but each object's

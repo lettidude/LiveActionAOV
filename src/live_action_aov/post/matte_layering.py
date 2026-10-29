@@ -43,6 +43,13 @@ from typing import Any
 import numpy as np
 
 from live_action_aov.io.channels import mask_channel
+from live_action_aov.passes.matte.boxmask import (
+    BoxMask,
+    boxes_touch,
+    paint_max,
+    stack_box,
+    union_box,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -94,11 +101,14 @@ class MatteLayeringPost:
         del flow_cache, shot_id
         if not bool(self.params.get("enabled", True)) or len(self._tracks) < 2:
             return per_frame_channels
-        # Per-frame lookup of each track's hard mask.
-        dense: dict[int, dict[int, np.ndarray]] = {}
+        # Per-frame lookup of each track's hard mask, as box crops (a crowd
+        # of 200 people densified up front was ~160 GB at 4K).
+        dense: dict[int, dict[int, Any]] = {}
         for tid, tr in self._tracks.items():
-            st = np.asarray(tr.get("stack"))
-            dense[int(tid)] = {int(f): st[k] for k, f in enumerate(tr.get("frames") or [])}
+            st = tr.get("stack")
+            dense[int(tid)] = {
+                int(f): stack_box(st, k) for k, f in enumerate(tr.get("frames") or [])
+            }
         rank = {
             int(tid): int(tr.get("layer", i)) for i, (tid, tr) in enumerate(self._tracks.items())
         }
@@ -186,18 +196,19 @@ class MatteLayeringPost:
             bg = cv2.morphologyEx((1 - occupied).astype(np.uint8), cv2.MORPH_OPEN, k_open)
             return bg, cv2.distanceTransform((1 - bg).astype(np.uint8), cv2.DIST_L2, 3)
 
-        def hard_of(tid: int) -> np.ndarray | None:
+        def hard_of(tid: int) -> BoxMask | None:
             m = dense.get(tid, {}).get(f)
             if m is None:
                 return None
-            b: np.ndarray = (np.asarray(m) > 0.5).astype(np.uint8)
-            if b.shape != (h, w):
-                b = cv2.resize(b, (w, h), interpolation=cv2.INTER_NEAREST)
-            return b if b.any() else None
+            bm = BoxMask.from_dense(m)
+            if bm.shape != (h, w):
+                b = (np.asarray(bm) > 0).astype(np.uint8)
+                bm = BoxMask.from_dense(cv2.resize(b, (w, h), interpolation=cv2.INTER_NEAREST))
+            return bm if bm.crop.size else None
 
-        objs: list[tuple[int, str, np.ndarray, list[np.ndarray]]] = []
+        objs: list[tuple[int, str, np.ndarray, list[BoxMask]]] = []
         for name, tids in members:
-            parts_present: list[tuple[int, np.ndarray]] = []
+            parts_present: list[tuple[int, BoxMask]] = []
             for t in tids:
                 hm = hard_of(t)
                 if hm is not None:
@@ -206,7 +217,7 @@ class MatteLayeringPost:
                 continue
             union: np.ndarray = np.zeros((h, w), np.uint8)
             for _, m in parts_present:
-                union = union | m
+                paint_max(union, m)
             objs.append(
                 (
                     min(rank.get(t, 1 << 20) for t, _ in parts_present),
@@ -229,15 +240,29 @@ class MatteLayeringPost:
         for _, name, hard, parts in objs:
             a = np.clip(np.asarray(chans[name], dtype=np.float32), 0.0, 1.0)
             fill = np.zeros((h, w), bool)
-            # Seams between pieces of the SAME object (two "car" tracks).
+            # Seams between pieces of the SAME object (two "car" tracks, or
+            # the people of a crowd): only pieces whose boxes come within the
+            # seam, each cluster inside its own window.
             if len(parts) > 1:
-                _, d_bg = bg_dist(hard)
-                for m in parts:
-                    others = hard & (1 - m)
-                    if not others.any():
+                for cl in _clusters(parts, seam + 1):
+                    if len(cl) < 2:
                         continue
-                    d_o = dist_to(others)
-                    fill |= (hard > 0) & (d_o <= seam) & (d_o < d_bg)
+                    pad = seam + 2 * crack + 2
+                    wy0, wx0, wy1, wx1 = union_box([parts[j] for j in cl], pad, (h, w)) or (
+                        0,
+                        0,
+                        h,
+                        w,
+                    )
+                    whard = hard[wy0:wy1, wx0:wx1]
+                    _, d_bg = bg_dist(whard)
+                    wfill = fill[wy0:wy1, wx0:wx1]
+                    for j in cl:
+                        others = whard & (1 - parts[j].window(wy0, wx0, wy1, wx1))
+                        if not others.any():
+                            continue
+                        d_o = dist_to(others)
+                        wfill |= (whard > 0) & (d_o <= seam) & (d_o < d_bg)
             # Seams against everything in front of this object.
             if front.any():
                 union = hard | front
@@ -274,6 +299,26 @@ class MatteLayeringPost:
             cover = np.minimum(cover + out, 1.0)
             front |= hard
         return changed
+
+
+def _clusters(masks: list[BoxMask], margin: int) -> list[list[int]]:
+    """Groups of masks whose boxes come within `margin` px of each other."""
+    root = list(range(len(masks)))
+
+    def find(i: int) -> int:
+        while root[i] != i:
+            root[i] = root[root[i]]
+            i = root[i]
+        return i
+
+    for i in range(len(masks)):
+        for j in range(i + 1, len(masks)):
+            if boxes_touch(masks[i], masks[j], margin):
+                root[find(i)] = find(j)
+    out: dict[int, list[int]] = {}
+    for i in range(len(masks)):
+        out.setdefault(find(i), []).append(i)
+    return list(out.values())
 
 
 __all__ = ["MatteLayeringPost"]

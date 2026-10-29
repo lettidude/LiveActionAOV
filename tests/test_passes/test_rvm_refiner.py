@@ -53,7 +53,9 @@ class _FakeRVM(RVMRefinerPass):
     """
 
     def __init__(self, params=None):
-        merged = {"fallback_feather": False}
+        # refine_min_px=0: these plates are tiny, and the small-object skip
+        # (crowds) has its own tests.
+        merged = {"fallback_feather": False, "refine_min_px": 0}
         merged.update(params or {})
         super().__init__(merged)
 

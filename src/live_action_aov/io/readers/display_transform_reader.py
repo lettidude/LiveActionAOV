@@ -161,6 +161,20 @@ class DisplayTransformedReader(ImageSequenceReader):
 
     def read_frame(self, frame: int) -> tuple[np.ndarray, dict[str, Any]]:
         raw, attrs = self._base.read_frame(frame)
+        return self._process(raw, attrs, frame)
+
+    def read_frame_full_res(self, frame: int) -> tuple[np.ndarray, dict[str, Any]]:
+        """`read_frame` on the ORIGINAL plate when the base is a proxy (same
+        clip-wide transform). Plain `read_frame` without a proxy."""
+        full = getattr(self._base, "full_res_reader", None)
+        if full is None:
+            return self.read_frame(frame)
+        raw, attrs = full().read_frame(frame)
+        return self._process(raw, attrs, frame)
+
+    def _process(
+        self, raw: np.ndarray, attrs: dict[str, Any], frame: int
+    ) -> tuple[np.ndarray, dict[str, Any]]:
         # Source guard: strip NaN/Inf the plate carries before they can
         # propagate through linearize → transform → model → sidecar.
         # This is the primary fix; the WARNING here means the plate is
@@ -209,7 +223,9 @@ class DisplayTransformedReader(ImageSequenceReader):
             # the cause is visible in the log instead of guessed at.
             if not self._linearize_warned:
                 self._linearize_warned = True
-                handled = colorspace in ocio_color._SRGB_NAMES or colorspace in ocio_color._LINEAR_NAMES
+                handled = (
+                    colorspace in ocio_color._SRGB_NAMES or colorspace in ocio_color._LINEAR_NAMES
+                )
                 if not handled:
                     _log.warning(
                         "could not linearize colorspace %r via OCIO (%s); "
