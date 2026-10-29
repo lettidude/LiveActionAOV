@@ -28,8 +28,23 @@ def test_plugins_list_includes_noop() -> None:
 
 @pytest.mark.skipif(not HAS_OIIO, reason="OpenImageIO not installed")
 def test_run_shot_produces_sidecar(test_plate_1080p: Path) -> None:
-    result = runner.invoke(app, ["run-shot", str(test_plate_1080p), "--passes", "noop"])
+    result = runner.invoke(
+        app,
+        [
+            "run-shot",
+            str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
+            "--passes",
+            "noop",
+        ],
+    )
     assert result.exit_code == 0, result.stdout
     # Sidecar file should have been written in the same folder.
-    written = sorted(test_plate_1080p.glob("test_plate.utility.*.exr"))
+    written = sorted(
+        (
+            sorted(test_plate_1080p.parent.joinpath("out", test_plate_1080p.name).glob("v*"))[-1]
+            / "passes"
+        ).glob("*.utility.*.exr")
+    )
     assert len(written) == 5

@@ -7,6 +7,14 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **Output folders.** The output root is always the user's choice (GUI
+  Output tab, remembered between sessions; CLI `--out`, now required) -
+  nothing is written next to the plate any more. Every run is a new version:
+  `<root>/<shot>/v001/` with `<shot>_v001.comp.nk` on top, EXRs in
+  `passes/`, `camera/`, `splat/` (the splat was in `camera_track/`) and
+  `logs/`. Sidecars are named after the shot, so a `name_####.exr` plate no
+  longer gives `name_.utility.####.exr`. A custom shot-folder name stays per
+  shot (it used to be copied to every shot, sending them all to one folder).
 - **Hard masks are stored as box crops** (`BoxMask` / `LazyStack`): the
   `sam3_hard_masks` `stack` is now a lazy (T, H, W) uint8 stack -
   `np.asarray(stack)` / `stack[k]` still give dense arrays, `stack.box(k)`
@@ -46,6 +54,10 @@ uses [semantic versioning](https://semver.org/).
   of cutting it: a strand over the wall no longer ends on a straight line.
 
 ### Added
+- **Preview output** (GUI button + right-click on a shot): every layer of
+  any version, frame by frame, masks over the plate, camera / splat solve
+  summary - without opening Nuke. Right-click also opens the output folder,
+  the plate folder and the comp in Nuke.
 - **Small objects / crowds** (`small_objects`, GUI "Small objects: Auto / Max
   / Off", default Auto). SAM 3 sees ~1008 px, so a 4K plate reaches it 4x
   smaller, and the 0.5%-of-frame size floor dropped anyone shorter than ~1/5

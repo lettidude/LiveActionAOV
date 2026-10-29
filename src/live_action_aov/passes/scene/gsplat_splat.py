@@ -18,7 +18,7 @@ re-renders every solved frame through the solved camera:
 - `splat.Z` — camera-space depth of the splat (camera-track units, same
   frame as the Nuke camera): multi-view consistent by construction.
 
-Sidecar: `camera_track/<shot>.splat.ply` — standard 3DGS PLY in the SAME
+Sidecar: `splat/<shot>.splat.ply` — standard 3DGS PLY in the SAME
 Y-up world as `<shot>.camera.nk`, so it lines up with the exported camera
 in any splat viewer / DCC that reads 3DGS PLY.
 
@@ -46,6 +46,7 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.output_layout import SPLAT_DIR, run_stem, sub_dir
 from live_action_aov.core.pass_base import (
     ChannelSpec,
     License,
@@ -367,13 +368,13 @@ class GsplatSplatPass(UtilityPass):
     def emit_sidecars(self, shot: Any) -> dict[str, Path]:
         if self._splats is None:
             return {}
-        out_dir = Path(shot.output_dir or shot.folder) / "camera_track"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"{shot.name}.splat.ply"
+        out_dir = sub_dir(shot, SPLAT_DIR)
+        stem = run_stem(shot)
+        path = out_dir / f"{stem}.splat.ply"
         write_3dgs_ply(self._splats, path)
         import json
 
-        (out_dir / f"{shot.name}.splat.json").write_text(
+        (out_dir / f"{stem}.splat.json").write_text(
             json.dumps(self.report, indent=2), encoding="utf-8"
         )
         return {"splat": path}

@@ -95,6 +95,8 @@ def test_sidecar_has_metric_space_and_meters_unit(test_plate_1080p: Path) -> Non
         [
             "run-shot",
             str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
             "--passes",
             "fake_metric_depth",
         ],
@@ -103,7 +105,12 @@ def test_sidecar_has_metric_space_and_meters_unit(test_plate_1080p: Path) -> Non
 
     from live_action_aov.io.oiio_io import read_exr
 
-    sidecar = sorted(test_plate_1080p.glob("test_plate.utility.*.exr"))[0]
+    sidecar = sorted(
+        (
+            sorted(test_plate_1080p.parent.joinpath("out", test_plate_1080p.name).glob("v*"))[-1]
+            / "passes"
+        ).glob("*.utility.*.exr")
+    )[0]
     _, attrs = read_exr(sidecar)
     assert attrs.get("liveaov/depth/space") == "metric"
     assert attrs.get("liveaov/depth/unit") == "meters"

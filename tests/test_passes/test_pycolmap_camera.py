@@ -394,7 +394,7 @@ def test_run_shot_then_emit_sidecars(tmp_path: Path, monkeypatch: pytest.MonkeyP
     )
     workdir = p._workdir
     paths = p.emit_sidecars(shot)
-    cam_dir = tmp_path / "out" / "camera_track"
+    cam_dir = tmp_path / "out" / "camera"
     assert paths["camera"] == cam_dir / "PF0081-03.camera.json"
     assert paths["camera_nk"].read_text(encoding="utf-8").count("Camera2 {") == 1
     assert "element vertex 40" in paths["camera_points"].read_text(encoding="ascii")

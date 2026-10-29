@@ -22,7 +22,7 @@ Pipeline:
      global) mapping; the largest reconstruction is the solve.
   4. COLMAP's OpenCV cameras -> Y-up OpenGL world_from_camera, Nuke ZXY
      Eulers; intrinsics rescaled from the solve resolution to the plate.
-  5. Sidecars in `<output>/camera_track/`: `<shot>.camera.json` (record),
+  5. Sidecars in `<output>/camera/`: `<shot>.camera.json` (record),
      `<shot>.camera.nk` (Nuke Camera2), `<shot>.points.ply` (sparse cloud),
      `<shot>_colmap/` (COLMAP sparse model — what Gaussian-splat trainers
      and other SfM tools read).
@@ -48,6 +48,7 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.output_layout import CAMERA_DIR, run_stem, sub_dir
 from live_action_aov.core.pass_base import (
     License,
     PassType,
@@ -210,12 +211,12 @@ class PyColmapCameraPass(UtilityPass):
             resolution=tuple(shot.resolution),
             pixel_aspect=float(shot.pixel_aspect),
         )
-        out_dir = Path(shot.output_dir or shot.folder) / "camera_track"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        json_path = out_dir / f"{shot.name}.camera.json"
-        nk_path = out_dir / f"{shot.name}.camera.nk"
-        ply_path = out_dir / f"{shot.name}.points.ply"
-        obj_path = out_dir / f"{shot.name}.points.obj"
+        out_dir = sub_dir(shot, CAMERA_DIR)
+        stem = run_stem(shot)
+        json_path = out_dir / f"{stem}.camera.json"
+        nk_path = out_dir / f"{stem}.camera.nk"
+        ply_path = out_dir / f"{stem}.points.ply"
+        obj_path = out_dir / f"{stem}.points.obj"
         json_path.write_text(self._solve.model_dump_json(indent=2), encoding="utf-8")
         nk_path.write_text(render_nuke_camera_script(self._solve), encoding="utf-8")
         write_points_ply(self._solve, ply_path)
@@ -227,7 +228,7 @@ class PyColmapCameraPass(UtilityPass):
             "camera_points_obj": obj_path,
         }
         if self._sparse_dir is not None and self._sparse_dir.exists():
-            model_dir = out_dir / f"{shot.name}_colmap"
+            model_dir = out_dir / f"{stem}_colmap"
             shutil.rmtree(model_dir, ignore_errors=True)
             shutil.copytree(self._sparse_dir, model_dir)
             paths["camera_colmap"] = model_dir

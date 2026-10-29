@@ -62,9 +62,7 @@ def _full_shot(folder: Path) -> ShotState:
             ),
             ClickInstance(name="prop", seed_frame=1001, points=[(5.0, 6.0, 1)], refiner="vitmatte"),
         ],
-        output_mode="subfolder",
         output_external_root=Path("X:/renders"),
-        output_subfolder_name="CryptoUpdate",
         output_external_name="v002",
         proxy_long_edge=1280,
         delivery_compression="dwab:45",
@@ -102,9 +100,7 @@ def test_shot_dict_roundtrip_preserves_everything(tmp_path: Path) -> None:
     assert restored.refiner_model == "ZhengPeng7/BiRefNet-matting"
     assert restored.default_engine == "rvm"
     assert restored.preview_refiner == "vitmatte"
-    assert restored.output_mode == "subfolder"
     assert restored.output_external_root == Path("X:/renders")
-    assert restored.output_subfolder_name == "CryptoUpdate"
     assert restored.output_external_name == "v002"
     assert restored.proxy_long_edge == 1280
     assert restored.delivery_compression == "dwab:45"

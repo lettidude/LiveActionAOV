@@ -114,6 +114,8 @@ def test_matanyone2_license_gate_blocks_without_opt_in(test_plate_1080p) -> None
         [
             "run-shot",
             str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
             "--passes",
             "matte",
             "--refiner",
@@ -133,6 +135,8 @@ def test_matanyone2_gate_clears_with_opt_in(test_plate_1080p) -> None:
         [
             "run-shot",
             str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
             "--passes",
             "matte",
             "--refiner",

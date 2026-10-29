@@ -30,6 +30,8 @@ from live_action_aov.core.cancel import CancelledError, CancelToken
 from live_action_aov.core.dag import PassNode, topological_sort
 from live_action_aov.core.job import Job, PassConfig, PostConfig, Shot
 from live_action_aov.core.logging_setup import RunLoggingSession
+from live_action_aov.core.output_layout import LOGS_DIR, run_stem
+from live_action_aov.core.output_layout import sidecar_template as layout_sidecar_template
 from live_action_aov.core.pass_base import TemporalMode, UtilityPass
 from live_action_aov.core.registry import get_registry
 from live_action_aov.executors.base import Executor
@@ -114,7 +116,9 @@ class LocalExecutor(Executor):
         # placed alongside the outputs. See `core/logging_setup.py` for why
         # we want both a sidecar-local log and a central mirror.
         sidecar_dir = shot.output_dir or shot.folder
-        with RunLoggingSession(shot_name=shot.name, sidecar_dir=sidecar_dir) as log_paths:
+        with RunLoggingSession(
+            shot_name=shot.name, sidecar_dir=sidecar_dir / LOGS_DIR
+        ) as log_paths:
             return self._submit_logged(job, report, registry, shot, sidecar_dir, log_paths, cancel)
 
     def _submit_logged(
@@ -387,7 +391,7 @@ class LocalExecutor(Executor):
             # Output dir was resolved at submit() entry so the per-run
             # log could be placed alongside the outputs; reuse it here.
             sidecar_dir.mkdir(parents=True, exist_ok=True)
-            sidecar_template = _sidecar_pattern(shot.sequence_pattern)
+            sidecar_template = layout_sidecar_template(shot)
             attrs_base = _base_attrs(shot, job, artifacts, applied_post)
             report(0.9, "Writing sidecars…")
 
@@ -452,7 +456,7 @@ class LocalExecutor(Executor):
                     for ch_name, arr in channels.items():
                         groups.setdefault(pass_group(ch_name), {})[ch_name] = arr
                     targets = [
-                        (sidecar_dir / g / _per_pass_name(out_path.name, g), chs)
+                        (out_path.parent / g / _per_pass_name(out_path.name, g), chs)
                         for g, chs in groups.items()
                     ]
                 else:
@@ -632,6 +636,8 @@ def _write_comp_script(
     if not written_channels and "camera_nk" not in shot.sidecars:
         return None
     pattern = _hash_pattern(sidecar_template)
+    pdir, _, pname = pattern.rpartition("/")
+    pdir = f"{pdir}/" if pdir else ""
     crypto = [c for c in written_channels if c.lower().startswith("crypto")]
     reads: list[CompRead] = []
     crypto_rel: str | None = None
@@ -643,10 +649,10 @@ def _write_comp_script(
             groups.setdefault(pass_group(ch), []).append(ch)
         for g, chs in groups.items():
             reads.append(
-                CompRead(group=g, rel_pattern=f"{g}/{_per_pass_name(pattern, g)}", channels=chs)
+                CompRead(group=g, rel_pattern=f"{pdir}{g}/{_per_pass_name(pname, g)}", channels=chs)
             )
         if crypto:
-            base = f"cryptomatte/{_per_pass_name(pattern, 'cryptomatte')}"
+            base = f"{pdir}cryptomatte/{_per_pass_name(pname, 'cryptomatte')}"
             crypto_rel = base.replace(".exr", ".crypto.exr") if crypto_split else base
     else:
         main = [c for c in written_channels if c not in crypto]
@@ -663,7 +669,7 @@ def _write_comp_script(
             pts_rel = Path(pts).relative_to(sidecar_dir).as_posix()
         except ValueError:
             pts_rel = None
-    out = Path(sidecar_dir) / f"{shot.name}.comp.nk"
+    out = Path(sidecar_dir) / f"{run_stem(shot)}.comp.nk"
     return write_comp_script(
         out,
         shot_name=shot.name,
@@ -676,38 +682,6 @@ def _write_comp_script(
         points_obj_rel=pts_rel,
         crypto_rel_pattern=crypto_rel,
     )
-
-
-def _sidecar_pattern(sequence_pattern: str) -> str:
-    """Given a plate pattern like `shot.####.exr`, return a sidecar pattern
-    with `.utility.` injected before the frame token and a `{frame}` Python
-    format placeholder.
-
-    `shot.####.exr` → `shot.utility.{frame:04d}.exr`
-    """
-    import re
-
-    m = re.search(r"#+", sequence_pattern)
-    if m:
-        width = len(m.group(0))
-        base = sequence_pattern[: m.start()]
-        tail = sequence_pattern[m.end() :]
-        if base.endswith("."):
-            base_ = base[:-1] + ".utility."
-        else:
-            base_ = base + ".utility."
-        return f"{base_}{{frame:0{width}d}}{tail}"
-    m = re.search(r"%0?(\d*)d", sequence_pattern)
-    if m:
-        width = int(m.group(1)) if m.group(1) else 4
-        base = sequence_pattern[: m.start()]
-        tail = sequence_pattern[m.end() :]
-        if base.endswith("."):
-            base_ = base[:-1] + ".utility."
-        else:
-            base_ = base + ".utility."
-        return f"{base_}{{frame:0{width}d}}{tail}"
-    return sequence_pattern.replace(".exr", ".utility.exr")
 
 
 def _base_attrs(

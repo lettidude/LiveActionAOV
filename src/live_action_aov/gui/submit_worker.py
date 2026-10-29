@@ -28,6 +28,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from live_action_aov.core.cancel import CancelledError, CancelToken
 from live_action_aov.core.job import Job, PassConfig, Shot
+from live_action_aov.core.output_layout import next_version_dir, run_dir
 from live_action_aov.core.pass_base import DisplayTransformParams
 from live_action_aov.executors.local import LocalExecutor
 from live_action_aov.gui.pass_catalog import expand_models
@@ -139,13 +140,9 @@ class _SubmitTask(QRunnable):
                 progress_callback=self._emit_progress,
                 cancel=self._cancel,
             )
-            # After submit, the shot's sidecar path is populated. Surface
-            # the containing folder so the UI can offer "Reveal in
-            # Explorer" without inspecting Shot internals.
-            # The comp script sits at the output root in both layouts (the
-            # first EXR may be inside a per-pass subfolder).
-            sidecar = self.job.shot.sidecars.get("comp") or self.job.shot.sidecars.get("utility")
-            sidecar_dir = sidecar.parent if sidecar else self.job.shot.folder
+            # Surface the run's version folder (comp script, passes/,
+            # camera/ ...) so the UI can reveal / preview it.
+            sidecar_dir = run_dir(self.job.shot)
             self._emit(
                 SubmitResult(
                     shot_state_id=self.shot_state_id,
@@ -201,11 +198,11 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
         output_eotf="srgb",
         clamp=True,
     )
-    # Only pin `output_dir` when the user picked something other than
-    # inplace. Passing the plate folder explicitly would lose the "None
-    # means default" semantic the executor already honours.
-    resolved_out = state.resolve_output_dir()
-    output_dir = resolved_out if resolved_out != state.folder else None
+    # Every run is a new version folder under the chosen root.
+    shot_root = state.resolve_output_dir()
+    if shot_root is None:
+        raise ValueError(f"{state.name}: choose an output root (Output tab) before submitting")
+    output_dir = next_version_dir(shot_root)
     return Shot(
         name=state.name,
         folder=state.folder,

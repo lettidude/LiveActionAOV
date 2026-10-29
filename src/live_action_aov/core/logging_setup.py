@@ -16,8 +16,8 @@ What we write
 -------------
 Each `RunLoggingSession` opens three handlers and closes them on exit:
 
-1. **Per-run log next to the sidecars** —
-     `<sidecar_dir>/submit_<YYYYMMDD-HHMMSS>.log`
+1. **Per-run log in the run folder** —
+     `<run>/logs/submit_<YYYYMMDD-HHMMSS>_<shot>.log`
    Travels with the shot. Archival-grade: anyone touching the delivery
    folder can audit the run without the tool.
 

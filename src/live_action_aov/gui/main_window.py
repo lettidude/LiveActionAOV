@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from live_action_aov.core.output_layout import latest_version_dir
 from live_action_aov.gui.cuda_check import CudaState, cuda_state
 from live_action_aov.gui.inspector import InspectorPanel
 from live_action_aov.gui.log_panel import LogPanel
@@ -139,8 +140,14 @@ class MainWindow(QMainWindow):
 
         self._reveal_btn = QPushButton("Reveal output")
         self._reveal_btn.setEnabled(False)
-        self._reveal_btn.setToolTip("Open the sidecar output folder.")
+        self._reveal_btn.setToolTip("Open the latest run's version folder.")
         self._reveal_btn.clicked.connect(self._on_reveal_clicked)
+        self._preview_btn = QPushButton("Preview output")
+        self._preview_btn.setEnabled(False)
+        self._preview_btn.setToolTip(
+            "Look at what the last run generated (every layer, any frame) without Nuke."
+        )
+        self._preview_btn.clicked.connect(self._on_preview_clicked)
 
         # Log-panel toggle — the panel stays hidden until the user
         # opts in, so the prep-UX surface area doesn't shrink for
@@ -156,6 +163,7 @@ class MainWindow(QMainWindow):
         bottom_row.addWidget(self._cancel_btn)
         bottom_row.addWidget(self._log_toggle_btn)
         bottom_row.addWidget(self._reveal_btn)
+        bottom_row.addWidget(self._preview_btn)
 
         # Log panel — stays at the bottom of the window, wired to
         # SubmitWorker.progress + Python logging. Hidden by default.
@@ -435,7 +443,9 @@ class MainWindow(QMainWindow):
         n = len(queued_with_passes)
         self._submit_btn.setText("Submit local" if n <= 1 else f"Submit local  ({n} shots)")
         cur = self._registry.current()
-        self._reveal_btn.setEnabled(cur is not None and cur.last_sidecar_dir is not None)
+        has_out = cur is not None and _latest_run(cur) is not None
+        self._reveal_btn.setEnabled(has_out)
+        self._preview_btn.setEnabled(has_out)
         del shot
 
     def _on_submit_clicked(self) -> None:
@@ -458,13 +468,12 @@ class MainWindow(QMainWindow):
         # Validate every shot up-front so we fail loud before any
         # expensive work starts.
         for shot in queue:
-            if shot.output_mode == "external" and shot.output_external_root is None:
+            if shot.output_external_root is None:
                 QMessageBox.warning(
                     self,
-                    "External output root missing",
-                    f"'{shot.name}': pick an external output root "
-                    "(Inspector → Output → Choose root…) or switch back "
-                    "to 'Next to plate'.",
+                    "Output root missing",
+                    f"'{shot.name}': pick an output root (Inspector → Output → "
+                    "Choose root…). Each run lands in <root>/<shot>/v###/.",
                 )
                 return
 
@@ -613,12 +622,24 @@ class MainWindow(QMainWindow):
 
     def _on_reveal_clicked(self) -> None:
         cur = self._registry.current()
-        if cur is None or cur.last_sidecar_dir is None:
+        run = _latest_run(cur) if cur is not None else None
+        if run is None:
             return
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
 
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(cur.last_sidecar_dir)))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(run)))
+
+    def _on_preview_clicked(self) -> None:
+        cur = self._registry.current()
+        if cur is not None:
+            self._shot_list.preview_output(cur)
+
+
+def _latest_run(shot: ShotState) -> Path | None:
+    """The shot's newest version folder on disk (survives a GUI restart)."""
+    root = shot.resolve_output_dir()
+    return latest_version_dir(root) if root is not None else None
 
 
 def _build_cuda_banner(state: CudaState, parent: QMainWindow) -> QWidget | None:

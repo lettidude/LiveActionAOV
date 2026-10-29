@@ -104,6 +104,16 @@ def _register_fake() -> None:
 @pytest.mark.skipif(not HAS_OIIO, reason="OpenImageIO not installed")
 def test_executor_unloads_each_pass(test_plate_1080p: Path, _register_fake: None) -> None:
     _FakeUnloadPass.unload_calls = 0
-    result = runner.invoke(app, ["run-shot", str(test_plate_1080p), "--passes", "fake_unload_pass"])
+    result = runner.invoke(
+        app,
+        [
+            "run-shot",
+            str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
+            "--passes",
+            "fake_unload_pass",
+        ],
+    )
     assert result.exit_code == 0, result.stdout
     assert _FakeUnloadPass.unload_calls >= 1  # executor freed the pass after run_shot

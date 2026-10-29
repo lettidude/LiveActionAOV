@@ -57,7 +57,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from live_action_aov.core.output_layout import next_version_dir
 from live_action_aov.gui.pass_catalog import PASS_CATALOG
+from live_action_aov.gui.shot_list import remember_output_root
 from live_action_aov.gui.shot_state import ClickInstance, ShotRegistry, ShotState
 from live_action_aov.io.colorspace_detect import SUPPORTED_COLORSPACES
 
@@ -141,59 +143,15 @@ class InspectorPanel(QWidget):
         self._auto_ev_label.setWordWrap(True)
 
         # --- Output location ---
-        # Three-way radio: write next to the plate (default), drop into
-        # a `utility/` subfolder, or route to an external render root
-        # where each shot gets its own named subfolder. Last is what
-        # most studios will want on shared drives.
-        self._out_inplace = QRadioButton("Next to plate (default)")
-        self._out_subfolder = QRadioButton("Subfolder of plate")
-        self._out_external = QRadioButton("External root  (<root>/<name>/)")
-        self._out_group = QButtonGroup(self)
-        self._out_group.setExclusive(True)
-        self._out_group.addButton(self._out_inplace, 0)
-        self._out_group.addButton(self._out_subfolder, 1)
-        self._out_group.addButton(self._out_external, 2)
-        self._out_inplace.setChecked(True)
-        # Per-radio `toggled` instead of QButtonGroup.idToggled — avoids
-        # the double-fire (deselect + select) pattern that was causing
-        # the Choose-root button to sometimes miss its enable event.
-        # Conditional `if c else None` form (rather than `c and …`) so
-        # mypy sees the lambda as `() -> None` instead of an expression
-        # that returns the value of a void function.
-        self._out_inplace.toggled.connect(lambda c: self._set_output_mode("inplace") if c else None)
-        self._out_subfolder.toggled.connect(
-            lambda c: self._set_output_mode("subfolder") if c else None
-        )
-        self._out_external.toggled.connect(
-            lambda c: self._set_output_mode("external") if c else None
-        )
-
-        # Subfolder name field — lets the user pick a name other than
-        # "utility". Only enabled in subfolder mode.
-        self._subfolder_name_edit = QLineEdit()
-        self._subfolder_name_edit.setPlaceholderText("utility")
-        self._subfolder_name_edit.setToolTip(
-            "Folder name created inside the plate folder. Default: utility."
-        )
-        self._subfolder_name_edit.setEnabled(False)
-        self._subfolder_name_edit.textEdited.connect(self._on_subfolder_name_edited)
-
-        subfolder_row = QHBoxLayout()
-        subfolder_row.addSpacing(24)
-        subfolder_row.addWidget(QLabel("Name:"))
-        subfolder_row.addWidget(self._subfolder_name_edit, stretch=1)
-
-        # External-root controls — picker for the root, name field for
-        # the per-shot subfolder within it.
+        # Always a user-chosen root (never next to the plate): each shot
+        # lands in <root>/<name>/v###/ and every run is a new version.
         self._out_root_label = QLabel("<no root chosen>")
         self._out_root_label.setStyleSheet("color: #888; font-size: 10pt;")
         self._out_root_label.setWordWrap(True)
         self._out_root_btn = QPushButton("Choose root…")
-        self._out_root_btn.setEnabled(False)
         self._out_root_btn.clicked.connect(self._on_pick_external_root)
 
         out_root_row = QHBoxLayout()
-        out_root_row.addSpacing(24)
         out_root_row.addWidget(self._out_root_btn)
         out_root_row.addWidget(self._out_root_label, stretch=1)
 
@@ -202,12 +160,10 @@ class InspectorPanel(QWidget):
         self._external_name_edit.setToolTip(
             "Subfolder name created inside the external root. Default: the shot's name."
         )
-        self._external_name_edit.setEnabled(False)
         self._external_name_edit.textEdited.connect(self._on_external_name_edited)
 
         external_name_row = QHBoxLayout()
-        external_name_row.addSpacing(24)
-        external_name_row.addWidget(QLabel("Name:"))
+        external_name_row.addWidget(QLabel("Shot folder:"))
         external_name_row.addWidget(self._external_name_edit, stretch=1)
 
         self._resolved_out_label = QLabel("")
@@ -253,7 +209,7 @@ class InspectorPanel(QWidget):
         self._layout_combo.addItem("One EXR per pass (subfolders)", "per_pass")
         self._layout_combo.setToolTip(
             "Multi-layer: one Read in Nuke, a Shuffle per pass. Per pass: "
-            "depth/, matte/, splat/ ... each its own EXR sequence. Either way "
+            "passes/depth/, passes/matte/ ... each its own EXR sequence. Either way "
             "<shot>.comp.nk opens with everything already wired."
         )
         self._layout_combo.currentIndexChanged.connect(self._on_layout_changed)
@@ -624,10 +580,6 @@ class InspectorPanel(QWidget):
         session_wide_note = QLabel("These settings apply to every shot in the session.")
         session_wide_note.setStyleSheet("color: #777; font-size: 8pt; font-style: italic;")
         output_layout.addWidget(session_wide_note)
-        output_layout.addWidget(self._out_inplace)
-        output_layout.addWidget(self._out_subfolder)
-        output_layout.addLayout(subfolder_row)
-        output_layout.addWidget(self._out_external)
         output_layout.addLayout(out_root_row)
         output_layout.addLayout(external_name_row)
         output_layout.addWidget(self._resolved_out_label)
@@ -653,8 +605,8 @@ class InspectorPanel(QWidget):
         output_layout.addWidget(delivery_hint)
         output_layout.addWidget(self._delivery_combo)
         layout_hint = QLabel(
-            "Folder layout. A <shot>.comp.nk Nuke script with every pass, the "
-            "camera and the point cloud is written next to the EXRs."
+            "Folder layout inside the version folder: <shot>_v###.comp.nk at the "
+            "top, EXRs in passes/, camera/, splat/, logs/."
         )
         layout_hint.setStyleSheet("color: #888; font-size: 9pt;")
         layout_hint.setWordWrap(True)
@@ -882,23 +834,6 @@ class InspectorPanel(QWidget):
             self._exposure_spin.setValue(ev)
             self._pixel_aspect_spin.setValue(float(shot.pixel_aspect or 1.0))
 
-            # Output location radios.
-            mode_to_button = {
-                "inplace": self._out_inplace,
-                "subfolder": self._out_subfolder,
-                "external": self._out_external,
-            }
-            # Per-radio blockSignals — QButtonGroup's blockSignals is
-            # unreliable in exclusive mode.
-            for rb in (self._out_inplace, self._out_subfolder, self._out_external):
-                rb.blockSignals(True)
-            mode_to_button.get(shot.output_mode, self._out_inplace).setChecked(True)
-            for rb in (self._out_inplace, self._out_subfolder, self._out_external):
-                rb.blockSignals(False)
-            self._subfolder_name_edit.setEnabled(shot.output_mode == "subfolder")
-            self._out_root_btn.setEnabled(shot.output_mode == "external")
-            self._external_name_edit.setEnabled(shot.output_mode == "external")
-            self._subfolder_name_edit.setText(shot.output_subfolder_name)
             self._external_name_edit.setText(shot.output_external_name)
             # Match the proxy combo's current index to the shot value.
             # itemData returns the stored payload; None = Full plate
@@ -1070,31 +1005,11 @@ class InspectorPanel(QWidget):
         self._current.pixel_aspect = float(pa)
         self._registry.notify_updated(self._current)  # viewer re-desqueezes
 
-    def _set_output_mode(self, mode: str) -> None:
-        """Radio handler — runs once per new selection (not for the
-        deselected button), so it's safe to trust `mode` directly."""
-        if self._building or self._current is None:
-            return
-        self._current.output_mode = mode
-        self._subfolder_name_edit.setEnabled(mode == "subfolder")
-        self._out_root_btn.setEnabled(mode == "external")
-        self._external_name_edit.setEnabled(mode == "external")
-        self._rebuild_resolved_out_label()
-        self._broadcast_output_to_all_shots()
-
-    def _on_subfolder_name_edited(self, text: str) -> None:
-        if self._building or self._current is None:
-            return
-        self._current.output_subfolder_name = text.strip() or "utility"
-        self._rebuild_resolved_out_label()
-        self._broadcast_output_to_all_shots()
-
     def _on_external_name_edited(self, text: str) -> None:
         if self._building or self._current is None:
             return
         self._current.output_external_name = text.strip()  # empty → default to shot.name
         self._rebuild_resolved_out_label()
-        self._broadcast_output_to_all_shots()
 
     def _on_sam3_concepts_edited(self, text: str) -> None:
         """SAM 3 concepts edited — stored verbatim (comma-separated).
@@ -1365,6 +1280,7 @@ class InspectorPanel(QWidget):
         if not folder:
             return
         self._current.output_external_root = Path(folder)
+        remember_output_root(Path(folder))
         self._rebuild_resolved_out_label()
         self._broadcast_output_to_all_shots()
 
@@ -1383,10 +1299,7 @@ class InspectorPanel(QWidget):
             if shot is active:
                 self._registry.notify_updated(shot)
                 continue
-            shot.output_mode = active.output_mode
-            shot.output_subfolder_name = active.output_subfolder_name
             shot.output_external_root = active.output_external_root
-            shot.output_external_name = active.output_external_name
             shot.proxy_long_edge = active.proxy_long_edge
             shot.delivery_compression = active.delivery_compression
             shot.delivery_dtype = active.delivery_dtype
@@ -1398,14 +1311,14 @@ class InspectorPanel(QWidget):
             self._resolved_out_label.setText("")
             return
         root = self._current.output_external_root
-        if self._current.output_mode == "external" and root is None:
+        if root is None:
             self._out_root_label.setText("<no root chosen>")
-            self._resolved_out_label.setText("⚠ Pick an external root before submitting.")
+            self._resolved_out_label.setText("⚠ Pick an output root before submitting.")
             return
-        if root is not None:
-            self._out_root_label.setText(str(root))
-        resolved = self._current.resolve_output_dir()
-        self._resolved_out_label.setText(f"→ {resolved}")
+        self._out_root_label.setText(str(root))
+        shot_root = self._current.resolve_output_dir()
+        nxt = next_version_dir(shot_root) if shot_root is not None else None
+        self._resolved_out_label.setText(f"next run → {nxt}")
 
     def _on_model_selected(self, key: str) -> None:
         """Radio turned on — enforce single-select per category by

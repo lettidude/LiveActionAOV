@@ -12,7 +12,7 @@ See the top-level `README.md` for installation via `install.sh` / `install.bat`.
 liveaov --help
 liveaov --version
 liveaov plugins list
-liveaov run-shot <folder> --passes noop       # Phase 0 smoke test
+liveaov run-shot <folder> --out <root> --passes noop   # smoke test
 liveaov inspect <sidecar.exr>                 # structural QC of a sidecar
 ```
 
@@ -26,8 +26,8 @@ check before you reach for Nuke. It answers: *did the pipeline produce
 the right channels, metadata, and hero slots?*
 
 ```text
-$ liveaov inspect plate/plate.utility.0010.exr
-File: plate/plate.utility.0010.exr
+$ liveaov inspect out/plate/v001/passes/plate_v001.utility.0010.exr
+File: out/plate/v001/passes/plate_v001.utility.0010.exr
 Resolution: 1920 x 1080
 Channels (11):
   canonical:
@@ -88,28 +88,44 @@ liveaov-gui
    - **Preview mask (this frame)** runs SAM 3 on the seed frame so you can refine before the full run.
    - **Fewer inputs work better** — a box or 2–6 points beats dozens; SAM collapses under too many point constraints.
    - At submit, each object propagates across the shot into a `mask.<name>` channel + a named **Cryptomatte ID**.
-4. **Output tab** — choose where sidecars land (next-to-plate / subfolder / external root) and an optional proxy resolution for fast iterations.
-   The **layout** combo picks one multi-layer EXR (one Read in Nuke) or one EXR per pass in subfolders (`depth/`, `matte/`, `splat/` ...).
+4. **Output tab** — choose the output **root** (required; remembered between sessions) and an optional proxy resolution for fast iterations. Nothing is ever written next to the plate. Every run is a new version, see [Output folders](#output-folders).
+   The **layout** combo picks one multi-layer EXR (one Read in Nuke) or one EXR per pass in subfolders (`passes/depth/`, `passes/matte/` ...).
 5. **Submit local** — runs the pipeline; a log panel shows progress.
+6. **Preview output** (button, or right-click a shot) — look at what the last run made without Nuke: pick a version and a layer (each mask, depth, normals, flow, the splat clean plate ...), scrub frames, show a mask over the plate. Camera and splat solves are summarised (frames solved, reprojection error, PSNR). Right-click also opens the output / plate folder and the comp in Nuke.
+
+## Output folders
+
+```text
+<root>/<shot>/v001/
+    <shot>_v001.comp.nk                       <- open this in Nuke
+    passes/<shot>_v001.utility.####.exr      (per-pass layout: passes/<pass>/...)
+    passes/<shot>_v001.utility.####.crypto.exr   (lossy delivery: Cryptomatte kept lossless)
+    camera/<shot>_v001.camera.nk  .camera.json  .points.obj  .points.ply  _colmap/
+    splat/<shot>_v001.splat.ply  .splat.json
+    logs/submit_<date>_<shot>.log
+<root>/<shot>/v002/ ...                      <- the next run; v001 is never touched
+```
+
+Old versions are never deleted by the tool: remove them by hand when you no longer need them. The CLI works the same way (`--out <root>` is required).
 
 **Sessions** autosave continuously — after a crash, the next launch offers a one-click restore. Use **File → Save / Open session** (`*.laov.json`) for explicit project files; the whole prep round-trips (shots, colour, models, concepts, click points, output routing).
 
-## Opening a run in Nuke — `<shot>.comp.nk`
+## Opening a run in Nuke — `<shot>_v###.comp.nk`
 
-Every run writes `<shot>.comp.nk` next to the sidecars. Open it (or File → Import Script) and everything is already wired:
+Every run writes `<shot>_v###.comp.nk` at the top of its version folder. Open it (or File → Import Script) and everything is already wired:
 
 | Backdrop | What is in it |
 |---|---|
 | PLATE | the original plate Read |
 | all passes / one per pass | the utility Read(s), `raw` (data, no colour conversion), and one labelled Shuffle2 per pass: every mask on its own, an "every mask" matte, depth / normals / position / flow to RGB, mattes and the splat clean plate to RGBA |
-| camera | the solved Camera2, the point cloud (ReadGeo2 of `camera_track/<shot>.points.obj`) in a Scene, and a ScanlineRender over the plate: drop Cards on the points to check the track |
+| camera | the solved Camera2, the point cloud (ReadGeo2 of `camera/<shot>_v###.points.obj`) in a Scene, and a ScanlineRender over the plate: drop Cards on the points to check the track |
 | example | with a splat and masks: a Keymix that replaces every masked object with the splat clean plate (watch `splat.alpha`: areas the camera never saw are empty) |
 
-Paths are relative to the script, so the whole output folder can be copied to another machine. In Nuke our `mask.*` layer is called `mask_extra.*` (Nuke reserves `mask`); the script already uses the Nuke names.
+Paths are relative to the script, so a whole version folder can be copied to another machine. In Nuke our `mask.*` layer is called `mask_extra.*` (Nuke reserves `mask`); the script already uses the Nuke names.
 
 Nuke caps a script at **1023 channels in total** (every layer of every Read). One Read with 600 masks, 600 Shuffles and the every-mask matte loads and checks fine in Nuke 16; keep a run (plus whatever else is in your script) under ~1000 channels.
 
-The Gaussian splat itself (`camera_track/<shot>.splat.ply`) is for splat-capable tools; in Nuke 16 use the `splat` EXR layer (clean plate, coverage, depth), which is already rendered through the shot camera.
+The Gaussian splat itself (`splat/<shot>_v###.splat.ply`) is for splat-capable tools; in Nuke 16 use the `splat` EXR layer (clean plate, coverage, depth), which is already rendered through the shot camera.
 
 ## Nuke plugin — UtilityRelight
 

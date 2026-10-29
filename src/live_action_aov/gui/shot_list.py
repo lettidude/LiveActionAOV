@@ -20,19 +20,30 @@ import re
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QBrush, QColor, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
+from PySide6.QtCore import QPoint, QSettings, Qt, QUrl
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QDesktopServices,
+    QDragEnterEvent,
+    QDropEvent,
+    QKeySequence,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from live_action_aov.core.output_layout import version_dirs
 from live_action_aov.core.pass_base import DisplayTransformParams
 from live_action_aov.gui.shot_state import ShotRegistry, ShotState
 from live_action_aov.io.colorspace_detect import detect_colorspace
@@ -56,6 +67,8 @@ class ShotListPanel(QWidget):
         # guard reentrancy with a flag.
         self._list.itemChanged.connect(self._on_item_changed)
         self._list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._list.customContextMenuRequested.connect(self._on_context_menu)
         self._suppress_item_change = False
         # Pin a minimum width so the "Add shot…" button + shortest shot
         # name don't clip when the splitter is squashed.
@@ -130,6 +143,48 @@ class ShotListPanel(QWidget):
         if shot is not None:
             self._registry.remove(shot)
 
+    def _on_context_menu(self, pos: QPoint) -> None:
+        item = self._list.itemAt(pos)
+        shot = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if item is None or shot is None:
+            return
+        self._list.setCurrentItem(item)
+        root = shot.resolve_output_dir()
+        versions = version_dirs(root) if root is not None else []
+        latest = versions[0] if versions else None
+        comps = sorted(latest.glob("*.comp.nk")) if latest is not None else []
+
+        menu = QMenu(self)
+        preview = menu.addAction("Preview output…")
+        preview.setEnabled(bool(versions))
+        preview.triggered.connect(lambda: self.preview_output(shot))
+        out = menu.addAction(
+            f"Open output folder ({latest.name})" if latest else "Open output folder"
+        )
+        out.setEnabled(root is not None and root.is_dir())
+        out.triggered.connect(lambda: _open_path(latest or root))
+        nk = menu.addAction("Open comp in Nuke")
+        nk.setEnabled(bool(comps))
+        nk.triggered.connect(lambda: _open_path(comps[0]))
+        menu.addSeparator()
+        menu.addAction("Open plate folder").triggered.connect(lambda: _open_path(shot.folder))
+        menu.addAction("Copy plate path").triggered.connect(
+            lambda: QApplication.clipboard().setText(str(shot.folder / shot.sequence_pattern))
+        )
+        menu.addSeparator()
+        menu.addAction("Remove").triggered.connect(lambda: self._registry.remove(shot))
+        menu.exec(self._list.viewport().mapToGlobal(pos))
+
+    def preview_output(self, shot: ShotState) -> None:
+        root = shot.resolve_output_dir()
+        versions = version_dirs(root) if root is not None else []
+        if not versions:
+            QMessageBox.information(self, "No output yet", f"'{shot.name}' has no runs to preview.")
+            return
+        from live_action_aov.gui.output_preview import OutputPreviewDialog
+
+        OutputPreviewDialog(shot, versions, self).exec()
+
     def _add_shot_from_folder(self, folder: Path) -> None:
         try:
             pattern, frame_range, resolution, pixel_aspect, first_frame_path = _sniff_sequence(
@@ -177,6 +232,8 @@ class ShotListPanel(QWidget):
         existing = self._registry.shots()
         if existing:
             _inherit_session_settings(shot, existing[-1])
+        else:
+            shot.output_external_root = remembered_output_root()
         self._registry.add(shot)
 
     # --- Registry → widget sync ---
@@ -293,17 +350,31 @@ def _apply_status_colour(item: QListWidgetItem, shot: ShotState) -> None:
     item.setForeground(brush)
 
 
+def _open_path(path: Path | None) -> None:
+    if path is not None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+
+def remembered_output_root() -> Path | None:
+    """The output root picked last time the GUI ran (QSettings)."""
+    v = QSettings("LiveActionAOV", "LiveActionAOV").value("output_root", "")
+    return Path(str(v)) if v and Path(str(v)).is_dir() else None
+
+
+def remember_output_root(root: Path) -> None:
+    QSettings("LiveActionAOV", "LiveActionAOV").setValue("output_root", str(root))
+
+
 def _inherit_session_settings(shot: ShotState, template: ShotState) -> None:
     """A newly added shot takes the session's output routing, proxy and
     delivery settings from the shots already loaded (they are session-wide:
     the inspector broadcasts them) instead of resetting to defaults (field
     report). A colourspace override carries over too, unless the new
     plate's own header says something confident (e.g. ARRI LogC4)."""
+    # The shot-folder name stays per shot: inheriting a custom one would
+    # send two shots into the same folder.
     for attr in (
-        "output_mode",
-        "output_subfolder_name",
         "output_external_root",
-        "output_external_name",
         "proxy_long_edge",
         "delivery_compression",
         "delivery_dtype",

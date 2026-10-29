@@ -23,13 +23,16 @@ def _shot(name: str, confident: bool = False) -> ShotState:
 
 def test_new_shot_takes_output_and_override() -> None:
     old = _shot("a")
-    old.output_mode = "external"
     old.output_external_root = Path("A:/out")
+    old.output_external_name = "a_custom"
     old.proxy_long_edge = 1920
     old.override = "acescg"
     new = _shot("b")
     _inherit_session_settings(new, old)
-    assert new.output_mode == "external" and new.output_external_root == Path("A:/out")
+    assert new.output_external_root == Path("A:/out")
+    # A custom shot-folder name is per shot: inheriting it would merge two shots.
+    assert new.output_external_name == ""
+    assert new.resolve_output_dir() == Path("A:/out/b")
     assert new.proxy_long_edge == 1920
     assert new.override == "acescg"
 

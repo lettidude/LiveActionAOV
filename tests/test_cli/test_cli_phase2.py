@@ -71,6 +71,8 @@ def test_depthpro_gate_blocks_without_allow_noncommercial(
         [
             "run-shot",
             str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
             "--passes",
             "depth",
             "--depth-backend",
@@ -92,6 +94,8 @@ def test_depthcrafter_gate_blocks_without_allow_noncommercial(
         [
             "run-shot",
             str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
             "--passes",
             "depth",
             "--depth-backend",
@@ -112,6 +116,8 @@ def test_normalcrafter_gate_blocks_without_allow_noncommercial(
         [
             "run-shot",
             str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
             "--passes",
             "normals",
             "--normals-backend",
@@ -136,6 +142,8 @@ def test_commercial_backends_pass_the_license_gate(test_plate_1080p: Path) -> No
         [
             "run-shot",
             str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
             "--passes",
             "noop",  # test-only commercial pass, skips the HF path
         ],

@@ -81,7 +81,7 @@ If you skip this, the matte pass fails on first use with `OSError: You are tryin
 
 Given a plate like `/shots/sh020/plate/v003/sh020_plt.####.exr`, the tool produces:
 
-- `/shots/sh020/plate/v003/sh020_plt.utility.####.exr` — sidecar with:
+- `<out>/sh020/v001/passes/sh020_v001.utility.####.exr` — sidecar with:
   - `Z` depth channel
   - `N.x / N.y / N.z` camera-space normals
   - `motion.x / motion.y` forward motion vectors (pixels)
@@ -91,7 +91,7 @@ Given a plate like `/shots/sh020/plate/v003/sh020_plt.####.exr`, the tool produc
   - `P.x / P.y / P.z` world-space position (when depth is present)
   - `ao.a` ambient occlusion (when depth + normals are present)
 
-Original plate is never modified. See [design notes](docs/architecture.md) for architectural details.
+Plus `sh020_v001.comp.nk` (everything wired in Nuke), `camera/`, `splat/` and `logs/` in the same version folder; every run gets a new `v###`. Nothing is written next to the plate and the original plate is never modified. See [design notes](docs/architecture.md) for architectural details.
 
 ---
 

@@ -123,6 +123,8 @@ def test_smoother_auto_wires_when_flow_and_per_frame_pass_present(
         [
             "run-shot",
             str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
             "--passes",
             "fake_flow_for_smooth_test,fake_depth_for_smooth_test",
         ],
@@ -131,7 +133,12 @@ def test_smoother_auto_wires_when_flow_and_per_frame_pass_present(
     # Sidecar metadata should record an auto-wired smoother.
     from live_action_aov.io.oiio_io import read_exr
 
-    sidecar = sorted(test_plate_1080p.glob("test_plate.utility.*.exr"))[0]
+    sidecar = sorted(
+        (
+            sorted(test_plate_1080p.parent.joinpath("out", test_plate_1080p.name).glob("v*"))[-1]
+            / "passes"
+        ).glob("*.utility.*.exr")
+    )[0]
     _, attrs = read_exr(sidecar)
     names = " ".join(f"{k}={v}" for k, v in attrs.items())
     assert "liveaov/smooth/post_processors" in attrs
@@ -148,6 +155,8 @@ def test_smoother_NOT_wired_when_no_flow_pass(test_plate_1080p: Path) -> None:
         [
             "run-shot",
             str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
             "--passes",
             "fake_depth_for_smooth_test",
         ],
@@ -155,6 +164,11 @@ def test_smoother_NOT_wired_when_no_flow_pass(test_plate_1080p: Path) -> None:
     assert result.exit_code == 0, result.stdout
     from live_action_aov.io.oiio_io import read_exr
 
-    sidecar = sorted(test_plate_1080p.glob("test_plate.utility.*.exr"))[0]
+    sidecar = sorted(
+        (
+            sorted(test_plate_1080p.parent.joinpath("out", test_plate_1080p.name).glob("v*"))[-1]
+            / "passes"
+        ).glob("*.utility.*.exr")
+    )[0]
     _, attrs = read_exr(sidecar)
     assert "liveaov/smooth/post_processors" not in attrs

@@ -29,6 +29,7 @@ from rich.table import Table
 import live_action_aov
 from live_action_aov.core.cancel import CancelledError, CancelToken
 from live_action_aov.core.job import Job, PassConfig, Shot
+from live_action_aov.core.output_layout import next_version_dir
 from live_action_aov.core.pass_base import License
 from live_action_aov.core.registry import get_registry
 from live_action_aov.io.readers.oiio_exr import OIIOExrReader
@@ -133,9 +134,7 @@ def _warn_uncovered_passes(covered: list[str]) -> None:
         if name in covered or name in _PREFETCH_EXEMPT:
             continue
         cls = registry.get_pass(name)
-        has_weights = any(
-            "_load_model" in c.__dict__ for c in cls.__mro__ if c is not UtilityPass
-        )
+        has_weights = any("_load_model" in c.__dict__ for c in cls.__mro__ if c is not UtilityPass)
         if has_weights and cls.declared_license().commercial_use:
             missing.append(name)
     if missing:
@@ -178,9 +177,7 @@ def prefetch(
     registry = get_registry()
     if all_passes:
         names = [
-            n
-            for n in registry.list_passes()
-            if not getattr(registry.get_pass(n), "stub", False)
+            n for n in registry.list_passes() if not getattr(registry.get_pass(n), "stub", False)
         ]
     elif passes:
         names = [p.strip() for p in passes.split(",") if p.strip()]
@@ -263,6 +260,15 @@ def plugins_list(
 @app.command("run-shot")
 def run_shot(
     folder: Annotated[Path, typer.Argument(exists=True, file_okay=False, dir_okay=True)],
+    out: Annotated[
+        Path,
+        typer.Option(
+            "--out",
+            "-o",
+            help="Output root. Each run lands in <out>/<shot>/v###/ (a new "
+            "version every run); nothing is written next to the plate.",
+        ),
+    ],
     passes: Annotated[
         str,
         typer.Option(
@@ -373,6 +379,7 @@ def run_shot(
         resolution=resolution,
         pixel_aspect=pixel_aspect,
         passes_enabled=pass_names,
+        output_dir=next_version_dir(out / folder.name),
     )
     job = Job(
         shot=shot,
@@ -421,7 +428,7 @@ def run_shot(
     finally:
         signal.signal(signal.SIGINT, previous_handler)
 
-    console.print(f"[green]Done.[/green] Sidecar example: {shot.sidecars.get('utility')}")
+    console.print(f"[green]Done.[/green] {shot.sidecars.get('comp') or shot.output_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +540,7 @@ def _sniff_sequence(folder: Path) -> tuple[str, tuple[int, int], tuple[int, int]
     """Find an EXR sequence in `folder` and derive its pattern + metadata."""
     # Skip sidecar EXRs from previous runs - the sidecar writer injects
     # `.utility.`, `.hero.`, or `.mask.` before the frame token (see
-    # `executors.local._sidecar_pattern`). sorted() puts them before the
+    # `core.output_layout.sidecar_template`). sorted() puts them before the
     # plate alphabetically, which would otherwise make the sniffer pick
     # up e.g. 2-channel utility files and feed them into the display-
     # transform luma dot-product as a (H,W,2)@(3,) matmul crash.

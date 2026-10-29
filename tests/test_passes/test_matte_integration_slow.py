@@ -95,6 +95,8 @@ def test_real_sam3_plus_rvm_end_to_end(_integration_plate: Path) -> None:
         [
             "run-shot",
             str(_integration_plate),
+            "--out",
+            str(_integration_plate.parent / "out"),
             "--passes",
             "flow,matte",
         ],
@@ -104,7 +106,14 @@ def test_real_sam3_plus_rvm_end_to_end(_integration_plate: Path) -> None:
 
     from live_action_aov.io.oiio_io import read_exr
 
-    sidecars = sorted(_integration_plate.glob("*.utility.*.exr"))
+    sidecars = sorted(
+        (
+            sorted(_integration_plate.parent.joinpath("out", _integration_plate.name).glob("v*"))[
+                -1
+            ]
+            / "passes"
+        ).glob("*.utility.*.exr")
+    )
     assert sidecars, "No sidecars written"
 
     # Read every sidecar up front — RVM's recurrent state is cold on the

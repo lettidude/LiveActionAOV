@@ -6,7 +6,7 @@ Camera3 for our single-pinhole use case, so we favour it for broader
 pipeline compatibility.
 
 The sidecar lives next to the plate at
-`<plate_folder>/camera_track/<shot>.camera.nk`. Compositors drop it into
+`<run>/camera/<shot>.camera.nk`. Compositors drop it into
 their script via File → Import Script, or drag-and-drop, and get a ready-
 to-use 3D camera animated over the plate's frame range.
 

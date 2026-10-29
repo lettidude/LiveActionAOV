@@ -192,6 +192,8 @@ def test_sidecar_has_matte_metadata_and_commercial_flag(test_plate_1080p: Path) 
         [
             "run-shot",
             str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
             "--passes",
             "fake_matte_detector,fake_refiner",
         ],
@@ -200,7 +202,12 @@ def test_sidecar_has_matte_metadata_and_commercial_flag(test_plate_1080p: Path) 
 
     from live_action_aov.io.oiio_io import read_exr
 
-    sidecar = sorted(test_plate_1080p.glob("test_plate.utility.*.exr"))[0]
+    sidecar = sorted(
+        (
+            sorted(test_plate_1080p.parent.joinpath("out", test_plate_1080p.name).glob("v*"))[-1]
+            / "passes"
+        ).glob("*.utility.*.exr")
+    )[0]
     _, attrs = read_exr(sidecar)
 
     # Detector + refiner identity attributes.
@@ -255,6 +262,8 @@ def test_sidecar_commercial_flag_is_false_for_noncommercial_refiner(
         [
             "run-shot",
             str(test_plate_1080p),
+            "--out",
+            str(test_plate_1080p.parent / "out"),
             "--passes",
             "fake_matte_detector,fake_nc_refiner",
             "--allow-noncommercial",  # gate must be open for NC refiner
@@ -264,7 +273,12 @@ def test_sidecar_commercial_flag_is_false_for_noncommercial_refiner(
 
     from live_action_aov.io.oiio_io import read_exr
 
-    sidecar = sorted(test_plate_1080p.glob("test_plate.utility.*.exr"))[0]
+    sidecar = sorted(
+        (
+            sorted(test_plate_1080p.parent.joinpath("out", test_plate_1080p.name).glob("v*"))[-1]
+            / "passes"
+        ).glob("*.utility.*.exr")
+    )[0]
     _, attrs = read_exr(sidecar)
 
     assert attrs.get("liveaov/matte/refiner") == "fake_nc_refiner"

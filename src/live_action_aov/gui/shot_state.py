@@ -168,16 +168,10 @@ class ShotState:
                 seen.add(cat)
         return out
 
-    # Where the executor writes the sidecar EXRs.
-    #   "inplace"   → <plate_folder>/<shot>.utility.####.exr  (default)
-    #   "subfolder" → <plate_folder>/<subfolder_name>/…
-    #   "external"  → <output_root>/<external_name>/…
-    # The Inspector renders the three as a radio group; both the
-    # subfolder name and the per-shot external folder name are
-    # editable text fields defaulting to sensible values.
-    output_mode: str = "inplace"
+    # Where a run lands: <output_external_root>/<external_name>/v###/
+    # (core.output_layout). The root is always the user's choice - the
+    # tool never writes next to the plate - and every run is a new version.
     output_external_root: Path | None = None
-    output_subfolder_name: str = "utility"
     # Empty string → falls back to the shot's name. Lets the user
     # type custom names like `v001` or `linear_plates` without
     # touching the name field having to mean "whatever the shot is
@@ -213,16 +207,12 @@ class ShotState:
     last_error: str = ""
     last_sidecar_dir: Path | None = None
 
-    def resolve_output_dir(self) -> Path:
-        """Return the concrete directory the executor should write to,
-        given the current mode + external root + subfolder names."""
-        if self.output_mode == "subfolder":
-            name = self.output_subfolder_name.strip() or "utility"
-            return self.folder / name
-        if self.output_mode == "external" and self.output_external_root is not None:
-            name = self.output_external_name.strip() or self.name
-            return self.output_external_root / name
-        return self.folder
+    def resolve_output_dir(self) -> Path | None:
+        """The shot's folder under the output root (its versions live
+        inside it), or None until a root is chosen."""
+        if self.output_external_root is None:
+            return None
+        return self.output_external_root / (self.output_external_name.strip() or self.name)
 
     def effective_colorspace(self) -> str:
         """Return the colorspace the preview should use."""
