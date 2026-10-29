@@ -436,3 +436,19 @@ def test_declared_contract():
     assert PyColmapCameraPass.requires_artifacts == []
     assert PyColmapCameraPass.optional_artifacts == ["sam3_hard_masks"]
     assert mod._SUPPORTED_MODELS == ("SIMPLE_PINHOLE", "PINHOLE", "SIMPLE_RADIAL")
+
+
+def test_split_solve_is_a_failure_not_a_camera(monkeypatch: pytest.MonkeyPatch):
+    """A pan: SfM solves a handful of frames. That is no camera for the shot -
+    the pass raises (footage_dependent, so the run keeps its other passes)."""
+    pytest.importorskip("pycolmap")
+
+    def fake_solve(self, workdir, image_dir, mask_dir, frame_list):
+        return _Rec([n for _, n in frame_list[:3]], cam_w=192, cam_h=108)
+
+    monkeypatch.setattr(PyColmapCameraPass, "_solve_colmap", fake_solve)
+    assert PyColmapCameraPass.footage_dependent
+    p = PyColmapCameraPass({"min_registered_fraction": 0.9})  # 3/4 solved < 90%
+    with pytest.raises(RuntimeError, match="3/4 frames could be solved"):
+        p.run_shot(_Reader(4), (1001, 1004))
+    assert p._solve is None and p.emit_sidecars(None) == {}

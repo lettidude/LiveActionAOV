@@ -104,11 +104,16 @@ class PyColmapCameraPass(UtilityPass):
     optional_artifacts = ["sam3_hard_masks"]
     # The solve itself, for downstream passes (Gaussian splat).
     provides_artifacts = ["camera_solve"]
+    # No parallax (locked-off, pure pan) is a property of the shot, not a bug:
+    # the run keeps its mattes / depth when the solve fails.
+    footage_dependent = True
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "matcher": "sequential",  # "sequential" (video) | "exhaustive" (short / unordered)
         "sequential_overlap": 10,
         "mapper": "incremental",  # "incremental" | "global" (GLOMAP-style, pycolmap 4)
+        # Fewer solved frames than this = no camera (the run keeps the rest).
+        "min_registered_fraction": 0.5,
         "camera_model": "SIMPLE_PINHOLE",
         # Long edge of the images SIFT sees. PF0081 (2048 wide): 2048 ->
         # 0.86 px / 62 s per 32 frames, 1024 -> 0.6 px@1K / 21 s.
@@ -193,6 +198,16 @@ class PyColmapCameraPass(UtilityPass):
         )
         for w in q.warnings:
             _log.warning("Camera solve: %s", w)
+        min_frac = float(self.params.get("min_registered_fraction", 0.5))
+        if q.registered_frame_count < min_frac * q.total_frame_count:
+            # A solve covering a few frames is not a camera for the shot
+            # (no parallax over most of it: a pan or a locked-off camera).
+            self._solve = None
+            raise RuntimeError(
+                f"Camera track: only {q.registered_frame_count}/{q.total_frame_count} frames "
+                "could be solved - most of the shot has no parallax (pure pan, locked-off "
+                "or very slow camera). No camera written."
+            )
         return {}
 
     def emit_artifacts(self) -> dict[str, dict[int, Any]]:

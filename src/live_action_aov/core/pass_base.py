@@ -137,6 +137,10 @@ class UtilityPass(ABC):
     # Soft deps: consumed when an upstream pass provides them, ignored
     # otherwise (DAG orders the pass after the provider if present).
     optional_artifacts: list[str] = []
+    # A pass that can fail because of the FOOTAGE (a camera solve on a
+    # locked-off or panning shot): the executor logs the failure and keeps
+    # the rest of the run instead of throwing away the mattes with it.
+    footage_dependent: bool = False
 
     # --- Smoother wiring ---
     # Which of this pass's channels the temporal smoother should touch when

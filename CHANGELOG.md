@@ -7,6 +7,15 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **A camera solve that fails on the footage no longer kills the run.**
+  On a locked-off or panning shot the camera track (and the splat that
+  needs it) used to raise and throw away every other pass of the job, mattes
+  included. Now they are skipped, the rest is written, and the log ends with
+  "Run finished WITHOUT camera_pycolmap: <reason>" (also in the shot's
+  notes). A solve covering under half the frames (`min_registered_fraction`,
+  0.5) counts as a failure instead of exporting a 10-frame camera. The splat
+  warns when the masked objects cover over 40% of the plate (the clean plate
+  behind them is then mostly guesswork; Preview output shows it too).
 - **One engine menu.** Run engine (Passes tab) and object engine (Masks
   tab) are the same kind of menu: the recommended engine first, Green /
   blue screen second, everything else under Advanced. The Masks tab lost

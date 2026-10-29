@@ -180,6 +180,8 @@ def summary_lines(run_dir: Path) -> list[str]:
             bits = [f"{int(d['gaussians']):,} gaussians"] if d.get("gaussians") else []
             if d.get("holdout_psnr_db") is not None:
                 bits.append(f"held-out PSNR {d['holdout_psnr_db']} dB")
+            if (d.get("masked_fraction") or 0) > 0.4:
+                bits.append(f"{100 * d['masked_fraction']:.0f}% masked: clean plate unreliable")
             if d.get("train_seconds") is not None:
                 bits.append(f"{d['train_seconds']:.0f} s training")
             out.append("Splat: " + (", ".join(bits) or p.name))

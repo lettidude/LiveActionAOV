@@ -200,6 +200,7 @@ class LocalExecutor(Executor):
         try:
             shot.status = "running"
             per_frame_channels: dict[int, dict[str, Any]] = {}
+            failed_passes: dict[str, str] = {}
 
             total_passes = max(1, len(ordered))
             for pass_idx, node in enumerate(ordered):
@@ -219,64 +220,51 @@ class LocalExecutor(Executor):
                     f"Pass {pass_idx + 1}/{total_passes}: {node.name}",
                 )
                 pc, cls = resolved_by_name[node.name]
+                missing = [a for a in cls.requires_artifacts if not artifacts.get(a)]
+                if missing and failed_passes:
+                    # Its input came from a pass that failed on this footage.
+                    _log.warning(
+                        "%s skipped: needs %s (%s failed)",
+                        node.name,
+                        ", ".join(missing),
+                        ", ".join(failed_passes),
+                    )
+                    failed_passes[node.name] = f"needs {', '.join(missing)}"
+                    continue
                 pass_params = dict(pc.params)
                 pass_params.update(shot.pass_overrides.get(node.name, {}))
                 instance = cls(pass_params)
-
-                # Pipe upstream artifacts into passes that declare requires.
-                # Default `ingest_artifacts` is a no-op so flow/depth/normals
-                # pay nothing; refiner passes read sam3_hard_masks etc. here.
-                if getattr(cls, "requires_artifacts", None) or getattr(
-                    cls, "optional_artifacts", None
-                ):
-                    instance.ingest_artifacts(artifacts)
-
-                # Colour-maths passes (screen_pull) key on SCENE-LINEAR
-                # pixels: the display transform's desaturation collapses
-                # the chroma discriminant they depend on. Same OCIO
-                # linearize stage, minus exposure/tonemap/EOTF.
-                pass_reader = reader
-                if getattr(cls, "input_colorspace", "") == "scene_linear" and isinstance(
-                    reader, DisplayTransformedReader
-                ):
-                    pass_reader = LinearizedReader(reader)
-                _reset_vram_peak()
-                frame_outputs = instance.run_shot(pass_reader, shot.frame_range)
-                peak = _vram_peak_gib()
-                if peak is not None:
-                    # Which pass decides the GPU a job needs (small cards).
-                    _log.info("%s: peak VRAM %.1f GB", node.name, peak)
-                for frame_idx, channels in frame_outputs.items():
-                    per_frame_channels.setdefault(frame_idx, {}).update(channels)
-
-                emitted = instance.emit_artifacts()
-                for art_name, per_frame in emitted.items():
-                    artifacts.setdefault(art_name, {}).update(per_frame)
-                # Mirror forward/backward flow into the FlowCache so the
-                # smoother (and future passes) can read them by
-                # (shot_id, frame, direction).
-                if "forward_flow" in emitted:
-                    for f, arr in emitted["forward_flow"].items():
-                        flow_cache.put(shot.name, f, "forward", arr)
-                if "backward_flow" in emitted:
-                    for f, arr in emitted["backward_flow"].items():
-                        flow_cache.put(shot.name, f, "backward", arr)
-
-                # Non-EXR sidecars (camera .json / .nk / .ply ...). Default
-                # emit_sidecars is a no-op, so EXR-only passes pay nothing.
-                for tag, path in (instance.emit_sidecars(shot) or {}).items():
-                    shot.sidecars[tag] = Path(path)
-
-                # Free this pass's GPU model before the next one loads. Peak
-                # VRAM then tracks the single heaviest pass, not the sum of
-                # every model — a 5-pass stack used to OOM on the 2nd shot of
-                # a session because shot 1's models were never released.
                 try:
-                    instance.unload()
-                except Exception:
-                    _log.debug("unload() failed for %s", node.name, exc_info=True)
-                del instance
-                _free_gpu_memory()
+                    self._run_pass(
+                        instance,
+                        cls,
+                        node.name,
+                        reader,
+                        shot,
+                        artifacts,
+                        per_frame_channels,
+                        flow_cache,
+                    )
+                except CancelledError:
+                    raise
+                except Exception as e:
+                    if not cls.footage_dependent:
+                        raise
+                    _log.error(
+                        "%s failed on this footage, the rest of the run is kept: %s", node.name, e
+                    )
+                    _log.debug("%s traceback", node.name, exc_info=True)
+                    failed_passes[node.name] = str(e)
+                finally:
+                    # Free this pass's GPU model before the next one loads. Peak
+                    # VRAM then tracks the single heaviest pass, not the sum of
+                    # every model.
+                    try:
+                        instance.unload()
+                    except Exception:
+                        _log.debug("unload() failed for %s", node.name, exc_info=True)
+                    del instance
+                    _free_gpu_memory()
 
             # --- Auto-wire TemporalSmoother for PER_FRAME passes with
             # `smooth: auto` (spec §13.1 Phase 2). Only runs when a flow pass
@@ -517,8 +505,14 @@ class LocalExecutor(Executor):
             except Exception:
                 # A starter script is a convenience: never fail a finished run on it.
                 _log.warning("could not write the Nuke comp script", exc_info=True)
+            if failed_passes:
+                lines = [f"{n}: {why}" for n, why in failed_passes.items()]
+                _log.warning("Run finished WITHOUT %s", "; ".join(lines))
+                shot.notes = "\n".join(filter(None, [shot.notes, *lines]))
             shot.status = "done"
-            report(1.0, "Done.")
+            report(
+                1.0, "Done." if not failed_passes else f"Done without {', '.join(failed_passes)}."
+            )
         except CancelledError:
             # Distinct status so the GUI can render "Cancelled" rather
             # than "Failed", and downstream tooling can tell the
@@ -533,6 +527,61 @@ class LocalExecutor(Executor):
             shot.status = "failed"
             raise
         return job
+
+    @staticmethod
+    def _run_pass(
+        instance: UtilityPass,
+        cls: type[UtilityPass],
+        name: str,
+        reader: Any,
+        shot: Shot,
+        artifacts: dict[str, dict[int, Any]],
+        per_frame_channels: dict[int, dict[str, Any]],
+        flow_cache: FlowCache,
+    ) -> None:
+        """One pass: feed artifacts in, run it, collect its channels,
+        artifacts and sidecars."""
+        # Pipe upstream artifacts into passes that declare requires.
+        # Default `ingest_artifacts` is a no-op so flow/depth/normals
+        # pay nothing; refiner passes read sam3_hard_masks etc. here.
+        if getattr(cls, "requires_artifacts", None) or getattr(cls, "optional_artifacts", None):
+            instance.ingest_artifacts(artifacts)
+
+        # Colour-maths passes (screen_pull) key on SCENE-LINEAR
+        # pixels: the display transform's desaturation collapses
+        # the chroma discriminant they depend on. Same OCIO
+        # linearize stage, minus exposure/tonemap/EOTF.
+        pass_reader = reader
+        if getattr(cls, "input_colorspace", "") == "scene_linear" and isinstance(
+            reader, DisplayTransformedReader
+        ):
+            pass_reader = LinearizedReader(reader)
+        _reset_vram_peak()
+        frame_outputs = instance.run_shot(pass_reader, shot.frame_range)
+        peak = _vram_peak_gib()
+        if peak is not None:
+            # Which pass decides the GPU a job needs (small cards).
+            _log.info("%s: peak VRAM %.1f GB", name, peak)
+        for frame_idx, channels in frame_outputs.items():
+            per_frame_channels.setdefault(frame_idx, {}).update(channels)
+
+        emitted = instance.emit_artifacts()
+        for art_name, per_frame in emitted.items():
+            artifacts.setdefault(art_name, {}).update(per_frame)
+        # Mirror forward/backward flow into the FlowCache so the
+        # smoother (and future passes) can read them by
+        # (shot_id, frame, direction).
+        if "forward_flow" in emitted:
+            for f, arr in emitted["forward_flow"].items():
+                flow_cache.put(shot.name, f, "forward", arr)
+        if "backward_flow" in emitted:
+            for f, arr in emitted["backward_flow"].items():
+                flow_cache.put(shot.name, f, "backward", arr)
+
+        # Non-EXR sidecars (camera .json / .nk / .ply ...). Default
+        # emit_sidecars is a no-op, so EXR-only passes pay nothing.
+        for tag, path in (instance.emit_sidecars(shot) or {}).items():
+            shot.sidecars[tag] = Path(path)
 
 
 def _reset_vram_peak() -> None:

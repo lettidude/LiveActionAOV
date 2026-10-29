@@ -98,6 +98,7 @@ class GsplatSplatPass(UtilityPass):
     produces_sidecars = [SidecarSpec(name="splat", format="ply")]
     requires_artifacts = ["camera_solve"]
     optional_artifacts = ["sam3_hard_masks"]
+    footage_dependent = True  # needs a good camera solve of the shot
 
     DEFAULT_PARAMS: dict[str, Any] = {
         "iterations": 7000,
@@ -343,6 +344,15 @@ class GsplatSplatPass(UtilityPass):
                 self.report["holdout_psnr_db"],
                 100 * masked_frac,
             )
+            if masked_frac > 0.4:
+                # Field test (Sparks hands, 65% masked): the background seen
+                # around the subject is too little to rebuild what it hides.
+                _log.warning(
+                    "Splat: the masked objects cover %.0f%% of the plate - the clean "
+                    "plate behind them is mostly guesswork; use splat.Z / the "
+                    "camera, not splat.rgb, on this shot",
+                    100 * masked_frac,
+                )
 
             # --- re-render every solved frame at plate resolution ---
             Kp = torch.from_numpy(K_plate).to(dev)
