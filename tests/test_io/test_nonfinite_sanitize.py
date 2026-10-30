@@ -55,6 +55,7 @@ def _corrupt_plate() -> np.ndarray:
 
 # --- helper ----------------------------------------------------------
 
+
 def test_sanitize_replaces_nonfinite_with_zero() -> None:
     out = _sanitize_nonfinite(_corrupt_plate(), frame=1001, where="test")
     assert np.isfinite(out).all()
@@ -80,6 +81,7 @@ def test_sanitize_logs_count(caplog: Any) -> None:
 
 
 # --- reader integration ----------------------------------------------
+
 
 def test_reader_output_is_finite_on_corrupt_plate() -> None:
     reader = DisplayTransformedReader(

@@ -56,12 +56,19 @@ def test_viewmat_matches_gl_camera_projection():
 def test_sam3_objects_are_excluded_from_training():
     stack = np.zeros((1, 20, 40), np.uint8)
     stack[0, 5:10, 10:20] = 1
-    tracks = _object_masks({3: {"label": "person", "frames": [7], "stack": stack}}, {"mask_objects": True})
+    tracks = _object_masks(
+        {3: {"label": "person", "frames": [7], "stack": stack}}, {"mask_objects": True}
+    )
     m = _frame_mask(tracks, 7, (40, 80), {"mask_dilate_frac": 0.0})
     assert m.shape == (40, 80) and m.dtype == np.float32
     assert m[15, 30] == 0.0 and m[0, 0] == 1.0  # object out, background in
     assert (_frame_mask(tracks, 8, (40, 80), {}) == 1.0).all()  # not on this frame
-    assert _object_masks({3: {"label": "person", "frames": [7], "stack": stack}}, {"mask_labels": ["car"]}) == []
+    assert (
+        _object_masks(
+            {3: {"label": "person", "frames": [7], "stack": stack}}, {"mask_labels": ["car"]}
+        )
+        == []
+    )
 
 
 def test_3dgs_ply_layout(tmp_path: Path):
@@ -80,7 +87,16 @@ def test_3dgs_ply_layout(tmp_path: Path):
     head, body = raw.split(b"end_header\n", 1)
     props = [ln.split()[-1].decode() for ln in head.splitlines() if ln.startswith(b"property")]
     assert props[:9] == ["x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2"]
-    assert props[-8:] == ["opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
+    assert props[-8:] == [
+        "opacity",
+        "scale_0",
+        "scale_1",
+        "scale_2",
+        "rot_0",
+        "rot_1",
+        "rot_2",
+        "rot_3",
+    ]
     assert len(props) == 62 and b"element vertex 5" in head
     data = np.frombuffer(body, "<f4").reshape(n, 62)
     # f_rest is channel-major (INRIA): first 15 values = red of every SH band.

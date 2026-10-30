@@ -89,8 +89,10 @@ def test_dwa_without_crypto_stays_single_file(tmp_path: Path) -> None:
     out = tmp_path / "shot.utility.1001.exr"
     writer.write_frame(
         out,
-        {"Z": np.linspace(0, 1, H * W, np.float32).reshape(H, W),
-         "mask.person": np.full((H, W), 1.0, np.float32)},
+        {
+            "Z": np.linspace(0, 1, H * W, np.float32).reshape(H, W),
+            "mask.person": np.full((H, W), 1.0, np.float32),
+        },
     )
     assert out.exists()
     assert not (tmp_path / "shot.utility.1001.crypto.exr").exists()

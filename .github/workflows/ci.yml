@@ -28,8 +28,12 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           python-version: ${{ matrix.python-version }}
+      # PySide6 needs the system GL/EGL + xkb libs even when rendering offscreen
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
       - run: uv sync --extra dev
       - name: Run tests (skip GPU)
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: uv run pytest -m "not gpu" -v
 
   typecheck:

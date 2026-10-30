@@ -99,9 +99,9 @@ def test_emits_standard_refiner_channels() -> None:
     stack = (hard > 0.5).astype(np.uint8)
     art = {
         "sam3_hard_masks": {0: {1: {"label": "hero", "frames": [1, 2], "stack": stack}}},
-        "sam3_instances": {0: [
-            {"track_id": 1, "slot": "r", "label": "hero", "score": 0.9, "frames": [1, 2]}
-        ]},
+        "sam3_instances": {
+            0: [{"track_id": 1, "slot": "r", "label": "hero", "score": 0.9, "frames": [1, 2]}]
+        },
     }
     p = ChromaKeyPass({"refine_all_masks": True})
     p.ingest_artifacts(art)

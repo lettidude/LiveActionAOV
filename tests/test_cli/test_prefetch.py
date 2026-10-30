@@ -113,9 +113,7 @@ def test_default_prefetch_covers_all_commercial_weight_passes() -> None:
         if name.startswith("fake_"):  # test fixtures polluting the singleton
             continue
         cls = registry.get_pass(name)
-        has_weights = any(
-            "_load_model" in c.__dict__ for c in cls.__mro__ if c is not UtilityPass
-        )
+        has_weights = any("_load_model" in c.__dict__ for c in cls.__mro__ if c is not UtilityPass)
         if has_weights and cls.declared_license().commercial_use:
             uncovered.append(name)
     assert not uncovered, (

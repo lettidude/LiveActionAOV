@@ -57,7 +57,9 @@ def test_missing_env_is_actionable(tmp_path: Path) -> None:
         p._load_model()
 
 
-def test_infer_command_selects_modality_and_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_infer_command_selects_modality_and_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = _fake_env(monkeypatch, tmp_path)
     a = MarigoldV2AlbedoPass(_params(repo))
     cmd = a._infer_command(tmp_path / "in", tmp_path / "out")
@@ -67,10 +69,16 @@ def test_infer_command_selects_modality_and_checkpoint(tmp_path: Path, monkeypat
     d = MarigoldV2SeeThroughDepthPass(_params(repo))
     cmd = d._infer_command(tmp_path / "in", tmp_path / "out")
     assert cmd[cmd.index("--modality") + 1] == "depth"
-    assert cmd[cmd.index("--checkpoint") + 1].replace("\\", "/").endswith("Marigold-V2/depth/Log-layered")
+    assert (
+        cmd[cmd.index("--checkpoint") + 1]
+        .replace("\\", "/")
+        .endswith("Marigold-V2/depth/Log-layered")
+    )
 
 
-def test_albedo_roundtrip_srgb_to_linear_and_resize_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_albedo_roundtrip_srgb_to_linear_and_resize_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = _fake_env(monkeypatch, tmp_path)
     p = MarigoldV2AlbedoPass(_params(repo))
     n_in: dict[str, int] = {}
@@ -85,7 +93,9 @@ def test_albedo_roundtrip_srgb_to_linear_and_resize_back(tmp_path: Path, monkeyp
             import cv2
 
             h, w = cv2.imread(str(png)).shape[:2]
-            np.save(out_dir / "predictions_npy" / f"{png.stem}.npy", np.full((3, h, w), 0.5, np.float32))
+            np.save(
+                out_dir / "predictions_npy" / f"{png.stem}.npy", np.full((3, h, w), 0.5, np.float32)
+            )
 
     monkeypatch.setattr(p, "_run_infer", fake_run)
     frames = [np.full((90, 160, 3), 0.3, np.float32) for _ in range(3)]
@@ -97,7 +107,9 @@ def test_albedo_roundtrip_srgb_to_linear_and_resize_back(tmp_path: Path, monkeyp
         assert abs(float(out[2][ch].mean()) - 0.214) < 0.01  # sRGB decoded
 
 
-def test_seethrough_depth_per_clip_normalised_near_is_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_seethrough_depth_per_clip_normalised_near_is_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = _fake_env(monkeypatch, tmp_path)
     p = MarigoldV2SeeThroughDepthPass(_params(repo))
 
@@ -143,7 +155,9 @@ def test_registered_and_commercial_clean() -> None:
         assert cls.requires_artifacts == []
 
 
-def test_albedo_global_gain_drift_is_stabilised(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_albedo_global_gain_drift_is_stabilised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Per-image predictions drift by a global gain frame to frame (measured
     on PF0071); the pass matches each frame's mean to the clip median."""
     repo = _fake_env(monkeypatch, tmp_path)
@@ -156,7 +170,10 @@ def test_albedo_global_gain_drift_is_stabilised(tmp_path: Path, monkeypatch: pyt
             import cv2
 
             h, w = cv2.imread(str(png)).shape[:2]
-            np.save(out_dir / "predictions_npy" / f"{png.stem}.npy", np.full((3, h, w), 0.5 * gains[k], np.float32))
+            np.save(
+                out_dir / "predictions_npy" / f"{png.stem}.npy",
+                np.full((3, h, w), 0.5 * gains[k], np.float32),
+            )
 
     monkeypatch.setattr(p, "_run_infer", fake_run)
     frames = [np.zeros((32, 48, 3), np.float32) for _ in gains]

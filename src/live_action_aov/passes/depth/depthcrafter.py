@@ -154,7 +154,8 @@ class DepthCrafterPass(UtilityPass):
         # pipeline — that's why DiffusionPipeline.from_pretrained was
         # hitting a 404 looking for model_index.json. Load the UNet
         # directly with no subfolder.
-        unet = load_local_first(DiffusersUNetSpatioTemporalConditionModelDepthCrafter.from_pretrained,
+        unet = load_local_first(
+            DiffusersUNetSpatioTemporalConditionModelDepthCrafter.from_pretrained,
             unet_id,
             low_cpu_mem_usage=True,
             torch_dtype=weight_dtype,
@@ -162,7 +163,8 @@ class DepthCrafterPass(UtilityPass):
 
         # Step 2: the rest of the pipeline (VAE, scheduler, image encoder)
         # comes from the SVD-xt base, with DepthCrafter's UNet plugged in.
-        pipe = load_local_first(DepthCrafterPipeline.from_pretrained,
+        pipe = load_local_first(
+            DepthCrafterPipeline.from_pretrained,
             svd_base,
             unet=unet,
             torch_dtype=weight_dtype,

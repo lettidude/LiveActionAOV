@@ -98,9 +98,15 @@ class MegaFlowPass(RAFTPass):
         ratio = min(1.0, target / max(plate_h, plate_w))
         inf_h = max(14, int(round(plate_h * ratio / 14)) * 14)
         inf_w = max(14, int(round(plate_w * ratio / 14)) * 14)
-        disp = _linear_to_display(frames[..., :3]) if frames.max() > 1.0 else np.clip(frames[..., :3], 0, 1)
+        disp = (
+            _linear_to_display(frames[..., :3])
+            if frames.max() > 1.0
+            else np.clip(frames[..., :3], 0, 1)
+        )
         t = torch.from_numpy(np.ascontiguousarray(disp)).permute(0, 3, 1, 2).float()
-        t = torch.nn.functional.interpolate(t, size=(inf_h, inf_w), mode="bilinear", align_corners=False)
+        t = torch.nn.functional.interpolate(
+            t, size=(inf_h, inf_w), mode="bilinear", align_corners=False
+        )
         return {
             "video": (t * 255.0)[None].to(self._device),  # (1, 2, 3, h, w)
             "plate_shape": (plate_h, plate_w),
@@ -113,7 +119,11 @@ class MegaFlowPass(RAFTPass):
         assert self._model is not None
         v = tensor["video"]
         iters = int(self.params["num_flow_updates"])
-        use_ac = self._device is not None and self._device.type == "cuda" and self._dtype != torch.float32
+        use_ac = (
+            self._device is not None
+            and self._device.type == "cuda"
+            and self._dtype != torch.float32
+        )
         with torch.no_grad(), torch.autocast("cuda", dtype=self._dtype, enabled=use_ac):
             fwd = self._model(v, num_reg_refine=iters)["flow_preds"][-1]  # (1, 1, 2, h, w)
             bwd = self._model(v.flip(1), num_reg_refine=iters)["flow_preds"][-1]

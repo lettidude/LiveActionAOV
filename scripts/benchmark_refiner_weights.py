@@ -110,8 +110,13 @@ def _run_model(model_id: str, crop: np.ndarray, infer_size: int) -> np.ndarray:
     from live_action_aov.passes.matte.birefnet import BiRefNetRefinerPass
 
     p = BiRefNetRefinerPass(
-        {"model_id": model_id, "infer_size": infer_size, "precision": "fp16",
-         "hard_mask_dilate": 5, "crop_pad_fraction": 0.0}
+        {
+            "model_id": model_id,
+            "infer_size": infer_size,
+            "precision": "fp16",
+            "hard_mask_dilate": 5,
+            "crop_pad_fraction": 0.0,
+        }
     )
     p._model = None
     p._load_model()
@@ -163,7 +168,9 @@ def main() -> int:
     x0, x1 = max(0, x0 - pw), min(W, x1 + pw)
     crop = srgb[y0:y1, x0:x1]
     hard_crop = hard[y0:y1, x0:x1]
-    band = (cv2.dilate(hard_crop, _kernel(30)) & (1 - cv2.erode(hard_crop, _kernel(4)))).astype(bool)
+    band = (cv2.dilate(hard_crop, _kernel(30)) & (1 - cv2.erode(hard_crop, _kernel(4)))).astype(
+        bool
+    )
 
     def soft_pct(a: np.ndarray, region: np.ndarray | None = None) -> float:
         m = (a > 0.02) & (a < 0.98)
@@ -171,11 +178,15 @@ def main() -> int:
             return 100.0 * (m & region).sum() / max(region.sum(), 1)
         return 100.0 * m.mean()
 
-    cv2.imwrite(str(out_dir / "crop_plate.png"),
-                cv2.cvtColor((crop * 255).astype(np.uint8), cv2.COLOR_RGB2BGR))
+    cv2.imwrite(
+        str(out_dir / "crop_plate.png"),
+        cv2.cvtColor((crop * 255).astype(np.uint8), cv2.COLOR_RGB2BGR),
+    )
 
-    print(f"plate {W}x{H}  crop {crop.shape[1]}x{crop.shape[0]}  "
-          f"mask={args.mask_channel} ({100 * hard.mean():.1f}% cover)\n")
+    print(
+        f"plate {W}x{H}  crop {crop.shape[1]}x{crop.shape[0]}  "
+        f"mask={args.mask_channel} ({100 * hard.mean():.1f}% cover)\n"
+    )
     print(f"{'model':<12}{'model_id':<30}{'soft% whole':>13}{'soft% hair':>12}")
     print("-" * 67)
 
@@ -190,8 +201,10 @@ def main() -> int:
                 a = _run_model(model_id, crop, args.infer_size)
         except Exception as exc:
             if _is_gated_error(exc):
-                print(f"{key:<12}{model_id:<30}  GATED - accept the licence at "
-                      f"https://huggingface.co/{model_id}")
+                print(
+                    f"{key:<12}{model_id:<30}  GATED - accept the licence at "
+                    f"https://huggingface.co/{model_id}"
+                )
             else:
                 print(f"{key:<12}{model_id:<30}  FAILED: {type(exc).__name__}: {exc}")
             continue

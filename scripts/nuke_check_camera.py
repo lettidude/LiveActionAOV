@@ -50,7 +50,9 @@ def dump(track_dir: Path, shot: str, n: int = 400) -> None:
     random.seed(0)
     obs = random.sample(obs, min(n, len(obs)))
     meta = {"width": solve["intrinsics"]["width_px"], "height": solve["intrinsics"]["height_px"]}
-    (track_dir / "nuke_check_obs.json").write_text(json.dumps({"meta": meta, "obs": obs}), encoding="utf-8")
+    (track_dir / "nuke_check_obs.json").write_text(
+        json.dumps({"meta": meta, "obs": obs}), encoding="utf-8"
+    )
     print(f"{len(obs)} observations -> {track_dir / 'nuke_check_obs.json'}")
 
 

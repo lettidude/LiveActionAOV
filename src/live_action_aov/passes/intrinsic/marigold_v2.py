@@ -219,7 +219,10 @@ class _MarigoldV2BridgeBase(UtilityPass):
             str(int(self.params["seed"])),
         ]
         if self.checkpoint_subdir:
-            cmd += ["--checkpoint", str(repo / "assets" / "checkpoints" / "Marigold-V2" / self.checkpoint_subdir)]
+            cmd += [
+                "--checkpoint",
+                str(repo / "assets" / "checkpoints" / "Marigold-V2" / self.checkpoint_subdir),
+            ]
         return cmd
 
     def _run_infer(self, in_dir: Path, out_dir: Path) -> None:
@@ -317,7 +320,9 @@ class MarigoldV2AlbedoPass(_MarigoldV2BridgeBase):
         if arr.ndim == 3 and arr.shape[0] == 3:
             arr = np.transpose(arr, (1, 2, 0))
         srgb = np.clip(arr, 0.0, 1.0)
-        lin = np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4).astype(np.float32)
+        lin = np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4).astype(
+            np.float32
+        )
         if lin.shape[0] != h or lin.shape[1] != w:
             lin = _resize(lin, w, h, area=False)
         return {CH_ALBEDO_R: lin[..., 0], CH_ALBEDO_G: lin[..., 1], CH_ALBEDO_B: lin[..., 2]}
@@ -330,7 +335,9 @@ class MarigoldV2SeeThroughDepthPass(_MarigoldV2BridgeBase):
     checkpoint_subdir = "depth/Log-layered"  # see-through (LayeredDepth) log depth
 
     produces_channels = [
-        ChannelSpec(name=CH_Z, description="See-through relative depth, per-clip normalized [0,1] (1=near)"),
+        ChannelSpec(
+            name=CH_Z, description="See-through relative depth, per-clip normalized [0,1] (1=near)"
+        ),
         ChannelSpec(name=CH_Z_RAW, description="Raw affine-invariant log depth (un-normalized)"),
     ]
     smoothable_channels = [CH_Z]
