@@ -173,13 +173,9 @@ Drop a plate folder onto the shot list, pick the passes you want, hit **Submit l
   <img src="docs/img/gui-passes-tab.jpg" alt="LiveActionAOV GUI — Passes tab" width="900">
 </p>
 
-One engine menu: **Auto** (ViTMatte) is the default, green/blue screen keying is one click away, everything else sits under Advanced. Any object in the Masks tab can use its own engine, and its preview updates as soon as you change it:
+One engine menu: **Auto** (ViTMatte) is the default, green/blue screen keying is one click away, everything else sits under Advanced. Any object in the Masks tab can use its own engine, and its preview updates as soon as you change it.
 
-<p align="center">
-  <img src="docs/img/gui-engine-menu.jpg" alt="Passes tab with the default engine, and the Masks tab with a per-object engine" width="760">
-</p>
-
-A loaded shot with the Output tab open — multi-shot batch queueing, proxy resolution, and the "what the model sees" Transformed view in the centre viewport.
+A batch of shots with the Output tab open: one output root for the session, the next version folder shown before you submit, proxy resolution and delivery format. The centre viewport shows the "what the model sees" Transformed view.
 
 <p align="center">
   <img src="docs/img/gui-loaded-shot.jpg" alt="LiveActionAOV GUI — loaded shot, Output tab" width="900">
