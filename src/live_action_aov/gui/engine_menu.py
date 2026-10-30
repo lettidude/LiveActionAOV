@@ -1,7 +1,7 @@
 # LiveActionAOV
 # Copyright (c) 2026 Leonardo Paolini
 # Developed with Claude (Anthropic)
-# License: MIT
+# License: BUSL-1.1 (see LICENSE)
 
 """One engine picker for the whole GUI (field feedback: too many engine
 dropdowns, then an "Apply" step on top).

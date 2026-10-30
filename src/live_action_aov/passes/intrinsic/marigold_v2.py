@@ -1,7 +1,7 @@
 # LiveActionAOV
 # Copyright (c) 2026 Leonardo Paolini
 # Developed with Claude (Anthropic)
-# License: MIT
+# License: BUSL-1.1 (see LICENSE)
 
 """Marigold V2 bridge passes — albedo and see-through depth via an EXTERNAL
 environment (huawei-bayerlab/marigold-v2, Apache-2.0, ToG/SIGGRAPH Asia 2026).

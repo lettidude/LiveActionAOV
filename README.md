@@ -217,4 +217,11 @@ Developed with [Claude](https://claude.com/) (Anthropic).
 
 ## License
 
-Core: MIT. Individual model plugins have their own licenses — see the license matrix in [architecture notes](docs/architecture.md#license-matrix). Every sidecar EXR carries a `liveActionAOV/<pass>/license` metadata stamp plus a top-level `liveActionAOV/matte/commercial` flag so downstream QC can audit what's shippable.
+LiveActionAOV is developed by Leonardo Paolini, public since April 2026. From 30 October 2026 (v0.10.0) it is released under the [Business Source License 1.1](LICENSE):
+
+- **Free** for individuals and freelancers, studios under 10 people, and any non-commercial use (education, research, personal projects).
+- **Studios of 10 or more people** need a one-off commercial license per major version: see [COMMERCIAL.md](COMMERCIAL.md).
+- Each version becomes **Apache-2.0** four years after its release.
+- Code published before 30 October 2026 stays under the MIT License.
+
+The AI models LiveActionAOV downloads and the vendored code under `src/live_action_aov/vendored/` keep their own licenses — see the license matrix in [architecture notes](docs/architecture.md#license-matrix). Every sidecar EXR carries a `liveActionAOV/<pass>/license` metadata stamp plus a top-level `liveActionAOV/matte/commercial` flag so downstream QC can audit what's shippable.

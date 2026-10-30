@@ -7,7 +7,7 @@ name = "live-action-aov"
 version = "0.9.0"
 description = "AI-driven VFX plate preprocessor: depth, normals, motion, mattes as sidecar EXRs"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "BUSL-1.1" }
 # Capped below 3.13: NumPy is pinned <2.0 (1.26), which does not support
 # Python 3.13+ and crashes on import with "OverflowError: cannot convert
 # longdouble infinity to integer". Without this cap (and the .python-version
@@ -21,7 +21,7 @@ authors = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Operating System :: POSIX :: Linux",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: MacOS",

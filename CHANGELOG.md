@@ -7,6 +7,12 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **License: MIT -> Business Source License 1.1** from 30 October 2026.
+  Free for individuals, freelancers, studios under 10 people and
+  non-commercial use; larger studios buy a one-off license per major version
+  (COMMERCIAL.md). Each version becomes Apache-2.0 after four years. Code
+  published before the change stays MIT; vendored third-party code keeps its
+  own license.
 - **A camera solve that fails on the footage no longer kills the run.**
   On a locked-off or panning shot the camera track (and the splat that
   needs it) used to raise and throw away every other pass of the job, mattes

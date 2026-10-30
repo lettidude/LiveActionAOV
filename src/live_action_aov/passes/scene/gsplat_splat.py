@@ -1,7 +1,7 @@
 # LiveActionAOV
 # Copyright (c) 2026 Leonardo Paolini
 # Developed with Claude (Anthropic)
-# License: MIT
+# License: BUSL-1.1 (see LICENSE)
 
 """Gaussian splat of the static scene, trained on the shot's own camera solve.
 

@@ -1,7 +1,7 @@
 # LiveActionAOV
 # Copyright (c) 2026 Leonardo Paolini
 # Developed with Claude (Anthropic)
-# License: MIT
+# License: BUSL-1.1 (see LICENSE)
 
 """VIDEO_CLIP pass helpers — window planning and overlap stitching.
 
