@@ -16,6 +16,13 @@ uses [semantic versioning](https://semver.org/).
   0.5) counts as a failure instead of exporting a 10-frame camera. The splat
   warns when the masked objects cover over 40% of the plate (the clean plate
   behind them is then mostly guesswork; Preview output shows it too).
+- **Camera solves no longer fail at random.** COLMAP's incremental mapper
+  picked its initial frame pair with a random seed: the same ALEXA 65 plate
+  solved 100/100 frames or 3/100 about half the time. The mapper now runs with
+  fixed seeds and, when a model covers too little, re-maps with the next seed
+  (`mapping_attempts`, 4; only the mapping is redone, not features or
+  matching). The best model is kept. Car plate after the fix: 4/4 runs
+  100/100 frames, 0.76 px (multithreading still moves the focal by ~1%).
 - **One engine menu.** Run engine (Passes tab) and object engine (Masks
   tab) are the same kind of menu: the recommended engine first, Green /
   blue screen second, everything else under Advanced. The Masks tab lost

@@ -452,3 +452,57 @@ def test_split_solve_is_a_failure_not_a_camera(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(RuntimeError, match="3/4 frames could be solved"):
         p.run_shot(_Reader(4), (1001, 1004))
     assert p._solve is None and p.emit_sidecars(None) == {}
+
+
+class _FakeModel:
+    def __init__(self, n: int) -> None:
+        self.n = n
+
+    def num_reg_images(self) -> int:
+        return self.n
+
+    def write(self, path: str) -> None:
+        pass
+
+
+def test_mapping_retries_another_seed_when_it_covers_too_little(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The incremental mapper's initial pair is random: the A65 car solved
+    100/100 or 3/100 at random. A short model -> re-map with the next seed."""
+    import types
+
+    seeds: list[int] = []
+    covered = {0: 3, 1: 100}
+
+    class _Opts:
+        random_seed = -1
+
+    def incremental_mapping(database_path, image_path, output_path, options):
+        seeds.append(options.random_seed)
+        return {0: _FakeModel(covered.get(options.random_seed, 0))}
+
+    fake = types.SimpleNamespace(
+        ImageReaderOptions=lambda: types.SimpleNamespace(),
+        FeatureExtractionOptions=lambda: types.SimpleNamespace(sift=types.SimpleNamespace()),
+        CameraMode=types.SimpleNamespace(SINGLE=0),
+        SequentialPairingOptions=lambda: types.SimpleNamespace(),
+        IncrementalPipelineOptions=_Opts,
+        extract_features=lambda **kw: None,
+        match_sequential=lambda db, pairing_options: None,
+        incremental_mapping=incremental_mapping,
+    )
+    monkeypatch.setattr(mod.importlib, "import_module", lambda name: fake)
+    frames = [(1000 + i, f"f{i}.png") for i in range(100)]
+    p = PyColmapCameraPass()
+    rec = p._solve_colmap(tmp_path, tmp_path, None, frames)
+    assert rec.num_reg_images() == 100 and seeds == [0, 1]
+    assert p._sparse_dir == tmp_path / "sparse" / "seed1" / "0"
+
+    seeds.clear()
+    covered.clear()  # never enough: every attempt runs, the best one is kept
+    covered[2] = 20
+    rec = PyColmapCameraPass({"mapping_attempts": 3})._solve_colmap(
+        tmp_path, tmp_path, None, frames
+    )
+    assert seeds == [0, 1, 2] and rec.num_reg_images() == 20

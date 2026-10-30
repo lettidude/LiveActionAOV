@@ -44,7 +44,7 @@ import math
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import numpy as np
 
@@ -114,6 +114,10 @@ class PyColmapCameraPass(UtilityPass):
         "mapper": "incremental",  # "incremental" | "global" (GLOMAP-style, pycolmap 4)
         # Fewer solved frames than this = no camera (the run keeps the rest).
         "min_registered_fraction": 0.5,
+        # The incremental mapper's initial pair is random: on the A65 car the
+        # same plate solved 100/100 or 3/100 half the time. Each attempt uses
+        # a fixed seed and re-runs only the mapping.
+        "mapping_attempts": 4,
         "camera_model": "SIMPLE_PINHOLE",
         # Long edge of the images SIFT sees. PF0081 (2048 wide): 2048 ->
         # 0.86 px / 62 s per 32 frames, 1024 -> 0.6 px@1K / 21 s.
@@ -376,21 +380,55 @@ class PyColmapCameraPass(UtilityPass):
             recs = pycolmap.global_mapping(
                 database_path=db, image_path=image_dir, output_path=sparse
             )
-        else:
+            rec, self._sparse_dir = self._pick_model(recs, sparse)
+            return rec
+        need = float(self.params.get("min_registered_fraction", 0.5)) * len(frame_list)
+        attempts = max(1, int(self.params.get("mapping_attempts", 1)))
+        best: tuple[Any, Path] | None = None
+        for seed in range(attempts):
+            out = sparse / f"seed{seed}"
+            out.mkdir(exist_ok=True)
+            opts = pycolmap.IncrementalPipelineOptions()
+            opts.random_seed = seed
             recs = pycolmap.incremental_mapping(
-                database_path=db, image_path=image_dir, output_path=sparse
+                database_path=db, image_path=image_dir, output_path=out, options=opts
             )
+            if recs:
+                rec, model_dir = self._pick_model(recs, out)
+                if best is None or rec.num_reg_images() > best[0].num_reg_images():
+                    best = (rec, model_dir)
+                if rec.num_reg_images() >= need:
+                    break
+            got = best[0].num_reg_images() if best else 0
+            if seed + 1 < attempts:
+                _log.info(
+                    "Camera solve: mapping seed %d covered %d/%d frames, retrying",
+                    seed,
+                    got,
+                    len(frame_list),
+                )
+        if best is None:
+            self._no_reconstruction()
+        self._sparse_dir = best[1]
+        return best[0]
+
+    def _pick_model(self, recs: dict[int, Any], out: Path) -> tuple[Any, Path]:
+        """Largest of the mapper's models and its folder."""
         if not recs:
-            raise RuntimeError(
-                "Camera track: no reconstruction. Likely causes: no parallax "
-                "(locked-off / pure pan), heavy motion blur, or a textureless plate."
-            )
+            self._no_reconstruction()
         key, rec = max(recs.items(), key=lambda kv: kv[1].num_reg_images())
-        self._sparse_dir = sparse / str(key)
-        if not self._sparse_dir.exists():  # some pycolmap builds write only the best model
-            self._sparse_dir.mkdir(parents=True, exist_ok=True)
-            rec.write(str(self._sparse_dir))
-        return rec
+        model_dir = out / str(key)
+        if not model_dir.exists():  # some pycolmap builds write only the best model
+            model_dir.mkdir(parents=True, exist_ok=True)
+            rec.write(str(model_dir))
+        return rec, model_dir
+
+    @staticmethod
+    def _no_reconstruction() -> NoReturn:
+        raise RuntimeError(
+            "Camera track: no reconstruction. Likely causes: no parallax "
+            "(locked-off / pure pan), heavy motion blur, or a textureless plate."
+        )
 
 
 # ---------------------------------------------------------------------------
