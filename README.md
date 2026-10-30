@@ -4,9 +4,9 @@
 
 # LiveActionAOV
 
-**AI-driven AOV pass generator for VFX plates.** Reads EXR image sequences, runs depth / normals / motion / matte passes, writes sidecar EXRs with Nuke-ready channel conventions.
+**Live-action plates in, Nuke-ready AOVs out.** Point it at an EXR sequence and it gives you per-object mattes and Cryptomatte, depth, normals, motion vectors, a solved **camera track**, a **Gaussian-splat clean plate**, and a Nuke comp with all of it already wired. Everything runs locally on your GPU.
 
-> **Status:** alpha, pre-v1 release
+> **Status:** alpha, pre-v1. In development since April 2026, by Leonardo Paolini (VFX / 2D supervisor).
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=HnosSnK1MKs">
@@ -120,6 +120,43 @@ Close-ups — **normals** (camera-space surface orientation, drives relight) and
 
 ---
 
+## Camera track and clean plate
+
+Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motion with the SAM 3 masks keeping moving people out of the solve. You get a Nuke `Camera2`, a point cloud and the COLMAP model in `camera/`. Checked inside Nuke 16 by reprojecting the solved points: **0.73 px** on the plate below, 0.8 px on an ALEXA 65 plate, 1.3 px on a Netflix test plate.
+
+Add **Gaussian splat** and the camera plus the plate train a 3D Gaussian splat of the set, with the masked objects left out. Rendered back through the camera it gives a **clean plate** with the people removed, plus a depth pass, wired into the comp:
+
+<p align="center">
+  <img src="docs/img/camera-splat-cleanplate.jpg" alt="Plate, splat clean plate with the hand removed, and the matte - first and last frame" width="900">
+</p>
+
+> Left to right: plate, splat clean plate, matte. Top: first frame, bottom: last frame.
+
+A camera needs parallax. On a locked-off shot or a pure pan the solve fails cleanly: camera and splat are skipped, every other pass is still written, and the log says why.
+
+---
+
+## Check the output without Nuke
+
+Every run goes to `<your root>/<shot>/v001/`, then `v002`, and so on. Nothing is ever overwritten and nothing is written next to the plate:
+
+```
+<root>/<shot>/v001/
+    <shot>_v001.comp.nk      open this in Nuke
+    passes/                  the utility EXRs (+ Cryptomatte)
+    camera/                  Nuke camera, point cloud, COLMAP model
+    splat/                   clean plate + splat
+    logs/
+```
+
+Right-click a shot and choose **Preview output** to scrub any version, layer by layer, with each mask over the plate and the camera and splat numbers underneath:
+
+<p align="center">
+  <img src="docs/img/preview-output.jpg" alt="Preview output dialog - mask over the plate, camera and splat summary" width="900">
+</p>
+
+---
+
 ## Interactive roto — click to a soft-edged Cryptomatte
 
 Click an element in the viewport (or drag a box around it); the SAM 3 tracker propagates it across the whole shot into a named **Cryptomatte ID**. Add the **BiRefNet** refiner and the hard mask becomes a roto-grade **soft alpha** — hair, motion blur, fine edges — written to the `matte.*` channels. Preview the mask on the seed frame before committing, refine a click at a time. All local, commercial-clean, scene-referred.
@@ -144,6 +181,12 @@ Drop a plate folder onto the shot list, pick the passes you want, hit **Submit l
 
 <p align="center">
   <img src="docs/img/gui-passes-tab.jpg" alt="LiveActionAOV GUI — Passes tab" width="900">
+</p>
+
+One engine menu: **Auto** (ViTMatte) is the default, green/blue screen keying is one click away, everything else sits under Advanced. Any object in the Masks tab can use its own engine, and its preview updates as soon as you change it:
+
+<p align="center">
+  <img src="docs/img/gui-engine-menu.jpg" alt="Passes tab with the default engine, and the Masks tab with a per-object engine" width="760">
 </p>
 
 A loaded shot with the Output tab open — multi-shot batch queueing, proxy resolution, and the "what the model sees" Transformed view in the centre viewport.
