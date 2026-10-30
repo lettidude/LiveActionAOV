@@ -44,7 +44,7 @@ uv run liveaov --help        # CLI reference
 
 > **First run downloads model checkpoints from Hugging Face.** Expect
 > **~1.5 GB** for a minimal stack (Depth Anything V2 + DSINE + RAFT +
-> SAM 3 + RVM) up to **~12 GB** for the full video-aware stack
+> SAM 3 + ViTMatte) up to **~12 GB** for the full video-aware stack
 > (DepthCrafter + NormalCrafter + MatAnyone 2). Cached at
 > `~/.cache/huggingface/hub` (Linux/macOS) or
 > `%USERPROFILE%\.cache\huggingface\hub` (Windows). Subsequent runs are
@@ -122,7 +122,7 @@ Close-ups — **normals** (camera-space surface orientation, drives relight) and
 
 ## Camera track and clean plate
 
-Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motion with the SAM 3 masks keeping moving people out of the solve. You get a Nuke `Camera2`, a point cloud and the COLMAP model in `camera/`. Checked inside Nuke 16 by reprojecting the solved points: **0.73 px** on the plate below, 0.8 px on an ALEXA 65 plate, 1.3 px on a Netflix test plate.
+Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motion with the SAM 3 masks keeping moving people out of the solve. You get a Nuke `Camera2`, a point cloud and the COLMAP model in `camera/`. Checked inside Nuke 16 by reprojecting the solved points: **0.73 px** on an ActionVFX plate, 0.8 px on an ALEXA 65 plate, 1.3 px on a Netflix test plate.
 
 Add **Gaussian splat** and the camera plus the plate train a 3D Gaussian splat of the set, with the masked objects left out. Rendered back through the camera it gives a **clean plate** with the people removed, plus a depth pass, wired into the comp.
 
@@ -149,13 +149,13 @@ Right-click a shot and choose **Preview output** to scrub any version, layer by 
 
 ## Interactive roto — click to a soft-edged Cryptomatte
 
-Click an element in the viewport (or drag a box around it); the SAM 3 tracker propagates it across the whole shot into a named **Cryptomatte ID**. Add the **BiRefNet** refiner and the hard mask becomes a roto-grade **soft alpha** — hair, motion blur, fine edges — written to the `matte.*` channels. Preview the mask on the seed frame before committing, refine a click at a time. All local, commercial-clean, scene-referred.
+Click an element in the viewport (or drag a box around it); the SAM 3 tracker propagates it across the whole shot into a named **Cryptomatte ID**. The refiner (ViTMatte by default, BiRefNet under Advanced) turns the hard mask into a roto-grade **soft alpha** — hair, motion blur, fine edges — written to the `matte.*` channels. Preview the mask on the seed frame before committing, refine a click at a time. All local, commercial-clean, scene-referred.
 
 <p align="center">
   <img src="docs/img/click-to-mask.png" alt="LiveActionAOV Masks tab — click-to-mask: live SAM 3 mask preview with include/exclude points and a per-object list" width="900">
 </p>
 
-The Masks tab: seed objects with a box or a few clicks, preview the SAM 3 mask on the spot, and build a named per-object list — each becomes a Cryptomatte ID at submit. Add BiRefNet and those masks gain soft, roto-grade edges:
+The Masks tab: seed objects with a box or a few clicks, preview the SAM 3 mask on the spot, and build a named per-object list — each becomes a Cryptomatte ID at submit. The refiner gives those masks soft, roto-grade edges:
 
 <p align="center">
   <img src="docs/img/birefnet-roto.gif" alt="BiRefNet soft matte over a live-action plate — hair and motion-blur edge detail" width="720">
@@ -216,8 +216,8 @@ Tested on Nuke 16.0.
 
 | Platform | GPU | Status |
 |---|---|---|
-| Windows 11 | NVIDIA RTX 20 / 30 / 40 / 50 series | ✅ **Tested at v0.1.0** |
-| Linux (Ubuntu 22.04+) | NVIDIA RTX 20 / 30 / 40 / 50 series | ⚠️ Expected to work via `install.sh` (CUDA + uv path identical to Windows) but **untested at v0.1.0**. Bug reports welcome. |
+| Windows 11 | NVIDIA RTX 20 / 30 / 40 / 50 series | ✅ **Main platform** (developed and tested on an RTX 5090; proxy mode for smaller cards) |
+| Linux (Ubuntu 22.04+) | NVIDIA RTX 20 / 30 / 40 / 50 series | ⚠️ Expected to work via `install.sh` (CUDA + uv path identical to Windows) but **not regularly tested**. Bug reports welcome. |
 | macOS (Apple Silicon) | M1 / M2 / M3 / M4 (MPS) | ⚠️ **Best-effort.** Some passes work via MPS; fp16 models (DepthCrafter, NormalCrafter, MatAnyone2) are CUDA-only. The GUI refuses Submit and explains when a pass isn't available. |
 | Any platform | AMD GPU (ROCm) | ❌ Untested — wheels exist, none of our passes have been validated against them. |
 | Any platform | CPU-only | ❌ Not a supported configuration — fp16 kernels don't exist on CPU. |
@@ -228,7 +228,7 @@ See [docs/install.md](docs/install.md#alternate-gpu-configurations) for manual o
 
 ## Author
 
-**Leonardo Paolini** — VFX compositor / pipeline TD building tools at the intersection of comp and ML.
+**Leonardo Paolini** — VFX supervisor and 2D compositing supervisor, building ML tools for comp.
 
 - Email: [LeonardoVFX@gmail.com](mailto:LeonardoVFX@gmail.com)
 - GitHub: [@lettidude](https://github.com/lettidude)
@@ -243,14 +243,13 @@ Developed with [Claude](https://claude.com/) (Anthropic).
 ## Support
 
 - **Bug reports / feature requests:** [open an issue](https://github.com/lettidude/LiveActionAOV/issues).
-- **Questions about a specific pass / model wiring:** start a [discussion](https://github.com/lettidude/LiveActionAOV/discussions).
-- **Direct contact:** [LeonardoVFX@gmail.com](mailto:LeonardoVFX@gmail.com) — fastest for studio-pipeline questions.
+- **Direct contact:** [LeonardoVFX@gmail.com](mailto:LeonardoVFX@gmail.com) — studio pipelines, commercial licenses, integration.
 
 ---
 
 ## License
 
-LiveActionAOV is developed by Leonardo Paolini, public since April 2026. From 30 October 2026 (v0.10.0) it is released under the [Business Source License 1.1](LICENSE):
+LiveActionAOV is developed by Leonardo Paolini, public since April 2026. From 30 October 2026 (the main branch and v0.10.0 onward) it is released under the [Business Source License 1.1](LICENSE):
 
 - **Free** for individuals and freelancers, studios under 10 people, and any non-commercial use (education, research, personal projects).
 - **Studios of 10 or more people** need a one-off commercial license per major version: see [COMMERCIAL.md](COMMERCIAL.md).
