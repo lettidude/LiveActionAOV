@@ -124,13 +124,7 @@ Close-ups — **normals** (camera-space surface orientation, drives relight) and
 
 Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motion with the SAM 3 masks keeping moving people out of the solve. You get a Nuke `Camera2`, a point cloud and the COLMAP model in `camera/`. Checked inside Nuke 16 by reprojecting the solved points: **0.73 px** on the plate below, 0.8 px on an ALEXA 65 plate, 1.3 px on a Netflix test plate.
 
-Add **Gaussian splat** and the camera plus the plate train a 3D Gaussian splat of the set, with the masked objects left out. Rendered back through the camera it gives a **clean plate** with the people removed, plus a depth pass, wired into the comp:
-
-<p align="center">
-  <img src="docs/img/camera-splat-cleanplate.jpg" alt="Plate, splat clean plate with the hand removed, and the matte - first and last frame" width="900">
-</p>
-
-> Left to right: plate, splat clean plate, matte. Top: first frame, bottom: last frame.
+Add **Gaussian splat** and the camera plus the plate train a 3D Gaussian splat of the set, with the masked objects left out. Rendered back through the camera it gives a **clean plate** with the people removed, plus a depth pass, wired into the comp.
 
 A camera needs parallax. On a locked-off shot or a pure pan the solve fails cleanly: camera and splat are skipped, every other pass is still written, and the log says why.
 
@@ -149,11 +143,7 @@ Every run goes to `<your root>/<shot>/v001/`, then `v002`, and so on. Nothing is
     logs/
 ```
 
-Right-click a shot and choose **Preview output** to scrub any version, layer by layer, with each mask over the plate and the camera and splat numbers underneath:
-
-<p align="center">
-  <img src="docs/img/preview-output.jpg" alt="Preview output dialog - mask over the plate, camera and splat summary" width="900">
-</p>
+Right-click a shot and choose **Preview output** to scrub any version, layer by layer, with each mask over the plate and the camera and splat numbers underneath.
 
 ---
 
