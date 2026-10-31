@@ -6,6 +6,21 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Nodal camera for shots with no parallax.** A tripod pan / tilt or a
+  locked-off camera gave COLMAP nothing to triangulate and the shot got no
+  camera. Now the camera track falls back to a rotation-only solve from
+  COLMAP's own verified matches (`passes/camera/nodal.py`, numpy only): one
+  focal, one rotation per frame, camera at the origin, same Nuke camera +
+  points on a far sphere to check the pan. The focal is measured from the
+  pan when the camera turns enough (`nodal_min_motion`, 3% of the frame),
+  otherwise it comes from the lens metadata (ARRI `FocalLength`) or a guess,
+  with a warning. Accepted only if it fits (`nodal_max_error_px` 1.5): a
+  translating camera keeps the old failure. Synthetic 48-frame pan: focal
+  1399.9 / 1400 px, rotations within 0.006 deg, 0.11 px; ALEXA Mini LF
+  workshop (locked-off, was 0/100 frames): 100/100 at 0.97 px. The splat
+  skips a nodal camera with a clear message (no parallax, no clean plate).
+
 ## [0.10.1] — 2026-10-31
 
 ### Added

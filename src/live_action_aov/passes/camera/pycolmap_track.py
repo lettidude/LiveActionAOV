@@ -133,6 +133,14 @@ class PyColmapCameraPass(UtilityPass):
         # Nuke film back (mm). Focal in mm is derived from this; the
         # vertical aperture follows the plate aspect.
         "haperture_mm": 24.892,
+        # No parallax (tripod pan / tilt, or a locked-off camera): COLMAP's
+        # mapper gives up, so solve rotation only from its verified matches
+        # (passes/camera/nodal.py). Accepted only if it fits that well.
+        "nodal_fallback": True,
+        "nodal_max_error_px": 1.5,  # median, at solve resolution
+        # Image motion below this fraction of the long edge cannot measure
+        # the focal: use the lens metadata (ARRI FocalLength), else a guess.
+        "nodal_min_motion": 0.03,
         "keep_workdir": False,
     }
 
@@ -145,6 +153,7 @@ class PyColmapCameraPass(UtilityPass):
         self._workdir: Path | None = None
         self._sparse_dir: Path | None = None
         self._masked_labels: list[str] = []
+        self._lens_mm: float | None = None
 
     # --- per-frame hooks unused (VIDEO_CLIP) ---
     def preprocess(self, frames: np.ndarray) -> Any:  # pragma: no cover
@@ -182,14 +191,31 @@ class PyColmapCameraPass(UtilityPass):
         if len(frame_list) < 3:
             raise RuntimeError(f"Camera track needs at least 3 frames; got {len(frame_list)}.")
         mask_dir = self._export_masks(frame_list, solve_wh)
-        rec = self._solve_colmap(self._workdir, image_dir, mask_dir, frame_list)
-        self._solve = build_solve_from_reconstruction(
-            rec,
-            frame_list=frame_list,
-            plate_wh=plate_wh,
-            params=self.params,
-            masked_labels=self._masked_labels,
+        min_frac = float(self.params.get("min_registered_fraction", 0.5))
+        failure: RuntimeError | None = None
+        try:
+            rec = self._solve_colmap(self._workdir, image_dir, mask_dir, frame_list)
+            self._solve = build_solve_from_reconstruction(
+                rec,
+                frame_list=frame_list,
+                plate_wh=plate_wh,
+                params=self.params,
+                masked_labels=self._masked_labels,
+            )
+        except RuntimeError as e:
+            failure, self._solve = e, None
+        short = (
+            self._solve is not None
+            and self._solve.quality.registered_frame_count
+            < min_frac * self._solve.quality.total_frame_count
         )
+        if (self._solve is None or short) and self.params.get("nodal_fallback", True):
+            nodal = self._solve_nodal(self._workdir / "database.db", frame_list, plate_wh, solve_wh)
+            if nodal is not None:
+                self._solve, self._sparse_dir = nodal, None
+                return {}
+        if self._solve is None:
+            raise failure or RuntimeError("Camera track: no reconstruction.")
         q = self._solve.quality
         _log.info(
             "Camera solve: %d/%d frames registered, mean reprojection %.3f px (plate res), "
@@ -202,7 +228,6 @@ class PyColmapCameraPass(UtilityPass):
         )
         for w in q.warnings:
             _log.warning("Camera solve: %s", w)
-        min_frac = float(self.params.get("min_registered_fraction", 0.5))
         if q.registered_frame_count < min_frac * q.total_frame_count:
             # A solve covering a few frames is not a camera for the shot
             # (no parallax over most of it: a pan or a locked-off camera).
@@ -278,7 +303,9 @@ class PyColmapCameraPass(UtilityPass):
         out: list[tuple[int, str]] = []
         plate_wh = solve_wh = (0, 0)
         for f in range(frame_range[0], frame_range[1] + 1):
-            arr, _attrs = reader.read_frame(f)
+            arr, attrs = reader.read_frame(f)
+            if f == frame_range[0]:
+                self._lens_mm = lens_focal_mm(attrs)
             arr = np.nan_to_num(np.asarray(arr, dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
             if arr.ndim == 3 and arr.shape[-1] >= 3:
                 grey = 0.2126 * arr[..., 0] + 0.7152 * arr[..., 1] + 0.0722 * arr[..., 2]
@@ -411,6 +438,85 @@ class PyColmapCameraPass(UtilityPass):
             self._no_reconstruction()
         self._sparse_dir = best[1]
         return best[0]
+
+    def _solve_nodal(
+        self,
+        db_path: Path,
+        frame_list: list[tuple[int, str]],
+        plate_wh: tuple[int, int],
+        solve_wh: tuple[int, int],
+    ) -> CameraSolve | None:
+        """Rotation-only solve from COLMAP's verified matches, or None when
+        it does not fit (the camera really translates, or too few matches)."""
+        from live_action_aov.passes.camera import nodal
+
+        pairs = read_verified_pairs(db_path, frame_list)
+        if not pairs:
+            return None
+        w, h = solve_wh
+        c = (w / 2.0, h / 2.0)
+        long_edge = float(max(w, h))
+        hap = float(self.params.get("haperture_mm", 24.892))
+        prior = self._lens_mm / hap * w if self._lens_mm else 0.8 * long_edge
+        frames = sorted({p[0] for p in pairs} | {p[1] for p in pairs})
+        R0 = nodal.chain_rotations(pairs, prior, c, frames)
+        angle = max(float(np.linalg.norm(nodal.matrix_to_rotvec(R))) for R in R0.values())
+        measured = angle * prior >= float(self.params.get("nodal_min_motion", 0.03)) * long_edge
+        f0 = prior
+        if measured:
+            f0 = nodal.estimate_focal(pairs, solve_wh)
+            R0 = nodal.chain_rotations(pairs, f0, c, frames)
+        sol = nodal.refine(pairs, f0, R0, solve_wh, fix_focal=not measured)
+        errs = list(sol.frame_error_px.values())
+        med = float(np.median(errs)) if errs else 1e9
+        need = float(self.params.get("min_registered_fraction", 0.5)) * len(frame_list)
+        if med > float(self.params.get("nodal_max_error_px", 1.5)) or len(sol.rotations) < need:
+            _log.info(
+                "Camera solve: rotation-only fallback does not fit (median %.2f px, %d/%d "
+                "frames) - the camera translates or the plate has too little detail.",
+                med,
+                len(sol.rotations),
+                len(frame_list),
+            )
+            return None
+        if measured:
+            focal_note = f"focal measured from the pan ({sol.focal_px * plate_wh[0] / w:.0f} px)"
+        elif self._lens_mm:
+            focal_note = (
+                f"the camera barely moves, so the focal comes from the lens metadata "
+                f"({self._lens_mm:g} mm on a {hap:g} mm film back - set the real film back in Nuke)"
+            )
+        else:
+            focal_note = (
+                "the camera barely moves and the plate has no lens metadata: the focal is a "
+                "GUESS (0.8 x long edge) - set it from the camera report"
+            )
+        solve = build_solve_from_nodal(
+            sol,
+            frame_list=frame_list,
+            plate_wh=plate_wh,
+            solve_wh=solve_wh,
+            params=self.params,
+            masked_labels=self._masked_labels,
+            pairs=pairs,
+            lens_mm=None if measured else self._lens_mm,
+        )
+        solve.quality.warnings.insert(
+            0, f"No parallax: rotation-only (nodal) camera, translation fixed at 0; {focal_note}."
+        )
+        q = solve.quality
+        _log.info(
+            "Camera solve (nodal, rotation only): %d/%d frames, %.3f px (plate res), "
+            "focal %.1f px; masked: %s",
+            q.registered_frame_count,
+            q.total_frame_count,
+            q.aggregate_reprojection_error_px,
+            solve.intrinsics.fx_px,
+            ", ".join(self._masked_labels) or "none",
+        )
+        for warn in q.warnings:
+            _log.warning("Camera solve: %s", warn)
+        return solve
 
     def _pick_model(self, recs: dict[int, Any], out: Path) -> tuple[Any, Path]:
         """Largest of the mapper's models and its folder."""
@@ -607,6 +713,144 @@ def build_solve_from_reconstruction(
         intrinsics=intr,
         extrinsics=extrinsics,
         unregistered_frames=sorted(f for f, _ in frame_list if f not in registered),
+        points=points,
+        quality=quality,
+    )
+
+
+def lens_focal_mm(attrs: dict[str, Any]) -> float | None:
+    """Lens focal length (mm) from plate metadata (ARRI `.../FocalLength`)."""
+    for k, v in (attrs or {}).items():
+        if str(k).lower().endswith("focallength"):
+            try:
+                mm = float(v)
+            except (TypeError, ValueError):
+                continue
+            if 1.0 < mm < 2000.0:
+                return mm
+    return None
+
+
+def read_verified_pairs(
+    db_path: Path, frame_list: list[tuple[int, str]], min_inliers: int = 30
+) -> list[tuple[int, int, np.ndarray, np.ndarray]]:
+    """(i, j, xi, xj) per verified COLMAP pair: indices into `frame_list`,
+    inlier keypoint pixels at solve resolution."""
+    pycolmap: Any = importlib.import_module("pycolmap")
+    name_to_idx = {name: k for k, (_f, name) in enumerate(frame_list)}
+    db = pycolmap.Database.open(str(db_path))
+    try:
+        ids = {im.image_id: name_to_idx.get(im.name) for im in db.read_all_images()}
+        kp: dict[int, np.ndarray] = {}
+        pair_ids, geoms = db.read_two_view_geometries()
+        out = []
+        for pid, g in zip(pair_ids, geoms, strict=False):
+            a, b = int(pid) // 2147483647, int(pid) % 2147483647  # COLMAP pair id
+            m = np.asarray(g.inlier_matches)
+            if len(m) < min_inliers or ids.get(a) is None or ids.get(b) is None:
+                continue
+            for iid in (a, b):
+                if iid not in kp:
+                    kp[iid] = np.asarray(db.read_keypoints(iid))[:, :2].astype(np.float64)
+            i, j = ids[a], ids[b]
+            xi, xj = kp[a][m[:, 0]], kp[b][m[:, 1]]
+            out.append((i, j, xi, xj) if i < j else (j, i, xj, xi))
+        return out
+    finally:
+        db.close()
+
+
+def build_solve_from_nodal(
+    sol: Any,
+    *,
+    frame_list: list[tuple[int, str]],
+    plate_wh: tuple[int, int],
+    solve_wh: tuple[int, int],
+    params: dict[str, Any],
+    masked_labels: list[str] | None = None,
+    pairs: list[tuple[int, int, np.ndarray, np.ndarray]] | None = None,
+    lens_mm: float | None = None,
+    point_distance: float = 100.0,
+    max_points: int = 4000,
+) -> CameraSolve:
+    """`nodal.NodalSolve` -> `CameraSolve`: rotation-only poses (camera at
+    the origin), plate-resolution intrinsics, and the matched features as
+    points on a sphere `point_distance` away (to check the pan in Nuke)."""
+    sw, sh = solve_wh
+    pw, ph = plate_wh if plate_wh[0] > 0 else solve_wh
+    scale = pw / max(sw, 1)
+    f = float(sol.focal_px) * scale
+    hap = float(params.get("haperture_mm", 24.892))
+    intr = Intrinsics(
+        fx_px=f,
+        fy_px=f,
+        cx_px=pw / 2.0,
+        cy_px=ph / 2.0,
+        width_px=pw,
+        height_px=ph,
+        haperture_mm_hint=hap,
+        vaperture_mm_hint=hap * ph / max(pw, 1),
+        focal_mm_hint=float(lens_mm) if lens_mm else f * hap / max(pw, 1),
+        distortion_model="pinhole",
+        distortion_params=[],
+    )
+    extrinsics: list[Extrinsic] = []
+    per_err: dict[int, float] = {}
+    per_count: dict[int, int] = {}
+    for k, R_cw in sol.rotations.items():
+        frame = frame_list[k][0]
+        R_gl, t_gl = opencv_to_opengl_world_from_camera(R_cw, np.zeros(3))
+        extrinsics.append(
+            Extrinsic(
+                frame=frame,
+                translation=(float(t_gl[0]), float(t_gl[1]), float(t_gl[2])),
+                rotation_euler_zxy_deg=rotation_matrix_to_euler_zxy_deg(R_gl),
+                rotation_matrix=tuple(tuple(float(v) for v in row) for row in R_gl),  # type: ignore[arg-type]
+            )
+        )
+        if k in sol.frame_error_px:
+            per_err[frame] = float(sol.frame_error_px[k]) * scale
+            per_count[frame] = int(sol.frame_match_count.get(k, 0))
+    extrinsics.sort(key=lambda e: e.frame)
+    points: list[ScenePoint] = []
+    if pairs:
+        from live_action_aov.passes.camera.nodal import bearings
+
+        rng = np.random.default_rng(0)
+        per_pair = max(1, max_points // len(pairs))
+        for i, _j, xi, _xj in pairs:
+            if i not in sol.rotations:
+                continue
+            sel = rng.choice(len(xi), min(per_pair, len(xi)), replace=False)
+            dirs = bearings(xi[sel], float(sol.focal_px), (sw / 2.0, sh / 2.0)) @ sol.rotations[i]
+            for d in dirs * point_distance:
+                points.append(
+                    ScenePoint(
+                        xyz=world_point_to_gl((float(d[0]), float(d[1]), float(d[2]))),
+                        color_rgb=(255, 255, 255),
+                        reprojection_error_px=0.0,
+                        track_length=2,
+                    )
+                )
+    registered = {e.frame for e in extrinsics}
+    quality = _quality(per_err, per_count, len(registered), len(frame_list), intr, extrinsics)
+    return CameraSolve(
+        shot=ShotRef(),
+        backend=BackendInfo(
+            name="pycolmap",
+            version=_pycolmap_version(),
+            matcher=str(params.get("matcher", "sequential")),
+            sequential_overlap=int(params.get("sequential_overlap", 10)),
+            camera_model="SIMPLE_PINHOLE",
+            sift_max_features=int(params.get("sift_max_features", 8192)),
+            max_image_size=int(params.get("max_image_size", 2048)),
+            mapper="nodal",
+            masked_labels=list(masked_labels or []),
+        ),
+        conventions=Conventions(),
+        intrinsics=intr,
+        extrinsics=extrinsics,
+        unregistered_frames=sorted(fr for fr, _ in frame_list if fr not in registered),
         points=points,
         quality=quality,
     )

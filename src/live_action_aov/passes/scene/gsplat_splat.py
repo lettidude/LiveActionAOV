@@ -159,6 +159,11 @@ class GsplatSplatPass(UtilityPass):
                 "(the solve is passed in memory, not read from disk)."
             )
         solve = self._solve
+        if solve.backend.mapper == "nodal":
+            raise RuntimeError(
+                "splat_gsplat: the camera only rotates (nodal solve, no parallax) - a splat "
+                "cannot recover depth or what is behind objects. No clean plate written."
+            )
         dev = torch.device("cuda")
         torch.manual_seed(int(self.params["seed"]))
         np.random.seed(int(self.params["seed"]))
