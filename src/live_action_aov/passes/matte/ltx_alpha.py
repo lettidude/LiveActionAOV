@@ -1,0 +1,629 @@
+# LiveActionAOV
+# Copyright (c) 2026 Leonardo Paolini
+# Developed with Claude (Anthropic)
+# License: BUSL-1.1 (see LICENSE)
+
+"""LTX-2.5 Alpha-Gen refiner: SAM 3 finds the object, LTX generates its matte.
+
+A generative video matter, not an edge refiner: it is given only RGB - a
+RECTANGLE around the object with its surroundings - never another model's
+alpha (it needs context to understand what is foreground). Per track:
+
+1. The shot is cut in chunks of `chunk` frames (8n+1, LTX's frame grid),
+   overlapping by `overlap`; each chunk gets its own box, so the crop follows
+   a moving subject. Box = the object's hard mask over the chunk, padded by
+   `pad`, grown so neighbouring objects of similar size stay WHOLE (a person
+   cut at the box edge comes back as a hard line + texture garbage).
+2. The crop is scaled to `long_edge` (multiple of 32) and sent to the user's
+   ComfyUI (`comfy_url`) - LTX-2.5 22B distilled + the alpha-gen IC-LoRA.
+3. The result is levelled (0.5 / 99.5 percentile: Alpha-Gen leaves a haze),
+   put back where it came from at plate scale, and cross-faded with the
+   neighbouring chunks over the overlap.
+4. LTX mattes ANY foreground (a car door, the person next to it), so the
+   matte is gated by ViTMatte's guided trimap of the SAM mask: wide where
+   BiRefNet is unsure (hair, motion blur), tight where it is sure of
+   background. (`gate="dilate"`: the SAM mask grown by `gate_frac`, which
+   left soft fog over whatever LTX matted next to the object.)
+
+ComfyUI not running, or a node / model missing: the object falls back to
+ViTMatte with a warning - the run never fails because of it.
+
+Licence: LTX-2 Community License - free for organisations under USD 10M
+annual revenue, a commercial licence from Lightricks above that. Stated in
+the GUI label and in the sidecar metadata.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import shutil
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from live_action_aov.core.pass_base import License
+from live_action_aov.io.channels import CH_MATTE_A, CH_MATTE_B, CH_MATTE_G, CH_MATTE_R
+from live_action_aov.passes.matte.boxmask import stack_box
+from live_action_aov.passes.matte.rvm import RVMRefinerPass
+
+_log = logging.getLogger(__name__)
+
+#: Distilled schedule of the LTX-2.5 alpha-gen workflow.
+_SIGMAS = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+
+#: Nodes the graph needs (core ComfyUI + ComfyUI-VideoHelperSuite).
+_NODES = (
+    "UNETLoader",
+    "LTXICLoRALoaderModelOnly",
+    "LTXAddVideoICLoRAGuide",
+    "LTXVConditioning",
+    "LTXVEmptyLatentAudio",
+    "LTXVConcatAVLatent",
+    "LTXVSeparateAVLatent",
+    "LTXVCropGuides",
+    "VHS_LoadImagesPath",
+)
+
+
+class LTXAlphaRefinerPass(RVMRefinerPass):
+    name = "ltx_alpha_refiner"
+    version = "0.1.0"
+    license = License(
+        spdx="LicenseRef-LTX-2-Community",
+        commercial_use=True,
+        commercial_tool_resale=False,
+        notes=(
+            "LTX-2.5 + alpha-gen IC-LoRA (Lightricks), run in the user's own "
+            "ComfyUI. LTX-2 Community License: free for organisations under "
+            "USD 10M annual revenue; above that a commercial licence from "
+            "Lightricks is required. Weights are not bundled."
+        ),
+    )
+
+    # Video model, temporally coherent by itself - but cross-faded chunks
+    # can still breathe a little: let the smoother see it like the others.
+    smoothable_channels = [CH_MATTE_R, CH_MATTE_G, CH_MATTE_B, CH_MATTE_A]
+
+    DEFAULT_PARAMS: dict[str, Any] = {
+        "comfy_url": "http://127.0.0.1:8188",
+        "unet": "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+        "lora": "LTX-2.5\\ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors",
+        "video_vae": "ltx-2.5-video-vae-bf16.safetensors",
+        "audio_vae": "ltx-2.5-audio-vae-bf16.safetensors",
+        "text_encoder": "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+        "seed": 42,
+        "chunk": 49,  # frames per LTX call, 8n+1
+        "overlap": 16,  # cross-faded frames between chunks
+        "long_edge": 1280,  # working resolution of the crop
+        "pad": 0.25,  # box padding, fraction of the box size
+        # A neighbour whose box is at most this times the object's box is
+        # kept whole inside the crop; bigger ones (car, wall) may be cut.
+        "neighbour_max_ratio": 1.5,
+        # "dilate": SAM mask grown by `gate_frac` of the long edge, feathered.
+        # "trimap": ViTMatte's guided trimap (SAM + BiRefNet): wide only
+        # where BiRefNet is unsure (hair, blur), tight where it is sure of
+        # background (a car door, a window frame touching the subject).
+        "gate": "trimap",
+        "gate_frac": 0.03,  # SAM gate dilation, fraction of the long edge
+        "timeout_s": 900,  # per chunk
+        # Dev: save each track's ungated LTX alpha + SAM mask here (npz).
+        "debug_dir": "",
+    }
+
+    def __init__(self, params: dict[str, Any] | None = None) -> None:
+        super().__init__(params)
+        self._fallback: RVMRefinerPass | None = None
+        self._comfy_ok: bool | None = None
+        self._track_id: int | None = None
+        self._first = 0
+
+    def _trust_outline(self) -> bool:
+        # Generates its own outline on purpose; the SAM gate bounds it.
+        return True
+
+    def _load_model(self) -> None:
+        # Nothing local: the model lives in ComfyUI.
+        self._model = object()
+
+    # ------------------------------------------------------------------
+    # Hooks: remember which track / which frame range is being refined
+    # ------------------------------------------------------------------
+
+    def run_shot(
+        self, reader: Any, frame_range: tuple[int, int]
+    ) -> dict[int, dict[str, np.ndarray]]:
+        self._first = int(frame_range[0])
+        try:
+            return super().run_shot(reader, frame_range)
+        finally:
+            if self._comfy_ok:
+                self._free()
+
+    def _refine_track(
+        self,
+        track: dict[str, Any],
+        frames: np.ndarray,
+        frame_to_local: dict[int, int],
+        n_frames: int,
+        plate_h: int,
+        plate_w: int,
+        track_id: int,
+    ) -> tuple[np.ndarray, list[int]]:
+        self._track_id = int(track_id)
+        return super()._refine_track(
+            track, frames, frame_to_local, n_frames, plate_h, plate_w, track_id
+        )
+
+    # ------------------------------------------------------------------
+    # Per track
+    # ------------------------------------------------------------------
+
+    def _refine_instance(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
+        if not self._comfy_ready():
+            return self._vitmatte()._refine_instance(plate_stack, hard_stack)
+        import cv2
+
+        T, H, W = hard_stack.shape
+        present = [t for t in range(T) if hard_stack[t].any()]
+        if not present:
+            return np.zeros((T, H, W), np.float32)
+        a, b = present[0], present[-1] + 1  # the object's span
+        chunk = int(self.params["chunk"])
+        overlap = int(self.params["overlap"])
+        acc = np.zeros((T, H, W), np.float32)
+        # Per PIXEL: two chunks' boxes differ, so a pixel outside one box
+        # must not be averaged with that chunk's zero.
+        wsum = np.zeros((T, H, W), np.float32)
+        work = Path(tempfile.mkdtemp(prefix="laov_ltx_"))
+        try:
+            spans = chunk_spans(b - a, chunk, overlap)
+            for ci, (s0, nf) in enumerate(spans):
+                # Frames of this call (a short object: the plate around it,
+                # then the last frame repeated up to LTX's 8n+1 length).
+                idx = [min(a + s0 + j, T - 1) for j in range(nf)]
+                own = [k for k in dict.fromkeys(idx) if k < b]
+                box = self._chunk_box(hard_stack, own, H, W)
+                if box is None:
+                    continue
+                y0, x0, y1, x1 = box
+                ww, wh = work_size(x1 - x0, y1 - y0, int(self.params["long_edge"]))
+                d = work / f"c{ci:03d}"
+                d.mkdir()
+                for j, k in enumerate(idx):
+                    crop = cv2.resize(
+                        np.clip(plate_stack[k, y0:y1, x0:x1, :3], 0.0, 1.0),
+                        (ww, wh),
+                        interpolation=cv2.INTER_AREA if ww < x1 - x0 else cv2.INTER_CUBIC,
+                    )
+                    cv2.imwrite(
+                        str(d / f"f_{j:04d}.png"),
+                        cv2.cvtColor((crop * 255.0 + 0.5).astype(np.uint8), cv2.COLOR_RGB2BGR),
+                    )
+                t0 = time.time()
+                raw = self._run_ltx(d, ww, wh, nf)
+                _log.info(
+                    "LTX alpha: track %s chunk %d/%d, frames %d-%d, box %dx%d -> %dx%d, %.1fs",
+                    self._track_id,
+                    ci + 1,
+                    len(spans),
+                    self._first + idx[0],
+                    self._first + idx[-1],
+                    x1 - x0,
+                    y1 - y0,
+                    ww,
+                    wh,
+                    time.time() - t0,
+                )
+                raw = levels(raw)
+                back = cv2.INTER_AREA if ww > x1 - x0 else cv2.INTER_LINEAR
+                for j, k in enumerate(idx):
+                    if k >= b or (j > 0 and idx[j - 1] == k):
+                        continue  # padding frames
+                    w = crossfade_weight(j, nf, overlap, ci == 0, ci == len(spans) - 1)
+                    acc[k, y0:y1, x0:x1] += w * cv2.resize(
+                        raw[j], (x1 - x0, y1 - y0), interpolation=back
+                    )
+                    wsum[k, y0:y1, x0:x1] += w
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        alpha = acc / np.maximum(wsum, 1e-6)
+        if self.params.get("debug_dir"):
+            d = Path(str(self.params["debug_dir"]))
+            d.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                d / f"ltx_track{self._track_id}.npz",
+                alpha=alpha.astype(np.float16),
+                hard=(hard_stack > 0).astype(np.uint8),
+                first=self._first,
+            )
+        if str(self.params.get("gate", "dilate")) == "trimap":
+            return alpha * self._trimap_gate(plate_stack, hard_stack)
+        return alpha * sam_gate(hard_stack, float(self.params["gate_frac"]))
+
+    def _trimap_gate(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
+        """1 where ViTMatte's guided trimap is not certain background,
+        feathered by a couple of pixels."""
+        import cv2
+
+        from live_action_aov.passes.matte.vitmatte import guided_trimap
+
+        vit = self._vitmatte()
+        out = np.zeros(hard_stack.shape, np.float32)
+        for t in range(hard_stack.shape[0]):
+            m = (hard_stack[t] > 0).astype(np.uint8)
+            if not m.any():
+                continue
+            tri = guided_trimap(m, vit._guide_alpha(plate_stack[t], m))
+            out[t] = cv2.GaussianBlur((tri > 0).astype(np.float32), (0, 0), 2.0)
+        return out
+
+    def _chunk_box(
+        self, hard_stack: np.ndarray, frames: list[int], H: int, W: int
+    ) -> tuple[int, int, int, int] | None:
+        m = np.any(hard_stack[frames] > 0, axis=0)
+        if not m.any():
+            return None
+        ys, xs = np.nonzero(m)
+        own = (int(ys.min()), int(xs.min()), int(ys.max()) + 1, int(xs.max()) + 1)
+        return grow_box(
+            own,
+            self._neighbour_boxes(frames),
+            float(self.params["pad"]),
+            float(self.params["neighbour_max_ratio"]),
+            H,
+            W,
+        )
+
+    def _neighbour_boxes(self, local_frames: list[int]) -> list[tuple[int, int, int, int]]:
+        """Union box over the chunk of every OTHER track (parts and the
+        whole of this object excluded: they are the object itself)."""
+        me = self._track_id
+        family = {me}
+        for t, tr in self._hard_masks.items():
+            p = tr.get("parent")
+            if p is not None and (int(t) == me or int(p) == me):
+                family |= {int(t), int(p)}
+        want = {self._first + k for k in local_frames}
+        out = []
+        for t, tr in self._hard_masks.items():
+            if int(t) in family:
+                continue
+            boxes = []
+            st = tr.get("stack")
+            for k, f in enumerate(tr.get("frames") or []):
+                if int(f) in want:
+                    bm = stack_box(st, k)
+                    if bm.crop.size and bm.crop.any():
+                        boxes.append(bm.box)
+            if boxes:
+                out.append(
+                    (
+                        min(b[0] for b in boxes),
+                        min(b[1] for b in boxes),
+                        max(b[2] for b in boxes),
+                        max(b[3] for b in boxes),
+                    )
+                )
+        return out
+
+    # ------------------------------------------------------------------
+    # ComfyUI (tests override `_comfy_ready` / `_run_ltx`)
+    # ------------------------------------------------------------------
+
+    def _url(self, path: str) -> str:
+        return str(self.params["comfy_url"]).rstrip("/") + path
+
+    def _comfy_ready(self) -> bool:
+        if self._comfy_ok is None:
+            self._comfy_ok, msg = comfy_check(self.params)
+            if not self._comfy_ok:
+                _log.warning("LTX alpha: %s - using ViTMatte for these objects.", msg)
+        return self._comfy_ok
+
+    def _vitmatte(self) -> RVMRefinerPass:
+        if self._fallback is None:
+            from live_action_aov.passes.matte.vitmatte import ViTMatteRefinerPass
+
+            self._fallback = ViTMatteRefinerPass({})
+        return self._fallback
+
+    def _graph(self, folder: Path, ww: int, wh: int, nf: int, prefix: str) -> dict[str, Any]:
+        p = self.params
+        return {
+            "1": {
+                "class_type": "UNETLoader",
+                "inputs": {"unet_name": p["unet"], "weight_dtype": "default"},
+            },
+            "2": {
+                "class_type": "LTXICLoRALoaderModelOnly",
+                "inputs": {"model": ["1", 0], "lora_name": p["lora"], "strength_model": 1.0},
+            },
+            "3": {"class_type": "VAELoader", "inputs": {"vae_name": p["video_vae"]}},
+            "4": {"class_type": "VAELoader", "inputs": {"vae_name": p["audio_vae"]}},
+            "5": {
+                "class_type": "CLIPLoader",
+                "inputs": {"clip_name": p["text_encoder"], "type": "ltxv"},
+            },
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["5", 0]}},
+            "7": {
+                "class_type": "LTXVConditioning",
+                "inputs": {"positive": ["6", 0], "negative": ["6", 0], "frame_rate": 24.0},
+            },
+            "8": {
+                "class_type": "VHS_LoadImagesPath",
+                "inputs": {
+                    "directory": str(folder),
+                    "image_load_cap": 0,
+                    "skip_first_images": 0,
+                    "select_every_nth": 1,
+                },
+            },
+            "9": {
+                "class_type": "EmptyLTXVLatentVideo",
+                "inputs": {"width": ww, "height": wh, "length": nf, "batch_size": 1},
+            },
+            "10": {
+                "class_type": "LTXAddVideoICLoRAGuide",
+                "inputs": {
+                    "positive": ["7", 0],
+                    "negative": ["7", 1],
+                    "vae": ["3", 0],
+                    "latent": ["9", 0],
+                    "image": ["8", 0],
+                    "frame_idx": 0,
+                    "strength": 1.0,
+                    "latent_downscale_factor": ["2", 1],
+                    "crop": "disabled",
+                    "use_tiled_encode": False,
+                    "tile_size": 256,
+                    "tile_overlap": 64,
+                },
+            },
+            "11": {
+                "class_type": "LTXVEmptyLatentAudio",
+                "inputs": {
+                    "frames_number": nf,
+                    "frame_rate": 24.0,
+                    "batch_size": 1,
+                    "audio_vae": ["4", 0],
+                },
+            },
+            "12": {
+                "class_type": "LTXVConcatAVLatent",
+                "inputs": {"video_latent": ["10", 2], "audio_latent": ["11", 0]},
+            },
+            "13": {"class_type": "RandomNoise", "inputs": {"noise_seed": int(p["seed"])}},
+            "14": {
+                "class_type": "CFGGuider",
+                "inputs": {
+                    "model": ["2", 0],
+                    "positive": ["10", 0],
+                    "negative": ["10", 1],
+                    "cfg": 1.0,
+                },
+            },
+            "15": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler_ancestral"}},
+            "16": {"class_type": "ManualSigmas", "inputs": {"sigmas": _SIGMAS}},
+            "17": {
+                "class_type": "SamplerCustomAdvanced",
+                "inputs": {
+                    "noise": ["13", 0],
+                    "guider": ["14", 0],
+                    "sampler": ["15", 0],
+                    "sigmas": ["16", 0],
+                    "latent_image": ["12", 0],
+                },
+            },
+            "18": {"class_type": "LTXVSeparateAVLatent", "inputs": {"av_latent": ["17", 0]}},
+            "19": {
+                "class_type": "LTXVCropGuides",
+                "inputs": {"positive": ["10", 0], "negative": ["10", 1], "latent": ["18", 0]},
+            },
+            "20": {
+                "class_type": "VAEDecodeTiled",
+                "inputs": {
+                    "samples": ["19", 2],
+                    "vae": ["3", 0],
+                    "tile_size": 512,
+                    "overlap": 64,
+                    "temporal_size": 64,
+                    "temporal_overlap": 8,
+                },
+            },
+            "21": {
+                "class_type": "SaveImage",
+                "inputs": {"images": ["20", 0], "filename_prefix": prefix},
+            },
+        }
+
+    def _run_ltx(self, folder: Path, ww: int, wh: int, nf: int) -> np.ndarray:
+        """One LTX call: the PNG crops in `folder` -> (nf, wh, ww) alpha."""
+        import cv2
+
+        prefix = f"laov_ltx_alpha/{uuid.uuid4().hex[:10]}"
+        body = json.dumps(
+            {"prompt": self._graph(folder, ww, wh, nf, prefix), "client_id": "liveactionaov"}
+        ).encode()
+        req = urllib.request.Request(
+            self._url("/prompt"), data=body, headers={"Content-Type": "application/json"}
+        )
+        try:
+            pid = json.load(urllib.request.urlopen(req, timeout=60))["prompt_id"]
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(
+                f"LTX alpha: ComfyUI refused the graph: {e.read().decode()[:1500]}"
+            ) from e
+        deadline = time.time() + float(self.params["timeout_s"])
+        while True:
+            hist = json.load(urllib.request.urlopen(self._url(f"/history/{pid}"), timeout=60))
+            if pid in hist:
+                st = hist[pid].get("status", {})
+                if st.get("status_str") == "error":
+                    raise RuntimeError(f"LTX alpha: ComfyUI error: {json.dumps(st)[:1500]}")
+                if st.get("completed"):
+                    break
+            if time.time() > deadline:
+                raise RuntimeError(f"LTX alpha: ComfyUI took over {self.params['timeout_s']} s")
+            time.sleep(1.0)
+        out = []
+        for im in hist[pid]["outputs"]["21"]["images"]:
+            q = urllib.parse.urlencode(
+                {"filename": im["filename"], "subfolder": im["subfolder"], "type": im["type"]}
+            )
+            data = urllib.request.urlopen(self._url(f"/view?{q}"), timeout=60).read()
+            img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+            out.append(img.astype(np.float32).mean(axis=2) / 255.0)
+        return np.stack(out)[:nf]
+
+    def _free(self) -> None:
+        """Unload LTX from ComfyUI's VRAM (the server keeps running)."""
+        try:
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    self._url("/free"),
+                    data=json.dumps({"unload_models": True, "free_memory": True}).encode(),
+                    headers={"Content-Type": "application/json"},
+                ),
+                timeout=30,
+            )
+        except (urllib.error.URLError, OSError):
+            pass
+
+
+# ----------------------------------------------------------------------
+# Pure helpers (unit-tested)
+# ----------------------------------------------------------------------
+
+
+def comfy_check(params: dict[str, Any] | None = None) -> tuple[bool, str]:
+    """Is the ComfyUI at `comfy_url` ready for LTX Alpha? (ok, one-line
+    message for the user). Checks the server, the nodes and the model files."""
+    p = {**LTXAlphaRefinerPass.DEFAULT_PARAMS, **(params or {})}
+    url = str(p["comfy_url"]).rstrip("/")
+    try:
+        info = json.load(urllib.request.urlopen(url + "/object_info", timeout=20))
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return False, f"ComfyUI not reachable at {url} ({e})"
+    missing = [f"node {n}" for n in _NODES if n not in info]
+    missing += [
+        str(p[key])
+        for key, node, field in (
+            ("unet", "UNETLoader", "unet_name"),
+            ("lora", "LTXICLoRALoaderModelOnly", "lora_name"),
+            ("video_vae", "VAELoader", "vae_name"),
+            ("audio_vae", "VAELoader", "vae_name"),
+            ("text_encoder", "CLIPLoader", "clip_name"),
+        )
+        if node in info and str(p[key]) not in _choices(info[node], field)
+    ]
+    if missing:
+        return False, f"ComfyUI at {url} is missing: " + ", ".join(missing)
+    return True, f"ComfyUI ready at {url} (LTX-2.5 + alpha-gen LoRA found)"
+
+
+def _choices(node_info: dict[str, Any], field: str) -> list[str]:
+    """A combo input's options: `[[...]]` (classic) or `["COMBO", {"options": [...]}]`."""
+    spec = (node_info.get("input", {}).get("required", {}) or {}).get(field)
+    if not spec:
+        return []
+    first = spec[0]
+    if isinstance(first, list):
+        return [str(x) for x in first]
+    if len(spec) > 1 and isinstance(spec[1], dict):
+        return [str(x) for x in spec[1].get("options") or []]
+    return []
+
+
+def chunk_spans(n: int, chunk: int, overlap: int) -> list[tuple[int, int]]:
+    """(start, length) of each LTX call over `n` frames. Lengths are 8k+1;
+    a span shorter than `chunk` is one call rounded UP to 8k+1 (the caller
+    pads); the last chunk is pinned to the end so nothing is left over."""
+    if n <= chunk:
+        return [(0, 8 * ((max(n, 1) - 1 + 7) // 8) + 1)]
+    step = max(1, chunk - overlap)
+    starts = list(range(0, n - chunk + 1, step))
+    if starts[-1] != n - chunk:
+        starts.append(n - chunk)
+    return [(s, chunk) for s in starts]
+
+
+def crossfade_weight(j: int, length: int, overlap: int, first: bool, last: bool) -> float:
+    """Weight of frame j of a chunk: ramps up over the overlap at its start
+    (unless it is the first chunk) and down at its end (unless the last)."""
+    w = 1.0
+    if not first:
+        w = min(w, (j + 1) / (overlap + 1))
+    if not last:
+        w = min(w, (length - j) / (overlap + 1))
+    return float(w)
+
+
+def grow_box(
+    own: tuple[int, int, int, int],
+    neighbours: list[tuple[int, int, int, int]],
+    pad: float,
+    max_ratio: float,
+    H: int,
+    W: int,
+) -> tuple[int, int, int, int]:
+    """Pad the object's box (y0, x0, y1, x1); then any neighbour of similar
+    size it cuts is taken in WHOLE, until nothing changes."""
+    y0, x0, y1, x1 = own
+    bh, bw = y1 - y0, x1 - x0
+    box = (
+        max(0, int(y0 - pad * bh)),
+        max(0, int(x0 - pad * bw)),
+        min(H, int(y1 + pad * bh) + 1),
+        min(W, int(x1 + pad * bw) + 1),
+    )
+    area = (box[2] - box[0]) * (box[3] - box[1])
+    small = [n for n in neighbours if (n[2] - n[0]) * (n[3] - n[1]) <= max_ratio * area]
+    changed = True
+    while changed:
+        changed = False
+        for n in small:
+            overlaps = n[0] < box[2] and n[2] > box[0] and n[1] < box[3] and n[3] > box[1]
+            inside = n[0] >= box[0] and n[1] >= box[1] and n[2] <= box[2] and n[3] <= box[3]
+            if overlaps and not inside:
+                box = (min(box[0], n[0]), min(box[1], n[1]), max(box[2], n[2]), max(box[3], n[3]))
+                changed = True
+    return box
+
+
+def work_size(cw: int, ch: int, long_edge: int) -> tuple[int, int]:
+    """Crop size scaled to `long_edge`, both sides multiples of 32."""
+    s = long_edge / max(cw, ch)
+    return max(32, round(cw * s / 32) * 32), max(32, round(ch * s / 32) * 32)
+
+
+def levels(raw: np.ndarray) -> np.ndarray:
+    """Alpha-Gen leaves a grey haze: stretch the 0.5 / 99.5 percentiles to 0 / 1."""
+    lo, hi = np.percentile(raw, 0.5), np.percentile(raw, 99.5)
+    return np.clip((raw - lo) / max(float(hi - lo), 1e-3), 0.0, 1.0).astype(np.float32)
+
+
+def sam_gate(hard_stack: np.ndarray, frac: float) -> np.ndarray:
+    """Soft gate: each frame's SAM mask dilated by `frac` of the long edge,
+    feathered over half that."""
+    import cv2
+
+    T, H, W = hard_stack.shape
+    r = max(3, int(frac * max(H, W)))
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    out = np.zeros((T, H, W), np.float32)
+    for t in range(T):
+        if hard_stack[t].any():
+            g = cv2.dilate((hard_stack[t] > 0).astype(np.float32), ker)
+            out[t] = np.clip(cv2.GaussianBlur(g, (0, 0), r / 2), 0.0, 1.0)
+    return out
+
+
+__all__ = ["LTXAlphaRefinerPass", "comfy_check"]

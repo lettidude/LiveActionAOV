@@ -995,6 +995,7 @@ class InspectorPanel(QWidget):
             "birefnet": "BiRefNet",
             "chromakey": "ChromaKey",
             "rvm": "RVM",
+            "ltx": "LTX Alpha",
         }
         eng = f"  ·  [{eng_names.get(inst.refiner, inst.refiner)}]" if inst.refiner else ""
         return f"{inst.name}  ·  f{inst.seed_frame}  ·  {n} pt{'s' if n != 1 else ''}{box}{eng}"
@@ -1077,8 +1078,28 @@ class InspectorPanel(QWidget):
             return
         label = self._default_engine_combo.short_label()
         pinned = sum(1 for ci in shot.click_instances if ci.refiner)
-        extra = f"; {pinned} object(s) pinned to their own engine" if pinned else ""
-        self._preview_refiner_note.setText(f"Run engine: {label}{extra}  (set per object below)")
+        extra = f", {pinned} object(s) with their own engine" if pinned else ""
+        text = f"Run engine: {label}{extra} (set per object below)"
+        if any(ci.refiner == "ltx" for ci in shot.click_instances):
+            from live_action_aov.gui import comfy_dialog
+
+            last = comfy_dialog._last
+            if last is None or last[0] != comfy_dialog.comfy_url():
+                text += "\nLTX Alpha: ComfyUI not checked yet - Models > ComfyUI for LTX Alpha."
+            elif last[1]:
+                text += (
+                    "\nLTX Alpha: ✓ ComfyUI ready. Preview shows the run engine;"
+                    " LTX runs at submit."
+                )
+            else:
+                text += (
+                    f"\nLTX Alpha: ✗ {last[2]} - falls back to ViTMatte."
+                    " Fix in Models > ComfyUI for LTX Alpha."
+                )
+        self._preview_refiner_note.setText(text)
+
+    def refresh_engine_note(self) -> None:
+        self._update_preview_refiner_note()
 
     def _on_mask_new(self) -> None:
         if self._current is None:
@@ -1147,6 +1168,16 @@ class InspectorPanel(QWidget):
         if inst is None:
             return
         inst.refiner = str(data[0])
+        if inst.refiner == "ltx":
+            from PySide6.QtWidgets import QApplication
+
+            from live_action_aov.gui import comfy_dialog
+
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                comfy_dialog.status()  # check once, the note shows the result
+            finally:
+                QApplication.restoreOverrideCursor()
         item = self._mask_list.currentItem()
         if item is not None:
             item.setText(self._mask_item_text(inst))

@@ -116,6 +116,7 @@ _PREFETCH_EXEMPT = {
     "marigold_v2_depth_seethrough",
     "camera_pycolmap",
     "splat_gsplat",
+    "ltx_alpha_refiner",  # weights live in the user's ComfyUI
 }
 
 
