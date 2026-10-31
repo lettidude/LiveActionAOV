@@ -19,8 +19,11 @@ alpha (it needs context to understand what is foreground). Per track:
 3. The result is levelled (0.5 / 99.5 percentile: Alpha-Gen leaves a haze),
    put back where it came from at plate scale, and cross-faded with the
    neighbouring chunks over the overlap.
-4. LTX mattes ANY foreground (a car door, other people), so the matte is
-   gated by the object's SAM mask dilated by `gate_frac` of the long edge.
+4. LTX mattes ANY foreground (a car door, the person next to it), so the
+   matte is gated by ViTMatte's guided trimap of the SAM mask: wide where
+   BiRefNet is unsure (hair, motion blur), tight where it is sure of
+   background. (`gate="dilate"`: the SAM mask grown by `gate_frac`, which
+   left soft fog over whatever LTX matted next to the object.)
 
 ComfyUI not running, or a node / model missing: the object falls back to
 ViTMatte with a warning - the run never fails because of it.
@@ -104,8 +107,15 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         # A neighbour whose box is at most this times the object's box is
         # kept whole inside the crop; bigger ones (car, wall) may be cut.
         "neighbour_max_ratio": 1.5,
+        # "dilate": SAM mask grown by `gate_frac` of the long edge, feathered.
+        # "trimap": ViTMatte's guided trimap (SAM + BiRefNet): wide only
+        # where BiRefNet is unsure (hair, blur), tight where it is sure of
+        # background (a car door, a window frame touching the subject).
+        "gate": "trimap",
         "gate_frac": 0.03,  # SAM gate dilation, fraction of the long edge
         "timeout_s": 900,  # per chunk
+        # Dev: save each track's ungated LTX alpha + SAM mask here (npz).
+        "debug_dir": "",
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -225,7 +235,35 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         finally:
             shutil.rmtree(work, ignore_errors=True)
         alpha = acc / np.maximum(wsum, 1e-6)
+        if self.params.get("debug_dir"):
+            d = Path(str(self.params["debug_dir"]))
+            d.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                d / f"ltx_track{self._track_id}.npz",
+                alpha=alpha.astype(np.float16),
+                hard=(hard_stack > 0).astype(np.uint8),
+                first=self._first,
+            )
+        if str(self.params.get("gate", "dilate")) == "trimap":
+            return alpha * self._trimap_gate(plate_stack, hard_stack)
         return alpha * sam_gate(hard_stack, float(self.params["gate_frac"]))
+
+    def _trimap_gate(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
+        """1 where ViTMatte's guided trimap is not certain background,
+        feathered by a couple of pixels."""
+        import cv2
+
+        from live_action_aov.passes.matte.vitmatte import guided_trimap
+
+        vit = self._vitmatte()
+        out = np.zeros(hard_stack.shape, np.float32)
+        for t in range(hard_stack.shape[0]):
+            m = (hard_stack[t] > 0).astype(np.uint8)
+            if not m.any():
+                continue
+            tri = guided_trimap(m, vit._guide_alpha(plate_stack[t], m))
+            out[t] = cv2.GaussianBlur((tri > 0).astype(np.float32), (0, 0), 2.0)
+        return out
 
     def _chunk_box(
         self, hard_stack: np.ndarray, frames: list[int], H: int, W: int

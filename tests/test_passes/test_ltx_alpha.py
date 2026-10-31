@@ -128,7 +128,7 @@ def _run(n: int, speed: int = 1, **params: object) -> tuple[_FakeComfy, dict]:
         },
     }
     _FakeComfy.calls = []
-    p = _FakeComfy({"long_edge": 128, "chunk": 17, "overlap": 8, **params})
+    p = _FakeComfy({"long_edge": 128, "chunk": 17, "overlap": 8, "gate": "dilate", **params})
     p.ingest_artifacts(art)
     return p, p.run_shot(_Reader(frames), frame_range=(1, n))
 
@@ -177,7 +177,7 @@ def test_gate_cuts_foreground_far_from_the_sam_mask() -> None:
             ]
         },
     }
-    p = _FakeComfy({"long_edge": 128, "pad": 2.0})  # crop wide enough to see it
+    p = _FakeComfy({"long_edge": 128, "pad": 2.0, "gate": "dilate"})  # crop sees it
     p.ingest_artifacts(art)
     a = p.run_shot(_Reader(frames), frame_range=(1, 9))[5]["matte.r"]
     assert a[100, 185] < 0.05
@@ -197,3 +197,16 @@ def test_comfyui_down_falls_back_to_vitmatte() -> None:
     frames, hard = _scene(3)
     out = p._refine_instance(np.stack(frames), hard)
     assert out.max() == pytest.approx(0.5)
+
+
+def test_trimap_gate_keeps_the_object_and_drops_far_foreground() -> None:
+    class _NoGuide:
+        def _guide_alpha(self, rgb, binm):  # type: ignore[no-untyped-def]
+            return None
+
+    p = LTXAlphaRefinerPass({})
+    p._fallback = _NoGuide()  # type: ignore[assignment]
+    frames, hard = _scene(2)
+    g = p._trimap_gate(np.stack(frames), hard)
+    assert g[0, 60, 40] > 0.99  # on the object
+    assert g[0, 60, 190] < 0.01  # far away
