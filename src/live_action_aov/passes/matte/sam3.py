@@ -1105,17 +1105,32 @@ class SAM3MattePass(UtilityPass):
 
         r = max(1, round(0.015 * max(H, W)))
         touch_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+        # A part ("hand") lies inside its whole by design: only a track of
+        # its own label covers it (PF0081: the hand detected over the arm
+        # was skipped as already covered by the person).
+        is_part = (
+            _part_label_test(self.params.get("part_labels", "auto"))
+            if float(self.params.get("part_containment", 0.7) or 0.0) > 0
+            else (lambda _label: False)
+        )
         for k in range(0, n, max(1, stride)):
             if budget <= 0:
                 break
             if k == seed_local:
                 continue
             f = first + k
-            covered = np.zeros((H, W), dtype=np.uint8)
+            covered: dict[str | None, np.ndarray] = {None: np.zeros((H, W), dtype=np.uint8)}
+
+            def cover(
+                label: str, mb: BoxMask, covered: dict[str | None, np.ndarray] = covered
+            ) -> None:
+                paint_max(covered[None], mb)
+                paint_max(covered.setdefault(label, np.zeros((H, W), dtype=np.uint8)), mb)
+
             for inst in self._instances:
                 m = inst.masks.get(f)
                 if m is not None:
-                    paint_max(covered, BoxMask.from_dense(m))
+                    cover(inst.label, BoxMask.from_dense(m))
             new: list[dict[str, Any]] = []
             for _tid, label, m in self._detect_frame(frames, k, concepts):
                 mb = BoxMask.from_dense(m)
@@ -1123,7 +1138,8 @@ class SAM3MattePass(UtilityPass):
                 if area <= 0 or (area_floor is not None and area < area_floor):
                     continue
                 by0, bx0, by1, bx1 = mb.box
-                if float((mb.crop & covered[by0:by1, bx0:bx1]).sum()) / area >= thr:
+                cov = covered.get(label if is_part(label) else None)
+                if cov is not None and float((mb.crop & cov[by0:by1, bx0:bx1]).sum()) / area >= thr:
                     continue
                 # Partly covered by a track of the SAME label = a piece the
                 # tracker lost (PF0048: the arm holding the rifle dropped out
@@ -1159,7 +1175,7 @@ class SAM3MattePass(UtilityPass):
                     }
                 )
                 next_id += 1
-                paint_max(covered, mb)  # one new track per thing on this frame
+                cover(label, mb)  # one new track per thing on this frame
                 if len(new) >= budget:
                     break
             if not new:
@@ -1412,12 +1428,15 @@ class SAM3MattePass(UtilityPass):
 
         # --- One owner per pixel -------------------------------------------
         if bool(self.params.get("exclusive_masks", True)) and len(self._instances) > 1:
-            self._instances = _dedupe_instances(
-                self._instances, self._priority, float(self.params.get("duplicate_iou", 0.85))
-            )
             contain = float(self.params.get("part_containment", 0.7) or 0.0)
+            is_part = _part_label_test(self.params.get("part_labels", "auto"))
+            self._instances = _dedupe_instances(
+                self._instances,
+                self._priority,
+                float(self.params.get("duplicate_iou", 0.85)),
+                is_part if contain > 0 else None,
+            )
             if contain > 0:
-                is_part = _part_label_test(self.params.get("part_labels", "auto"))
                 self._parent.update(_clip_parents(self._instances, self._parent, contain, is_part))
             live = {i.track_id for i in self._instances}
             self._parent = {c: p for c, p in self._parent.items() if c in live and p in live}
@@ -1646,13 +1665,24 @@ def _clip_iou(a: _DetectedInstance, b: _DetectedInstance, step: int = 4) -> floa
 
 
 def _dedupe_instances(
-    instances: list[_DetectedInstance], priority: dict[int, int], iou_thr: float
+    instances: list[_DetectedInstance],
+    priority: dict[int, int],
+    iou_thr: float,
+    is_part: Callable[[str], bool] | None = None,
 ) -> list[_DetectedInstance]:
     """Drop tracks that are the same object tracked twice (clip IoU above
-    `iou_thr`): the user's click wins over the detector, else the first."""
+    `iou_thr`): the user's click wins over the detector, else the first.
+    A part and a non-part ("hand" / "person") are never duplicates: with only
+    an arm in frame they are nearly the same pixels, and both were asked for."""
+
+    def same(a: _DetectedInstance, b: _DetectedInstance) -> bool:
+        if is_part is not None and is_part(a.label) != is_part(b.label):
+            return False
+        return _clip_iou(a, b) > iou_thr
+
     keep: list[_DetectedInstance] = []
     for inst in sorted(instances, key=lambda i: (-priority.get(i.track_id, 0), i.track_id)):
-        dup = next((k for k in keep if _clip_iou(inst, k) > iou_thr), None)
+        dup = next((k for k in keep if same(inst, k)), None)
         if dup is not None:
             _log.info(
                 "SAM3 matte: '%s' (track %d) duplicates '%s' (track %d) - kept one.",
@@ -1915,7 +1945,9 @@ def _seed_parents(
 ) -> dict[int, int]:
     """Part -> whole on the seed frame: an object whose detection mask lies at
     least `contain` inside a bigger object of another label is its part
-    (the smallest such whole). Parts of parts hang on the outermost whole."""
+    (the smallest such whole). Parts of parts hang on the outermost whole.
+    A non-part whole may be no bigger than its part: a "person" that is only
+    an arm in frame and a "hand" are the same pixels (PF0081)."""
     ms = {
         int(o["obj_id"]): (BoxMask.from_dense(o["mask"]), str(o.get("label", "")))
         for o in objs
@@ -1928,7 +1960,7 @@ def _seed_parents(
             continue
         best = None
         for w, (mw, lw) in ms.items():
-            if w == p or lw == lp or areas[w] <= areas[p] * 1.1:
+            if w == p or lw == lp or (is_part(lw) and areas[w] <= areas[p] * 1.1):
                 continue
             if float(inter_area(mp, mw)) / areas[p] >= contain and (
                 best is None or areas[w] < areas[best]
@@ -1983,7 +2015,7 @@ def _clip_parents(
                 continue
             fams = {f: family(w, f) for f in fr}
             aw = sum(int(m.sum()) for m in fams.values() if m is not None)
-            if aw <= ap * 1.1:
+            if is_part(w.label) and aw <= ap * 1.1:
                 continue
             inter = sum(int(((p.masks[f] > 0) & m).sum()) for f, m in fams.items() if m is not None)
             if inter / ap >= contain and (best is None or aw < best_area):

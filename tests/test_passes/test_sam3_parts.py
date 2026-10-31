@@ -246,3 +246,69 @@ def test_stray_same_label_track_does_not_halve_the_whole() -> None:
     post.ingest_artifacts(arts)
     lay = post.apply({1: dict(out)}, None, "s")[1]
     assert lay["mask.person"][8, 30] > 0.99  # not held out by its own hair
+
+
+def test_part_as_big_as_its_whole_still_hangs_on_it() -> None:
+    """Only an arm in frame: SAM's "person" is the arm and the "hand" is
+    nearly the same pixels. The hand must still be a part (mask.hand =
+    the hand), not lose every contested pixel to the person (PF0081)."""
+    from live_action_aov.passes.matte.sam3 import _clip_parents, _DetectedInstance, _part_label_test
+
+    arm = _rect(4, 30, 20, 30)
+    hand = _rect(6, 30, 20, 30)  # 92% of the arm, all of it inside
+    inst = [
+        _DetectedInstance(track_id=1, label="person", masks={1: arm}),
+        _DetectedInstance(track_id=2, label="hand", masks={1: hand}),
+    ]
+    assert _clip_parents(inst, {}, 0.7, _part_label_test("auto")) == {2: 1}
+
+    class _Arm(_Fake):
+        DETS = {"person": arm, "hand": hand}
+
+    p = _Arm({"concepts": ["person", "hand"], "min_area_fraction": 0.001})
+    out = p.run_shot(_Reader(2), frame_range=(1, 2))
+    assert out[1]["mask.hand"].sum() == hand.sum()
+    assert out[1]["mask.person"].sum() == arm.sum()
+
+
+def test_part_label_whole_still_needs_to_be_bigger() -> None:
+    """Two part-like labels of the same size ("hand", "fingers") must not
+    hang on each other."""
+    from live_action_aov.passes.matte.sam3 import _clip_parents, _DetectedInstance, _part_label_test
+
+    a = _rect(4, 30, 20, 30)
+    inst = [
+        _DetectedInstance(track_id=1, label="hand", masks={1: a}),
+        _DetectedInstance(track_id=2, label="fingers", masks={1: a.copy()}),
+    ]
+    assert _clip_parents(inst, {}, 0.7, _part_label_test("auto")) == {}
+
+
+def test_part_found_on_a_later_frame_is_not_covered_by_its_whole() -> None:
+    """Seed frame: the arm only. A later re-detection finds the hand on the
+    arm: it is a new part, not "already covered" by the person (PF0081)."""
+    arm, hand = _rect(4, 30, 20, 30), _rect(18, 30, 20, 30)
+
+    class _Later(_Fake):
+        def _detect_seed(self, seed_frame, concepts):  # type: ignore[override]
+            dets = [(1, "person", arm.copy())]
+            if float(seed_frame[0, 0, 0]) > 0.6:  # a later frame
+                dets.append((2, "hand", hand.copy()))
+            return dets
+
+    class _SeqReader(_Reader):
+        def read_frame(self, idx: int) -> tuple[np.ndarray, dict]:
+            return np.full((H, W, 3), 0.5 if idx == 1 else 0.7, np.float32), {}
+
+    p = _Later(
+        {
+            "concepts": ["person", "hand"],
+            "sample_frame": "first",
+            "redetect_stride": 2,
+            "min_area_fraction": 0.001,
+        }
+    )
+    out = p.run_shot(_SeqReader(3), frame_range=(1, 3))
+    inst = _by_label(p)
+    assert p._parent == {inst["hand"].track_id: inst["person"].track_id}
+    assert out[3]["mask.hand"].sum() == hand.sum()

@@ -29,6 +29,13 @@ uses [semantic versioning](https://semver.org/).
   (`mapping_attempts`, 4; only the mapping is redone, not features or
   matching). The best model is kept. Car plate after the fix: 4/4 runs
   100/100 frames, 0.76 px (multithreading still moves the focal by ~1%).
+- **A part as big as its whole keeps its mask.** With only an arm in frame,
+  SAM's "person" is the arm and "hand" is nearly the same pixels: the hand
+  was not made a part (the whole had to be 10% bigger), the person won every
+  contested pixel and mask.hand came out as an edge sliver. A non-part whole
+  may now be any size; a part and a non-part are never "duplicates"; and
+  re-detection no longer skips a part because its whole already covers it.
+  PF0081: mask.hand = the full hand, mask.person = arm + hand.
 - **One engine menu.** Run engine (Passes tab) and object engine (Masks
   tab) are the same kind of menu: the recommended engine first, Green /
   blue screen second, everything else under Advanced. The Masks tab lost
