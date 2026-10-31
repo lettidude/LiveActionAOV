@@ -73,12 +73,14 @@ from live_action_aov.io.channels import (
     CH_IRRADIANCE_R,
 )
 
-# Rough VRAM ceiling for the 14B Wan2.1 backbone at fp8/int8, 480p clip.
-# Field reports put Q8 Wan2.1-14B inference around ~15 GB; we round up to
-# 16 to leave headroom for the VAE + activations. Used by the GUI VRAM
-# capability gate (gui/cuda_check.meets_vram_requirement) so this pass
-# can bow out gracefully on small cards instead of OOM-crashing.
-MIN_VRAM_GB = 16.0
+# VRAM floor for the 14B Wan2.1 backbone UniVidX rides on. An early Q8
+# field report suggested ~15 GB, but the UniVidX_ComfyUI maintainer (same
+# upstream model) reports a hard 24 GB minimum at FP8 — peak 18-20 GB FP8,
+# 32-34 GB BF16. So 24 is the honest floor; a 16 GB claim would let the
+# GUI offer this pass on a card that then OOM-crashes mid-run. Used by the
+# GUI VRAM capability gate (gui/cuda_check.meets_vram_requirement) so this
+# pass bows out gracefully on small cards instead of crashing.
+MIN_VRAM_GB = 24.0
 
 
 class UniVidXIntrinsicPass(UtilityPass):
@@ -147,10 +149,18 @@ class UniVidXIntrinsicPass(UtilityPass):
         `docs/albedo-unividx.md`. Raising here (rather than shipping a
         guessed-at pipeline) keeps the tree honest: the contract is real,
         the inference is not wired.
+
+        Phase 3 contract — weights are LAZY. The ~85 GB of weights
+        (Wan2.1-T2V-14B backbone + UniVidX LoRAs) must download on the
+        FIRST run of this pass, never at install time, and only after the
+        user has been warned about the size. Installing LiveActionAOV must
+        stay lightweight; a multi-tens-of-GB pull at install would be a
+        non-starter for the field. See docs/albedo-unividx.md §"Weights are
+        lazy" for the exact requirement.
         """
         raise NotImplementedError(
             "UniVidXIntrinsicPass backend is not wired yet. Validate the "
-            "model with scripts/poc_unividx_prep.py on a 16 GB+ GPU first, "
+            "model with scripts/poc_unividx_prep.py on a 24 GB+ GPU first, "
             "then vendor the Apache-2.0 inference under "
             "src/live_action_aov/vendored/univid_x/ (see docs/albedo-unividx.md)."
         )
