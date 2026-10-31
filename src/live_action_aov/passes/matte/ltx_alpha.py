@@ -169,7 +169,9 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         chunk = int(self.params["chunk"])
         overlap = int(self.params["overlap"])
         acc = np.zeros((T, H, W), np.float32)
-        wsum = np.zeros(T, np.float32)
+        # Per PIXEL: two chunks' boxes differ, so a pixel outside one box
+        # must not be averaged with that chunk's zero.
+        wsum = np.zeros((T, H, W), np.float32)
         work = Path(tempfile.mkdtemp(prefix="laov_ltx_"))
         try:
             spans = chunk_spans(b - a, chunk, overlap)
@@ -219,10 +221,10 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
                     acc[k, y0:y1, x0:x1] += w * cv2.resize(
                         raw[j], (x1 - x0, y1 - y0), interpolation=back
                     )
-                    wsum[k] += w
+                    wsum[k, y0:y1, x0:x1] += w
         finally:
             shutil.rmtree(work, ignore_errors=True)
-        alpha = acc / np.maximum(wsum, 1e-6)[:, None, None]
+        alpha = acc / np.maximum(wsum, 1e-6)
         return alpha * sam_gate(hard_stack, float(self.params["gate_frac"]))
 
     def _chunk_box(

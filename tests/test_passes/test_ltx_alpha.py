@@ -94,21 +94,23 @@ class _Reader:
         return self._f[idx - 1], {}
 
 
-def _scene(n: int, h: int = 120, w: int = 200) -> tuple[list[np.ndarray], np.ndarray]:
+def _scene(
+    n: int, h: int = 120, w: int = 200, speed: int = 1
+) -> tuple[list[np.ndarray], np.ndarray]:
     """A white square moving right; SAM's mask is the square shrunk by 2 px
     (LTX should give back the full square)."""
     frames, hard = [], np.zeros((n, h, w), np.uint8)
     for t in range(n):
         f = np.zeros((h, w, 3), np.float32)
-        x = 20 + t
+        x = 20 + speed * t
         f[40:80, x : x + 40] = 1.0
         frames.append(f)
         hard[t, 42:78, x + 2 : x + 38] = 1
     return frames, hard
 
 
-def _run(n: int, **params: object) -> tuple[_FakeComfy, dict]:
-    frames, hard = _scene(n)
+def _run(n: int, speed: int = 1, **params: object) -> tuple[_FakeComfy, dict]:
+    frames, hard = _scene(n, w=200 + 5 * n * (speed - 1), speed=speed)
     art = {
         "sam3_hard_masks": {
             0: {1: {"label": "box", "frames": list(range(1, n + 1)), "stack": hard}}
@@ -144,6 +146,17 @@ def test_matte_lands_back_in_place_across_chunks(n: int) -> None:
         assert a[60, x + 20] > 0.95
         assert a[60, x + 50] < 0.05  # off the object
         assert a[10, 10] < 0.05
+
+
+def test_overlap_frames_keep_full_alpha_when_the_chunk_boxes_differ() -> None:
+    """A fast subject: each chunk's box covers a different part of the frame.
+    In the overlap a pixel inside only ONE box must keep that chunk's alpha,
+    not be averaged with the other chunk's zero (a hard cut in the hair)."""
+    p, out = _run(40, speed=5)
+    for t in range(9, 31):  # overlap frames of the 17/8 chunking
+        x = 20 + 5 * t
+        a = out[t + 1]["matte.r"]
+        assert a[60, x + 3 : x + 37].min() > 0.9, t
 
 
 def test_gate_cuts_foreground_far_from_the_sam_mask() -> None:
