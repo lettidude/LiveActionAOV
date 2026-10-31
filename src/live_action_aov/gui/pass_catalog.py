@@ -210,7 +210,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         # gsplat wheel (docs/gaussian_splat.md).
         ModelEntry(
             "splat_gsplat",
-            "Gaussian splat (clean plate + depth; gsplat wheel, minutes)",
+            "Camera track + Gaussian splat (clean plate + depth; minutes)",
             "Apache-2.0",
             True,
             ("camera_pycolmap", "splat_gsplat"),
