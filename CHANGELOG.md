@@ -6,6 +6,8 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-10-31
+
 ### Changed
 - **License: MIT -> Business Source License 1.1** from 30 October 2026.
   Free for individuals, freelancers, studios under 10 people and
@@ -56,10 +58,10 @@ uses [semantic versioning](https://semver.org/).
   re-previews it in one step. Licence badges are short (✓ / ⚠ NC, full
   licence in the tooltip) so the inspector needs no horizontal scroll; the
   BiRefNet-only "outline" option shows only when BiRefNet is the engine.
-- **Output folders.** The output root is always the user's choice (GUI
-  Output tab, remembered between sessions; CLI `--out`, now required) -
-  nothing is written next to the plate any more. Every run is a new version:
-  `<root>/<shot>/v001/` with `<shot>_v001.comp.nk` on top, EXRs in
+- **Output folders.** Nothing is written inside the plate folder any more,
+  and every run is a new version (next to the plate by default, see above,
+  or under one chosen root):
+  `<shot folder>/v001/` with `<shot>_v001.comp.nk` on top, EXRs in
   `passes/`, `camera/`, `splat/` (the splat was in `camera_track/`) and
   `logs/`. Sidecars are named after the shot, so a `name_####.exr` plate no
   longer gives `name_.utility.####.exr`. A custom shot-folder name stays per
