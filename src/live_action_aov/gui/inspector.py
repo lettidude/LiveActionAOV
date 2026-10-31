@@ -60,7 +60,7 @@ from PySide6.QtWidgets import (
 from live_action_aov.core.output_layout import next_version_dir
 from live_action_aov.gui.engine_menu import OBJECT_ENGINES, RUN_ENGINES, EngineButton
 from live_action_aov.gui.pass_catalog import PASS_CATALOG
-from live_action_aov.gui.shot_list import remember_output_root
+from live_action_aov.gui.shot_list import remember_output_mode, remember_output_root
 from live_action_aov.gui.shot_state import ClickInstance, ShotRegistry, ShotState
 from live_action_aov.io.colorspace_detect import SUPPORTED_COLORSPACES
 
@@ -144,8 +144,15 @@ class InspectorPanel(QWidget):
         self._auto_ev_label.setWordWrap(True)
 
         # --- Output location ---
-        # Always a user-chosen root (never next to the plate): each shot
-        # lands in <root>/<name>/v###/ and every run is a new version.
+        # Next to the plate (<plate folder>_utility/v###/, default: in
+        # production the utility lives in the plate's own tree) or one
+        # chosen root for the session (<root>/<name>/v###/).
+        self._out_mode_plate = QRadioButton("Next to the plate  (<plate folder>_utility)")
+        self._out_mode_root = QRadioButton("One root for every shot")
+        self._out_mode_group = QButtonGroup(self)
+        self._out_mode_group.addButton(self._out_mode_plate)
+        self._out_mode_group.addButton(self._out_mode_root)
+        self._out_mode_plate.toggled.connect(self._on_output_mode_toggled)
         self._out_root_label = QLabel("<no root chosen>")
         self._out_root_label.setStyleSheet("color: #888; font-size: 10pt;")
         self._out_root_label.setWordWrap(True)
@@ -159,7 +166,8 @@ class InspectorPanel(QWidget):
         self._external_name_edit = QLineEdit()
         self._external_name_edit.setPlaceholderText("<shot name>")
         self._external_name_edit.setToolTip(
-            "Subfolder name created inside the external root. Default: the shot's name."
+            "Folder the versions go in: next to the plate folder, or inside the "
+            "root. Default: <plate folder>_utility / the shot's name."
         )
         self._external_name_edit.textEdited.connect(self._on_external_name_edited)
 
@@ -576,6 +584,8 @@ class InspectorPanel(QWidget):
         session_wide_note = QLabel("These settings apply to every shot in the session.")
         session_wide_note.setStyleSheet("color: #777; font-size: 8pt; font-style: italic;")
         output_layout.addWidget(session_wide_note)
+        output_layout.addWidget(self._out_mode_plate)
+        output_layout.addWidget(self._out_mode_root)
         output_layout.addLayout(out_root_row)
         output_layout.addLayout(external_name_row)
         output_layout.addWidget(self._resolved_out_label)
@@ -789,6 +799,8 @@ class InspectorPanel(QWidget):
             self._pixel_aspect_spin.setValue(float(shot.pixel_aspect or 1.0))
 
             self._external_name_edit.setText(shot.output_external_name)
+            self._out_mode_plate.setChecked(shot.output_mode == "plate")
+            self._out_mode_root.setChecked(shot.output_mode != "plate")
             # Match the proxy combo's current index to the shot value.
             # itemData returns the stored payload; None = Full plate
             # (index 0), 1920/1280/960 = 1/2/3. Any other value falls
@@ -1177,6 +1189,14 @@ class InspectorPanel(QWidget):
         self._current.delivery_layout = str(self._layout_combo.itemData(idx))
         self._broadcast_output_to_all_shots()
 
+    def _on_output_mode_toggled(self, plate: bool) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.output_mode = "plate" if plate else "root"
+        remember_output_mode(self._current.output_mode)
+        self._rebuild_resolved_out_label()
+        self._broadcast_output_to_all_shots()
+
     def _on_pick_external_root(self) -> None:
         if self._current is None:
             return
@@ -1184,7 +1204,10 @@ class InspectorPanel(QWidget):
         if not folder:
             return
         self._current.output_external_root = Path(folder)
+        self._current.output_mode = "root"
+        self._out_mode_root.setChecked(True)
         remember_output_root(Path(folder))
+        remember_output_mode("root")
         self._rebuild_resolved_out_label()
         self._broadcast_output_to_all_shots()
 
@@ -1203,6 +1226,7 @@ class InspectorPanel(QWidget):
             if shot is active:
                 self._registry.notify_updated(shot)
                 continue
+            shot.output_mode = active.output_mode
             shot.output_external_root = active.output_external_root
             shot.proxy_long_edge = active.proxy_long_edge
             shot.delivery_compression = active.delivery_compression
@@ -1214,12 +1238,17 @@ class InspectorPanel(QWidget):
         if self._current is None:
             self._resolved_out_label.setText("")
             return
+        plate = self._current.output_mode == "plate"
+        # Choosing a root also switches to root mode, so the button stays live.
+        self._out_root_label.setEnabled(not plate)
+        self._external_name_edit.setPlaceholderText(
+            f"{self._current.folder.name}_utility" if plate else "<shot name>"
+        )
         root = self._current.output_external_root
-        if root is None:
-            self._out_root_label.setText("<no root chosen>")
+        self._out_root_label.setText("<no root chosen>" if root is None else str(root))
+        if not plate and root is None:
             self._resolved_out_label.setText("⚠ Pick an output root before submitting.")
             return
-        self._out_root_label.setText(str(root))
         shot_root = self._current.resolve_output_dir()
         nxt = next_version_dir(shot_root) if shot_root is not None else None
         self._resolved_out_label.setText(f"next run → {nxt}")

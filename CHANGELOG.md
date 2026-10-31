@@ -29,6 +29,12 @@ uses [semantic versioning](https://semver.org/).
   (`mapping_attempts`, 4; only the mapping is redone, not features or
   matching). The best model is kept. Car plate after the fix: 4/4 runs
   100/100 frames, 0.76 px (multithreading still moves the focal by ~1%).
+- **Output next to the plate is back, as the default.** Each shot's versions
+  go to a sibling of the plate folder, `<plate folder>_utility/v###/`, so in
+  production the utility stays in the plate's own tree and the plate folder
+  itself stays clean. "One root for every shot" is the other option (Output
+  tab; choosing a root switches to it). CLI: `--out` is optional again,
+  default = next to the plate. Old sessions keep their root.
 - **A part as big as its whole keeps its mask.** With only an arm in frame,
   SAM's "person" is the arm and "hand" is nearly the same pixels: the hand
   was not made a part (the whole had to be 10% bigger), the person won every

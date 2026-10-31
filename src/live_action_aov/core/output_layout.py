@@ -5,10 +5,15 @@
 
 """Where a run's outputs land and what they are called.
 
-The user always picks an output ROOT; every run of a shot gets its own
-version folder, so a re-run never overwrites the last one::
+Every run of a shot gets its own version folder, so a re-run never
+overwrites the last one. By default the shot folder is a SIBLING of the
+plate folder (`plate_sibling_dir`: production trees keep the utility next
+to its plate, the plate folder itself stays clean); or the user picks one
+root for the whole session::
 
-    <root>/<shot>/v001/
+    <plate parent>/<plate folder>_utility/v001/     (default)
+    <root>/<shot>/v001/                             (chosen root)
+
         <shot>_v001.comp.nk                       <- open this in Nuke
         passes/<shot>_v001.utility.####.exr      (per pass: passes/<group>/...)
         passes/<shot>_v001.utility.####.crypto.exr
@@ -32,6 +37,13 @@ SPLAT_DIR = "splat"
 LOGS_DIR = "logs"
 
 _VERSION_RE = re.compile(r"^v(\d{3,})$")
+
+
+def plate_sibling_dir(plate_folder: Path, name: str = "") -> Path:
+    """`.../plates/PF0052_v001` -> `.../plates/PF0052_v001_utility` (or
+    `name` next to the plate folder when given)."""
+    plate_folder = Path(plate_folder)
+    return plate_folder.parent / (name.strip() or f"{plate_folder.name}_utility")
 
 
 def next_version_dir(shot_root: Path) -> Path:
@@ -104,6 +116,7 @@ __all__ = [
     "frame_padding",
     "latest_version_dir",
     "next_version_dir",
+    "plate_sibling_dir",
     "run_dir",
     "run_stem",
     "sidecar_template",

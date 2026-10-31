@@ -62,6 +62,7 @@ def _full_shot(folder: Path) -> ShotState:
             ),
             ClickInstance(name="prop", seed_frame=1001, points=[(5.0, 6.0, 1)], refiner="vitmatte"),
         ],
+        output_mode="root",
         output_external_root=Path("X:/renders"),
         output_external_name="v002",
         proxy_long_edge=1280,
@@ -100,6 +101,7 @@ def test_shot_dict_roundtrip_preserves_everything(tmp_path: Path) -> None:
     assert restored.refiner_model == "ZhengPeng7/BiRefNet-matting"
     assert restored.default_engine == "rvm"
     assert restored.preview_refiner == "vitmatte"
+    assert restored.output_mode == "root"
     assert restored.output_external_root == Path("X:/renders")
     assert restored.output_external_name == "v002"
     assert restored.proxy_long_edge == 1280
@@ -178,3 +180,11 @@ def test_legacy_matte_keys_migrate_to_single_switch(tmp_path: Path) -> None:
     d["enabled_models"] = ["sam3_birefnet", "sam3_vitmatte", "depth_anything_v2"]
     restored = shot_from_dict(d)
     assert restored.enabled_models == ["sam3_matte_on", "depth_anything_v2"]
+
+
+def test_sessions_from_before_output_mode_keep_their_root(tmp_path: Path) -> None:
+    d = shot_to_dict(_full_shot(tmp_path))
+    del d["output_mode"]
+    assert shot_from_dict(d).output_mode == "root"
+    d["output_external_root"] = None
+    assert shot_from_dict(d).output_mode == "plate"

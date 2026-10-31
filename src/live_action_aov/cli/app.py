@@ -29,7 +29,7 @@ from rich.table import Table
 import live_action_aov
 from live_action_aov.core.cancel import CancelledError, CancelToken
 from live_action_aov.core.job import Job, PassConfig, Shot
-from live_action_aov.core.output_layout import next_version_dir
+from live_action_aov.core.output_layout import next_version_dir, plate_sibling_dir
 from live_action_aov.core.pass_base import License
 from live_action_aov.core.registry import get_registry
 from live_action_aov.io.readers.oiio_exr import OIIOExrReader
@@ -260,15 +260,6 @@ def plugins_list(
 @app.command("run-shot")
 def run_shot(
     folder: Annotated[Path, typer.Argument(exists=True, file_okay=False, dir_okay=True)],
-    out: Annotated[
-        Path,
-        typer.Option(
-            "--out",
-            "-o",
-            help="Output root. Each run lands in <out>/<shot>/v###/ (a new "
-            "version every run); nothing is written next to the plate.",
-        ),
-    ],
     passes: Annotated[
         str,
         typer.Option(
@@ -278,6 +269,15 @@ def run_shot(
             "are rewritten to the --depth-backend / --normals-backend choice.",
         ),
     ],
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out",
+            "-o",
+            help="Output root: each run lands in <out>/<shot>/v###/. Default: "
+            "next to the plate, <plate folder>_utility/v###/ (a new version every run).",
+        ),
+    ] = None,
     depth_backend: Annotated[
         str,
         typer.Option(
@@ -379,7 +379,9 @@ def run_shot(
         resolution=resolution,
         pixel_aspect=pixel_aspect,
         passes_enabled=pass_names,
-        output_dir=next_version_dir(out / folder.name),
+        output_dir=next_version_dir(
+            out / folder.name if out is not None else plate_sibling_dir(folder)
+        ),
     )
     job = Job(
         shot=shot,

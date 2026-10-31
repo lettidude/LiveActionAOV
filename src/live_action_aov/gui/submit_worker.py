@@ -198,7 +198,7 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
         output_eotf="srgb",
         clamp=True,
     )
-    # Every run is a new version folder under the chosen root.
+    # Every run is a new version folder (next to the plate or under the root).
     shot_root = state.resolve_output_dir()
     if shot_root is None:
         raise ValueError(f"{state.name}: choose an output root (Output tab) before submitting")

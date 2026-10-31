@@ -105,6 +105,7 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
             }
             for ci in s.click_instances
         ],
+        "output_mode": s.output_mode,
         "output_external_root": (
             None if s.output_external_root is None else str(s.output_external_root)
         ),
@@ -165,6 +166,8 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         default_engine=str(d.get("default_engine", "birefnet")),
         preview_refiner=str(d.get("preview_refiner", "auto")),
         click_instances=clicks,
+        # Sessions saved before the "next to plate" mode all used a root.
+        output_mode=str(d.get("output_mode") or ("root" if ext_root else "plate")),
         output_external_root=(None if ext_root is None else Path(str(ext_root))),
         output_external_name=str(d.get("output_external_name", "")),
         proxy_long_edge=d.get("proxy_long_edge"),

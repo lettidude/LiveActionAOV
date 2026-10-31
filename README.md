@@ -91,7 +91,7 @@ Given a plate like `/shots/sh020/plate/v003/sh020_plt.####.exr`, the tool produc
   - `P.x / P.y / P.z` world-space position (when depth is present)
   - `ao.a` ambient occlusion (when depth + normals are present)
 
-Plus `sh020_v001.comp.nk` (everything wired in Nuke), `camera/`, `splat/` and `logs/` in the same version folder; every run gets a new `v###`. Nothing is written next to the plate and the original plate is never modified. See [design notes](docs/architecture.md) for architectural details.
+Plus `sh020_v001.comp.nk` (everything wired in Nuke), `camera/`, `splat/` and `logs/` in the same version folder; every run gets a new `v###`. Nothing is written inside the plate folder and the original plate is never modified. See [design notes](docs/architecture.md) for architectural details.
 
 ---
 
@@ -132,10 +132,11 @@ A camera needs parallax. On a locked-off shot or a pure pan the solve fails clea
 
 ## Check the output without Nuke
 
-Every run goes to `<your root>/<shot>/v001/`, then `v002`, and so on. Nothing is ever overwritten and nothing is written next to the plate:
+Every run gets its own version folder: `v001`, then `v002`, and so on, so nothing is ever overwritten. By default it sits next to the plate, in the plate's own folder tree (the plate folder itself stays clean); or pick one root for every shot in the Output tab (CLI `--out`):
 
 ```
-<root>/<shot>/v001/
+plates/PF0052_v001/                 the plate
+plates/PF0052_v001_utility/v001/    default (or <root>/<shot>/v001/)
     <shot>_v001.comp.nk      open this in Nuke
     passes/                  the utility EXRs (+ Cryptomatte)
     camera/                  Nuke camera, point cloud, COLMAP model
@@ -175,7 +176,7 @@ Drop a plate folder onto the shot list, pick the passes you want, hit **Submit l
 
 One engine menu: **Auto** (ViTMatte) is the default, green/blue screen keying is one click away, everything else sits under Advanced. Any object in the Masks tab can use its own engine, and its preview updates as soon as you change it.
 
-A batch of shots with the Output tab open: one output root for the session, the next version folder shown before you submit, proxy resolution and delivery format. The centre viewport shows the "what the model sees" Transformed view.
+A batch of shots with the Output tab open: output next to each plate or one root for the session, the next version folder shown before you submit, proxy resolution and delivery format. The centre viewport shows the "what the model sees" Transformed view.
 
 <p align="center">
   <img src="docs/img/gui-loaded-shot.jpg" alt="LiveActionAOV GUI — loaded shot, Output tab" width="900">

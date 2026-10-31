@@ -168,9 +168,10 @@ class ShotState:
                 seen.add(cat)
         return out
 
-    # Where a run lands: <output_external_root>/<external_name>/v###/
-    # (core.output_layout). The root is always the user's choice - the
-    # tool never writes next to the plate - and every run is a new version.
+    # Where a run lands (core.output_layout), every run a new v###:
+    #   "plate" -> <plate parent>/<plate folder>_utility/v###/ (default)
+    #   "root"  -> <output_external_root>/<external_name>/v###/
+    output_mode: str = "plate"
     output_external_root: Path | None = None
     # Empty string → falls back to the shot's name. Lets the user
     # type custom names like `v001` or `linear_plates` without
@@ -208,8 +209,12 @@ class ShotState:
     last_sidecar_dir: Path | None = None
 
     def resolve_output_dir(self) -> Path | None:
-        """The shot's folder under the output root (its versions live
-        inside it), or None until a root is chosen."""
+        """The shot's folder (its versions live inside it): next to the
+        plate, or under the chosen root (None until one is chosen)."""
+        if self.output_mode == "plate":
+            from live_action_aov.core.output_layout import plate_sibling_dir
+
+            return plate_sibling_dir(self.folder, self.output_external_name)
         if self.output_external_root is None:
             return None
         return self.output_external_root / (self.output_external_name.strip() or self.name)

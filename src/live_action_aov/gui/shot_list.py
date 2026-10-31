@@ -234,6 +234,7 @@ class ShotListPanel(QWidget):
             _inherit_session_settings(shot, existing[-1])
         else:
             shot.output_external_root = remembered_output_root()
+            shot.output_mode = remembered_output_mode()
         self._registry.add(shot)
 
     # --- Registry → widget sync ---
@@ -361,6 +362,16 @@ def remembered_output_root() -> Path | None:
     return Path(str(v)) if v and Path(str(v)).is_dir() else None
 
 
+def remembered_output_mode() -> str:
+    """ "plate" (next to the plate, default) or "root" - last GUI choice."""
+    v = str(QSettings("LiveActionAOV", "LiveActionAOV").value("output_mode", "plate") or "")
+    return v if v in ("plate", "root") else "plate"
+
+
+def remember_output_mode(mode: str) -> None:
+    QSettings("LiveActionAOV", "LiveActionAOV").setValue("output_mode", mode)
+
+
 def remember_output_root(root: Path) -> None:
     QSettings("LiveActionAOV", "LiveActionAOV").setValue("output_root", str(root))
 
@@ -374,6 +385,7 @@ def _inherit_session_settings(shot: ShotState, template: ShotState) -> None:
     # The shot-folder name stays per shot: inheriting a custom one would
     # send two shots into the same folder.
     for attr in (
+        "output_mode",
         "output_external_root",
         "proxy_long_edge",
         "delivery_compression",

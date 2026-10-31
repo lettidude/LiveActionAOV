@@ -468,7 +468,7 @@ class MainWindow(QMainWindow):
         # Validate every shot up-front so we fail loud before any
         # expensive work starts.
         for shot in queue:
-            if shot.output_external_root is None:
+            if shot.output_mode == "root" and shot.output_external_root is None:
                 QMessageBox.warning(
                     self,
                     "Output root missing",
