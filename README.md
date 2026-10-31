@@ -164,6 +164,12 @@ The Masks tab: seed objects with a box or a few clicks, preview the SAM 3 mask o
 
 > Soft alpha from the BiRefNet refiner composited over the plate — note the hair and motion-blur edge detail that SAM 3's hard masks can't give on their own. Tip: fewer clicks work better — a box or 2–6 points beats dozens.
 
+### LTX Alpha — generative mattes for hair and motion blur
+
+For the hard objects, pick **LTX Alpha** as that object's engine in the Masks tab. SAM 3 tracks the object, the tool crops a rectangle around it (with its surroundings, so the model sees context), and **LTX-2.5 + the alpha-gen IC-LoRA** generates the matte in chunks of 49 frames that are cross-faded back together and put back at plate scale. It keeps what trimap matting loses: semi-transparent motion blur, strands of hair, splashes. The result is held to the object with ViTMatte's guided trimap, so whatever else LTX sees in the crop (a car door, the person next to it) stays out.
+
+It runs in **your own ComfyUI** (weights are not bundled): set its address in **Models → ComfyUI for LTX Alpha** and press **Test** — it checks the server, the nodes and the model files. If ComfyUI is not running, that object falls back to ViTMatte and the run carries on. About 3–5 minutes per object for 150 frames at 2K on an RTX 5090. LTX-2 is under the LTX-2 Community License: free for organisations under USD 10M annual revenue.
+
 ---
 
 ## The GUI

@@ -6,6 +6,21 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-10-31
+
+### Added
+- **LTX Alpha engine (per object).** Pick "LTX Alpha - generative, hair"
+  as an object's engine in the Masks tab: SAM 3 tracks it, an RGB rectangle
+  around it (with context, never another model's alpha) goes to LTX-2.5 +
+  the alpha-gen IC-LoRA in YOUR ComfyUI, in 49-frame chunks (overlap 16,
+  cross-faded); the matte is put back at plate scale and held to the object
+  by ViTMatte's guided trimap. Neighbours of similar size are kept whole in
+  the crop. Big wins on motion blur, hair strands and splashes. Models >
+  ComfyUI for LTX Alpha sets the URL and tests server, nodes and model
+  files; the Masks tab shows whether it is ready. ComfyUI down or a model
+  missing: the object falls back to ViTMatte with a warning. LTX-2
+  Community License (free under USD 10M revenue), weights not bundled.
+
 ## [0.10.0] — 2026-10-31
 
 ### Changed
