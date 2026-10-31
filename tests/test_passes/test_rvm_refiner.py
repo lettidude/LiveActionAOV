@@ -14,6 +14,7 @@ no torch.hub download. We verify:
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from live_action_aov.io.channels import (
     CH_MATTE_A,
@@ -548,3 +549,44 @@ def test_seam_alphas_never_sum_above_one() -> None:
         assert bool(hero.max() <= 1.0 + 1e-6) is expect_ok
     # Interiors untouched by the normalisation.
     assert out[1][f"{MASK_PREFIX}rifle"][16, 10] == 1.0
+
+
+def test_front_object_keeps_its_alpha_where_a_back_band_reaches_over_it() -> None:
+    """A hand (front, `layer` 0) on a car (behind): the car's wide refine band
+    claims the hand too. The front alpha must stay as refined and the car get
+    only the rest - scaling both to a sum of 1 put the hand at 0.5 (PF0052)."""
+    n, h, w = 1, 32, 48
+    car = _rect_stack(n, h, w, 0, 32, 0, 48)
+    hand = _rect_stack(n, h, w, 10, 20, 20, 30)
+    car[:, 10:20, 20:30] = 0  # exclusive hard masks
+    art = {
+        "sam3_hard_masks": {
+            0: {
+                1: {"label": "person", "frames": [1], "stack": hand, "layer": 0},
+                2: {"label": "vehicle", "frames": [1], "stack": car, "layer": 1},
+            }
+        },
+        "sam3_instances": {
+            0: [
+                {"track_id": 1, "slot": "r", "label": "person", "score": 0.9, "frames": [1]},
+                {"track_id": 2, "slot": "g", "label": "vehicle", "score": 0.8, "frames": [1]},
+            ]
+        },
+    }
+
+    class _Band(_FakeRVM):
+        def _refine_instance(self, plate_stack, hard_stack):  # type: ignore[override]
+            import cv2
+
+            grown = cv2.dilate(hard_stack[0].astype(np.uint8), np.ones((25, 25), np.uint8))
+            return np.maximum(hard_stack * 0.9, grown[None] * 0.9).astype(np.float32)
+
+    p = _Band(
+        {"refine_all_masks": True, "exclude_other_instances": False, "fallback_feather": False}
+    )
+    p.ingest_artifacts(art)
+    out = p.run_shot(_FakeReader(_plate_frames(n, h, w)), frame_range=(1, 1))[1]
+    assert out[CH_MATTE_R][15, 25] == pytest.approx(0.9)  # hand untouched
+    assert out[CH_MATTE_G][15, 25] == pytest.approx(0.1)  # car only gets the rest
+    assert out[f"{MASK_PREFIX}person"][15, 25] == pytest.approx(0.9)
+    assert float((out[CH_MATTE_R] + out[CH_MATTE_G]).max()) <= 1.0 + 1e-6

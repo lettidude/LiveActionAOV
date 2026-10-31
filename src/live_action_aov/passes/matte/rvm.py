@@ -782,26 +782,52 @@ class RVMRefinerPass(UtilityPass):
         # soft edge is refined on its own, so along a SHARED boundary (rifle
         # over the person, hair against the greenscreen) the two alphas can
         # sum above 1 -> a bright seam when the layers are added in comp.
-        # Where the sum exceeds 1, scale them so they add up to exactly 1.
+        # Held out front to back, like a comp: the front object (SAM 3's
+        # `layer` rank) keeps its alpha, each one behind gets at most what is
+        # left. Scaling both down to a sum of 1 halved the front object where
+        # the back one's wide refine band reached over it (PF0052: the hand
+        # on the car and the jacket over the wheel came out at 0.5).
         if bool(self.params.get("normalize_overlaps", True)):
             hero_parts = {hero_slot.get(t, "") for t in parent_of}
+            track_of_slot = {s: t for t, s in hero_slot.items()}
+
+            def rank(tids: list[int]) -> int:
+                return min(
+                    (
+                        int(self._hard_masks[t].get("layer", 1 << 20))
+                        for t in tids
+                        if t in self._hard_masks
+                    ),
+                    default=1 << 20,
+                )
+
+            label_tracks: dict[str, list[int]] = {}
+            for t, tr in self._hard_masks.items():
+                label_tracks.setdefault(str(tr.get("label", "") or ""), []).append(int(t))
             for group in (
-                [channel_stacks[c] for s, c in _SLOT_TO_CHANNEL.items() if s not in hero_parts]
+                [
+                    (rank([track_of_slot.get(s, -1)]), channel_stacks[c])
+                    for s, c in _SLOT_TO_CHANNEL.items()
+                    if s not in hero_parts
+                ]
                 if pack_heroes
                 else [],
-                [v for k, v in label_soft.items() if k not in part_labels],
+                [
+                    (rank(label_tracks.get(k, [])), v)
+                    for k, v in label_soft.items()
+                    if k not in part_labels
+                ],
             ):
                 if len(group) < 2:
                     continue
+                stacks = [g for _, g in sorted(group, key=lambda rg: rg[0])]
                 for i in range(n_frames):
-                    tot = group[0][i].copy()
-                    for g in group[1:]:
-                        tot += g[i]
-                    over = tot > 1.0
-                    if over.any():
-                        scale = np.where(over, 1.0 / np.maximum(tot, 1e-6), 1.0).astype(np.float32)
-                        for g in group:
-                            g[i] *= scale
+                    cover = stacks[0][i].copy()
+                    for g in stacks[1:]:
+                        if not g[i].any():
+                            continue
+                        np.minimum(g[i], 1.0 - np.minimum(cover, 1.0), out=g[i])
+                        cover += g[i]
 
         # Emit per-frame channel dicts keyed by absolute frame index. Soft
         # `mask.<label>` channels (all-masks mode) override SAM 3's hard ones

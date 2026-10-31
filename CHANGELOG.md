@@ -35,6 +35,13 @@ uses [semantic versioning](https://semver.org/).
   itself stays clean. "One root for every shot" is the other option (Output
   tab; choosing a root switches to it). CLI: `--out` is optional again,
   default = next to the plate. Old sessions keep their root.
+- **The front object keeps its alpha.** Each object is refined on its own,
+  and the car's wide refine band reached over the hand resting on it; the
+  overlap step then scaled BOTH mattes to a sum of 1, so the hand (and the
+  jacket over the wheel) came out at 0.5 in mask.person and matte.r. Overlaps
+  are now held out front to back like a comp (SAM 3's layer order): the
+  person keeps its refined alpha, the car gets what is left. PF0052: hand and
+  jacket solid again, with ViTMatte and BiRefNet alike.
 - **A part as big as its whole keeps its mask.** With only an arm in frame,
   SAM's "person" is the arm and "hand" is nearly the same pixels: the hand
   was not made a part (the whole had to be 10% bigger), the person won every
