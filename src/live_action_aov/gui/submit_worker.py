@@ -354,16 +354,16 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
     for eng_plugin, labels in assigned.items():
         if eng_plugin in plugin_names:
             continue  # the main pass keeps those labels (not skipped there)
-        out.append(
-            PassConfig(
-                name=eng_plugin,
-                params={
-                    "only_labels": labels,
-                    "refine_all_masks": True,
-                    "pack_heroes": False,
-                },
-            )
-        )
+        params: dict[str, object] = {
+            "only_labels": labels,
+            "refine_all_masks": True,
+            "pack_heroes": False,
+        }
+        if eng_plugin == "ltx_alpha_refiner":
+            from live_action_aov.gui.comfy_dialog import comfy_url
+
+            params["comfy_url"] = comfy_url()
+        out.append(PassConfig(name=eng_plugin, params=params))
     return out
 
 
@@ -377,6 +377,7 @@ _DEFAULT_ENGINE_PLUGIN = {
 
 #: ClickInstance.refiner value -> refiner plugin name (per-object engines).
 _OBJECT_ENGINES = {
+    "ltx": "ltx_alpha_refiner",
     "vitmatte": "vitmatte_refiner",
     "birefnet": "birefnet_refiner",
     "chromakey": "chroma_key",
@@ -386,7 +387,14 @@ _OBJECT_ENGINES = {
 
 #: Soft-matte refiner plugins that accept the `refine_all_masks` param.
 _REFINER_PLUGINS = frozenset(
-    {"rvm_refiner", "birefnet_refiner", "vitmatte_refiner", "chroma_key", "matanyone2"}
+    {
+        "rvm_refiner",
+        "birefnet_refiner",
+        "vitmatte_refiner",
+        "chroma_key",
+        "matanyone2",
+        "ltx_alpha_refiner",
+    }
 )
 
 #: Layer suffix per refiner in compare mode (sam3_all_refiners) — each
@@ -397,6 +405,7 @@ _COMPARE_SUFFIX = {
     "vitmatte_refiner": "_vitmatte",
     "chroma_key": "_key",
     "matanyone2": "_matanyone",
+    "ltx_alpha_refiner": "_ltx",
 }
 
 

@@ -47,6 +47,9 @@ RUN_ENGINES: tuple[EngineChoice, ...] = (
 #: A click object's own engine (Masks tab) -> ClickInstance.refiner.
 OBJECT_ENGINES: tuple[EngineChoice, ...] = (
     EngineChoice(("", ""), "Default (run engine)"),
+    # Generative video matte in the user's own ComfyUI (crop around the
+    # object, SAM-gated). Preview shows the run engine; LTX runs at submit.
+    EngineChoice(("ltx", ""), "LTX Alpha - generative, hair (your ComfyUI)"),
     EngineChoice(("chromakey", ""), "Green / blue screen - Chroma key"),
     EngineChoice(("vitmatte", ""), "ViTMatte + BiRefNet guide", advanced=True),
     EngineChoice(("birefnet", ""), "BiRefNet Portrait - people, hair", advanced=True),

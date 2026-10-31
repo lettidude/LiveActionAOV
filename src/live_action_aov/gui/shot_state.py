@@ -55,7 +55,7 @@ class ClickInstance:
     # Optional box (x1, y1, x2, y2) in plate px; None = points only.
     box: tuple[float, float, float, float] | None = None
     # Per-object soft-edge ENGINE: "" = the shot's run engine (Passes tab);
-    # "vitmatte" | "birefnet" | "chromakey" | "rvm" route THIS object's
+    # "vitmatte" | "birefnet" | "chromakey" | "rvm" | "ltx" route THIS object's
     # mask.<name> refinement to that engine at submit (and drive its
     # preview). The right engine depends on the object: portrait weights on
     # a person, trimap/chroma on cars, plants, props.

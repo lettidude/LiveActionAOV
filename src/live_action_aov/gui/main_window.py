@@ -261,6 +261,13 @@ class MainWindow(QMainWindow):
         self._offline_action.setChecked(_os.environ.get("HF_HUB_OFFLINE") == "1")
         self._offline_action.toggled.connect(self._on_offline_mode_toggled)
         models_menu.addAction(self._offline_action)
+        models_menu.addSeparator()
+        comfy_action = QAction("&ComfyUI for LTX Alpha...", self)
+        comfy_action.setToolTip(
+            "Where your ComfyUI runs (LTX-2.5 Alpha engine), with a Test button."
+        )
+        comfy_action.triggered.connect(self._on_comfy_settings)
+        models_menu.addAction(comfy_action)
 
         help_menu = self.menuBar().addMenu("&Help")
         open_logs = QAction("Open &log folder", self)
@@ -274,6 +281,12 @@ class MainWindow(QMainWindow):
         about = QAction("&About", self)
         about.triggered.connect(self._show_about)
         help_menu.addAction(about)
+
+    def _on_comfy_settings(self) -> None:
+        from live_action_aov.gui.comfy_dialog import ComfyDialog
+
+        ComfyDialog(self).exec()
+        self._inspector.refresh_engine_note()
 
     def _on_offline_mode_toggled(self, checked: bool) -> None:
         """Forbid the cache-miss network fallback (TPN posture). Loads are

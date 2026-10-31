@@ -154,6 +154,23 @@ def test_per_object_engine_builds_dedicated_pass() -> None:
     assert cfgs["vitmatte_refiner"].get("refine_all_masks") is True
 
 
+def test_ltx_object_gets_the_ltx_pass_only_for_itself() -> None:
+    """LTX Alpha is chosen per object: only that object goes to ComfyUI,
+    the rest stay on the run engine."""
+    from live_action_aov.gui.submit_worker import _build_pass_configs
+
+    state = _shot()
+    state.enabled_models = ["sam3_matte_on"]
+    state.click_instances = [
+        ClickInstance(name="girl", seed_frame=1, points=[(1.0, 2.0, 1)], refiner="ltx"),
+        ClickInstance(name="car", seed_frame=1, points=[(3.0, 4.0, 1)]),
+    ]
+    cfgs = {c.name: c.params for c in _build_pass_configs(state)}
+    assert cfgs["ltx_alpha_refiner"]["only_labels"] == ["girl"]
+    assert str(cfgs["ltx_alpha_refiner"]["comfy_url"]).startswith("http")
+    assert cfgs["vitmatte_refiner"].get("skip_labels") == ["girl"]
+
+
 def test_outline_option_reaches_birefnet_only() -> None:
     from live_action_aov.gui.submit_worker import _build_pass_configs
 
