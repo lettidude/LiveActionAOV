@@ -16,6 +16,10 @@ alpha (it needs context to understand what is foreground). Per track:
    cut at the box edge comes back as a hard line + texture garbage).
 2. The crop is scaled to `long_edge` (multiple of 32) and sent to the user's
    ComfyUI (`comfy_url`) - LTX-2.5 22B distilled + the alpha-gen IC-LoRA.
+   Model files are found on the server: the int8 safetensors if present,
+   else a GGUF of the same model (ComfyUI-GGUF), so a smaller GPU only needs
+   a quantised download. A ComfyUI on this machine reads the crops from a
+   temp folder; a remote one (the studio's AI box) gets them uploaded.
 3. The result is levelled (0.5 / 99.5 percentile: Alpha-Gen leaves a haze),
    put back where it came from at plate scale, and cross-faded with the
    neighbouring chunks over the overlap.
@@ -69,8 +73,15 @@ _NODES = (
     "LTXVConcatAVLatent",
     "LTXVSeparateAVLatent",
     "LTXVCropGuides",
-    "VHS_LoadImagesPath",
 )
+
+#: LTX-2.5 transformer / text encoder as GGUF (ComfyUI-GGUF), picked when
+#: the configured int8 safetensors is not on the server; best quality first.
+_GGUF_UNET = ("ltx-2.5-22b-distilled", (".gguf",))
+_GGUF_TE = ("gemma4-12b-with-proj-ltx-2.5", (".gguf",))
+_GGUF_ORDER = ("Q8_0", "Q6_K", "Q5_K", "Q4_K", "Q3_K", "Q2_K")
+
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
 
 class LTXAlphaRefinerPass(RVMRefinerPass):
@@ -114,6 +125,9 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         "gate": "trimap",
         "gate_frac": 0.03,  # SAM gate dilation, fraction of the long edge
         "timeout_s": 900,  # per chunk
+        # How the crops reach ComfyUI: "auto" = a temp folder when ComfyUI is
+        # on this machine, an upload when it is remote; or "path" / "upload".
+        "send_frames": "auto",
         # Dev: save each track's ungated LTX alpha + SAM mask here (npz).
         "debug_dir": "",
     }
@@ -122,6 +136,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         super().__init__(params)
         self._fallback: RVMRefinerPass | None = None
         self._comfy_ok: bool | None = None
+        self._models: dict[str, tuple[str, str]] = {}
         self._track_id: int | None = None
         self._first = 0
 
@@ -323,8 +338,10 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
 
     def _comfy_ready(self) -> bool:
         if self._comfy_ok is None:
-            self._comfy_ok, msg = comfy_check(self.params)
-            if not self._comfy_ok:
+            self._comfy_ok, msg, self._models = _resolve(self.params)
+            if self._comfy_ok:
+                _log.info("LTX alpha: %s", msg)
+            else:
                 _log.warning("LTX alpha: %s - using ViTMatte for these objects.", msg)
         return self._comfy_ok
 
@@ -335,37 +352,49 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
             self._fallback = ViTMatteRefinerPass({})
         return self._fallback
 
+    def _upload(self) -> bool:
+        mode = str(self.params.get("send_frames", "auto"))
+        if mode != "auto":
+            return mode == "upload"
+        host = urllib.parse.urlparse(str(self.params["comfy_url"])).hostname or ""
+        return host.lower() not in _LOCAL_HOSTS
+
+    def _send_frames(self, folder: Path) -> dict[str, Any]:
+        """The image-loading node: the folder itself when ComfyUI shares this
+        disk, else the PNGs uploaded into a fresh subfolder of its input/."""
+        common = {"image_load_cap": 0, "skip_first_images": 0, "select_every_nth": 1}
+        if not self._upload():
+            return {
+                "class_type": "VHS_LoadImagesPath",
+                "inputs": {"directory": str(folder), **common},
+            }
+        sub = f"laov_ltx_{uuid.uuid4().hex[:10]}"
+        for f in sorted(folder.glob("*.png")):
+            upload_image(self._url("/upload/image"), f, sub)
+        return {"class_type": "VHS_LoadImages", "inputs": {"directory": sub, **common}}
+
     def _graph(self, folder: Path, ww: int, wh: int, nf: int, prefix: str) -> dict[str, Any]:
         p = self.params
+        unet_node, unet = self._models.get("unet", ("UNETLoader", str(p["unet"])))
+        te_node, te = self._models.get("text_encoder", ("CLIPLoader", str(p["text_encoder"])))
+        unet_inputs: dict[str, Any] = {"unet_name": unet}
+        if unet_node == "UNETLoader":
+            unet_inputs["weight_dtype"] = "default"
         return {
-            "1": {
-                "class_type": "UNETLoader",
-                "inputs": {"unet_name": p["unet"], "weight_dtype": "default"},
-            },
+            "1": {"class_type": unet_node, "inputs": unet_inputs},
             "2": {
                 "class_type": "LTXICLoRALoaderModelOnly",
                 "inputs": {"model": ["1", 0], "lora_name": p["lora"], "strength_model": 1.0},
             },
             "3": {"class_type": "VAELoader", "inputs": {"vae_name": p["video_vae"]}},
             "4": {"class_type": "VAELoader", "inputs": {"vae_name": p["audio_vae"]}},
-            "5": {
-                "class_type": "CLIPLoader",
-                "inputs": {"clip_name": p["text_encoder"], "type": "ltxv"},
-            },
+            "5": {"class_type": te_node, "inputs": {"clip_name": te, "type": "ltxv"}},
             "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["5", 0]}},
             "7": {
                 "class_type": "LTXVConditioning",
                 "inputs": {"positive": ["6", 0], "negative": ["6", 0], "frame_rate": 24.0},
             },
-            "8": {
-                "class_type": "VHS_LoadImagesPath",
-                "inputs": {
-                    "directory": str(folder),
-                    "image_load_cap": 0,
-                    "skip_first_images": 0,
-                    "select_every_nth": 1,
-                },
-            },
+            "8": self._send_frames(folder),
             "9": {
                 "class_type": "EmptyLTXVLatentVideo",
                 "inputs": {"width": ww, "height": wh, "length": nf, "batch_size": 1},
@@ -506,27 +535,95 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
 def comfy_check(params: dict[str, Any] | None = None) -> tuple[bool, str]:
     """Is the ComfyUI at `comfy_url` ready for LTX Alpha? (ok, one-line
     message for the user). Checks the server, the nodes and the model files."""
+    ok, msg, _models = _resolve(params)
+    return ok, msg
+
+
+def _resolve(
+    params: dict[str, Any] | None,
+) -> tuple[bool, str, dict[str, tuple[str, str]]]:
+    """`comfy_check` + which loader node / file serves the transformer and
+    the text encoder on this server (int8 safetensors first, else GGUF)."""
     p = {**LTXAlphaRefinerPass.DEFAULT_PARAMS, **(params or {})}
     url = str(p["comfy_url"]).rstrip("/")
     try:
         info = json.load(urllib.request.urlopen(url + "/object_info", timeout=20))
     except (urllib.error.URLError, OSError, ValueError) as e:
-        return False, f"ComfyUI not reachable at {url} ({e})"
+        return False, f"ComfyUI not reachable at {url} ({e})", {}
+    picked = {
+        "unet": pick_model(
+            info, str(p["unet"]), "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET
+        ),
+        "text_encoder": pick_model(
+            info, str(p["text_encoder"]), "CLIPLoader", "CLIPLoaderGGUF", "clip_name", _GGUF_TE
+        ),
+    }
     missing = [f"node {n}" for n in _NODES if n not in info]
+    if not any(n in info for n in ("VHS_LoadImagesPath", "VHS_LoadImages")):
+        missing.append("node VHS_LoadImages (ComfyUI-VideoHelperSuite)")
+    missing += [f"{p[k]} (or a GGUF of it)" for k, v in picked.items() if v is None]
     missing += [
         str(p[key])
         for key, node, field in (
-            ("unet", "UNETLoader", "unet_name"),
             ("lora", "LTXICLoRALoaderModelOnly", "lora_name"),
             ("video_vae", "VAELoader", "vae_name"),
             ("audio_vae", "VAELoader", "vae_name"),
-            ("text_encoder", "CLIPLoader", "clip_name"),
         )
         if node in info and str(p[key]) not in _choices(info[node], field)
     ]
     if missing:
-        return False, f"ComfyUI at {url} is missing: " + ", ".join(missing)
-    return True, f"ComfyUI ready at {url} (LTX-2.5 + alpha-gen LoRA found)"
+        return False, f"ComfyUI at {url} is missing: " + ", ".join(missing), {}
+    models = {k: v for k, v in picked.items() if v is not None}
+    quant = [Path(v[1]).name for v in models.values() if v[1].lower().endswith(".gguf")]
+    extra = f", GGUF: {', '.join(quant)}" if quant else ""
+    return True, f"ComfyUI ready at {url} (LTX-2.5 + alpha-gen LoRA found{extra})", models
+
+
+def pick_model(
+    info: dict[str, Any],
+    wanted: str,
+    node: str,
+    gguf_node: str,
+    field: str,
+    gguf: tuple[str, tuple[str, ...]],
+) -> tuple[str, str] | None:
+    """(loader node, file) for a model: `wanted` when the server has it,
+    else the best-quality GGUF whose name contains gguf[0]; None if neither."""
+    if node in info and wanted in _choices(info[node], field):
+        return node, wanted
+    if gguf_node not in info:
+        return None
+    key, exts = gguf
+    cands = [
+        f
+        for f in _choices(info[gguf_node], field)
+        if key.lower() in f.lower() and f.lower().endswith(exts)
+    ]
+
+    def rank(f: str) -> int:
+        u = f.upper()
+        return next((i for i, q in enumerate(_GGUF_ORDER) if q in u), len(_GGUF_ORDER))
+
+    return (gguf_node, sorted(cands, key=rank)[0]) if cands else None
+
+
+def upload_image(url: str, path: Path, subfolder: str) -> None:
+    """POST one PNG to ComfyUI's /upload/image, into input/<subfolder>/."""
+    boundary = uuid.uuid4().hex
+    body = b""
+    for name, value in (("subfolder", subfolder), ("type", "input"), ("overwrite", "true")):
+        body += (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'
+        ).encode()
+    body += (
+        f"--{boundary}\r\nContent-Disposition: form-data; "
+        f'name="image"; filename="{path.name}"\r\nContent-Type: image/png\r\n\r\n'
+    ).encode()
+    body += path.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    )
+    urllib.request.urlopen(req, timeout=120).read()
 
 
 def _choices(node_info: dict[str, Any], field: str) -> list[str]:

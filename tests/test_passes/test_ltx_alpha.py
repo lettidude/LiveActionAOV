@@ -15,6 +15,7 @@ from live_action_aov.passes.matte.ltx_alpha import (
     crossfade_weight,
     grow_box,
     levels,
+    pick_model,
     work_size,
 )
 
@@ -210,3 +211,69 @@ def test_trimap_gate_keeps_the_object_and_drops_far_foreground() -> None:
     g = p._trimap_gate(np.stack(frames), hard)
     assert g[0, 60, 40] > 0.99  # on the object
     assert g[0, 60, 190] < 0.01  # far away
+
+
+def _info(unets: list[str], ggufs: list[str], tes: list[str], te_ggufs: list[str]) -> dict:
+    return {
+        "UNETLoader": {"input": {"required": {"unet_name": [unets]}}},
+        "UnetLoaderGGUF": {"input": {"required": {"unet_name": [ggufs]}}},
+        "CLIPLoader": {"input": {"required": {"clip_name": [tes]}}},
+        "CLIPLoaderGGUF": {"input": {"required": {"clip_name": [te_ggufs]}}},
+    }
+
+
+def test_pick_model_prefers_the_int8_then_the_best_gguf() -> None:
+    from live_action_aov.passes.matte.ltx_alpha import _GGUF_UNET
+
+    want = LTXAlphaRefinerPass.DEFAULT_PARAMS["unet"]
+    ggufs = [
+        r"LTX\ltx-2.5-22b-distilled-Q4_K_M.gguf",
+        r"LTX\ltx-2.5-22b-distilled-Q8_0.gguf",
+        r"LTX\ltx-2.5-22b-dev-Q8_0.gguf",  # not the distilled model
+        "LTX-2.3-distilled-Q4_K_S.gguf",
+    ]
+    info = _info([want], ggufs, [], [])
+    assert pick_model(info, want, "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET) == (
+        "UNETLoader",
+        want,
+    )
+    info = _info([], ggufs, [], [])
+    assert pick_model(info, want, "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET) == (
+        "UnetLoaderGGUF",
+        r"LTX\ltx-2.5-22b-distilled-Q8_0.gguf",
+    )
+    info = _info([], ggufs[2:], [], [])
+    assert pick_model(info, want, "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET) is None
+
+
+def test_graph_uses_the_gguf_loaders_and_uploads_to_a_remote_comfyui(tmp_path: Path) -> None:
+    sent: list[str] = []
+
+    class _Remote(LTXAlphaRefinerPass):
+        pass
+
+    p = _Remote({"comfy_url": "http://ai-box:8188"})
+    p._models = {
+        "unet": ("UnetLoaderGGUF", "ltx-2.5-22b-distilled-Q4_K_M.gguf"),
+        "text_encoder": ("CLIPLoaderGGUF", "gemma4-12b-with-proj-ltx-2.5-Q4_K_M.gguf"),
+    }
+    (tmp_path / "f_0000.png").write_bytes(b"png")
+    import live_action_aov.passes.matte.ltx_alpha as mod
+
+    orig = mod.upload_image
+    mod.upload_image = lambda url, path, sub: sent.append(f"{url}|{path.name}|{sub}")  # type: ignore[assignment]
+    try:
+        g = p._graph(tmp_path, 512, 288, 9, "x")
+    finally:
+        mod.upload_image = orig
+    assert g["1"] == {
+        "class_type": "UnetLoaderGGUF",
+        "inputs": {"unet_name": "ltx-2.5-22b-distilled-Q4_K_M.gguf"},
+    }
+    assert g["5"]["class_type"] == "CLIPLoaderGGUF"
+    assert g["8"]["class_type"] == "VHS_LoadImages"
+    assert sent and sent[0].startswith("http://ai-box:8188/upload/image|f_0000.png|laov_ltx_")
+    assert g["8"]["inputs"]["directory"] == sent[0].rsplit("|", 1)[1]
+    # Same machine: the temp folder is read in place, nothing is uploaded.
+    local = LTXAlphaRefinerPass({"comfy_url": "http://127.0.0.1:8188"})
+    assert local._graph(tmp_path, 512, 288, 9, "x")["8"]["class_type"] == "VHS_LoadImagesPath"

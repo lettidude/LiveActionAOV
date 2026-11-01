@@ -6,6 +6,16 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **LTX Alpha on a smaller or a remote GPU.** The model files are now found
+  on the ComfyUI server: the int8 safetensors when present, otherwise a GGUF
+  of LTX-2.5 22B distilled / its Gemma text encoder (ComfyUI-GGUF, best
+  quantisation first), so a 12-16 GB card only needs a quantised download.
+  A ComfyUI on another machine (e.g. the studio's AI box, `comfy_url`
+  pointing at it) now works: the crops are uploaded to it instead of read
+  from a local folder (`send_frames`: auto / path / upload). Models > ComfyUI
+  for LTX Alpha reports which GGUF it found.
+
 ## [0.11.0] — 2026-11-01
 
 ### Added
