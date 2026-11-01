@@ -124,17 +124,23 @@ class MoGe3Pass(UtilityPass):
     # Model lifecycle
     # ------------------------------------------------------------------
 
+    def prefetch_weights(self) -> str:
+        """Download the checkpoint only (`liveaov prefetch` runs on CPU, where
+        the MoGe-3 refiner cannot even be imported)."""
+        from huggingface_hub import hf_hub_download
+
+        return str(load_local_first(hf_hub_download, str(self.params["model_id"]), "model.pt"))
+
     def _load_model(self) -> None:
         if self._model is not None:
             return
         import torch
-        from huggingface_hub import hf_hub_download
 
         try:
             from live_action_aov.vendored.moge.model.v3 import MoGeModel
         except ImportError as e:
             raise RuntimeError(f"{_MISSING_DEPS} ({e})") from e
-        ckpt = load_local_first(hf_hub_download, str(self.params["model_id"]), "model.pt")
+        ckpt = self.prefetch_weights()
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._model = MoGeModel.from_pretrained(ckpt).to(self._device).eval()
 

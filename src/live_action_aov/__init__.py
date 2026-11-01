@@ -17,7 +17,14 @@ of truth (design §2, principle 5).
 
 from __future__ import annotations
 
-__version__ = "0.9.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    # Single source of truth: pyproject's `version` (a hard-coded string here
+    # was left at 0.9.0 through the 0.10.x releases).
+    __version__ = version("live-action-aov")
+except PackageNotFoundError:  # running from a bare source tree
+    __version__ = "0+unknown"
 
 from live_action_aov.core.cancel import CancelledError, CancelToken
 from live_action_aov.core.job import Job, PassConfig, Shot, Task

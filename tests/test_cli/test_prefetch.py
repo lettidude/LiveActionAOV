@@ -77,6 +77,24 @@ def test_prefetch_loads_and_unloads_each_pass() -> None:
     assert os.environ.get("CUDA_VISIBLE_DEVICES") == ""
 
 
+class _DownloadOnlyPass(_OkPass):
+    name = "fake_prefetch_download_only"
+    fetched = 0
+
+    def prefetch_weights(self) -> None:
+        type(self).fetched += 1
+
+    def _load_model(self) -> None:
+        raise AssertionError("Invalid device id")  # MoGe-3 on a CPU-only prefetch
+
+
+def test_prefetch_prefers_download_only_hook() -> None:
+    get_registry().register_pass("fake_prefetch_download_only", _DownloadOnlyPass)
+    result = runner.invoke(app, ["prefetch", "--passes", "fake_prefetch_download_only"])
+    assert result.exit_code == 0, result.stdout
+    assert _DownloadOnlyPass.fetched == 1
+
+
 def test_prefetch_reports_failures_and_exits_nonzero() -> None:
     get_registry().register_pass("fake_prefetch_fail", _FailPass)
     result = runner.invoke(app, ["prefetch", "--passes", "fake_prefetch_fail"])

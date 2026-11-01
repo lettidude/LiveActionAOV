@@ -7,6 +7,10 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Portable offline build** (`scripts/build_portable.py`) for studios whose
+  workstations have no internet (TPN): one relocatable folder (Python + every
+  dependency + models), copied to the server, installed/updated per artist
+  with `install_local.bat`. Runs offline by default. See docs/install.md.
 - **Nodal camera for shots with no parallax.** A tripod pan / tilt or a
   locked-off camera gave COLMAP nothing to triangulate and the shot got no
   camera. Now the camera track falls back to a rotation-only solve from
@@ -37,6 +41,10 @@ uses [semantic versioning](https://semver.org/).
   focal came from (`intrinsics.source`: nodal_pan / lens_metadata / guess).
 
 ### Fixed
+- `liveaov prefetch` skipped MoGe-3 (its refiner cannot load on the CPU-only
+  prefetch); passes can now expose a download-only `prefetch_weights` hook.
+- `--version` / About reported v0.9.0 since the 0.10 releases: the version now
+  comes from the package metadata.
 - **UtilityRelight 1.12: metric sidecars.** With MoGe-3's metric P the
   node's auto-scale took the sky (Z = 10000 m) and a far background as the
   scene depth: light radius 3 km, then 23 m, and the 2D picker pushed the

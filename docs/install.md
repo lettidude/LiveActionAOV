@@ -373,6 +373,36 @@ already on disk**. Two mitigations:
   the downloads. After it, `liveaov --offline` (or `HF_HUB_OFFLINE=1`) runs
   entirely from the local cache — a network blip can't abort a job.
 
+## Portable build for studios without internet (TPN)
+
+Artist workstations under TPN usually have no internet and no shared GPU
+box to offload to. Build one self-contained folder on a machine that *is*
+online, put it on the file server, and let each artist copy it locally:
+
+```bash
+# on the online machine, in the repo (after install.bat):
+uv run python scripts/build_portable.py --out D:\deploy\LiveActionAOV
+#   --models default   commercial-safe set (default)
+#   --models all       every backend (incl. NC ones, much bigger)
+#   --models none      code only (update without touching models\)
+```
+
+Then copy `D:\deploy\LiveActionAOV` to the server. Each artist runs
+`install_local.bat` **from the server folder**: it copies everything to
+`%LOCALAPPDATA%\LiveActionAOV` (or the folder given as argument) and makes a
+desktop shortcut. Running it again updates (only changed files are copied).
+
+- Everything is relative to the folder: Python 3.11 + all packages in
+  `app\python\` (no venv, which would pin absolute paths), weights in
+  `models\`. Re-building into the same `--out` keeps `models\`.
+- The launchers run **offline** (`HF_HUB_OFFLINE=1`); set `LAOV_ONLINE=1`
+  to allow downloads.
+- Don't run it straight from the network share: torch loads thousands of
+  files at start-up and is very slow over SMB.
+- Not bundled: ComfyUI (the LTX alpha engine) and the Marigold external env.
+- The HF login (needed once for gated SAM 3) is only needed on the build
+  machine; it is never copied into the folder.
+
 ## Uninstall
 
 ```bash

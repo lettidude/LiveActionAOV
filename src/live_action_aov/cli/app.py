@@ -197,7 +197,9 @@ def prefetch(
         console.print(f"[cyan]Prefetching[/cyan] {name} ...")
         try:
             inst = registry.get_pass(name)()
-            load = getattr(inst, "_load_model", None)
+            # `prefetch_weights` = download-only hook for passes whose model
+            # cannot be built on CPU (MoGe-3's sparse refiner needs CUDA).
+            load = getattr(inst, "prefetch_weights", None) or getattr(inst, "_load_model", None)
             if callable(load):
                 load()  # triggers the download(s)
             unload = getattr(inst, "unload", None)
