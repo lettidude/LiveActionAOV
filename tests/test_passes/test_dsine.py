@@ -67,16 +67,16 @@ def test_normals_are_unit_length_at_plate_resolution() -> None:
     assert np.allclose(mag, 1.0, atol=1e-3)
 
 
-def test_axis_convention_opencv_to_opengl_flips_y_and_z() -> None:
-    """Default DSINE config outputs opengl convention. Fake fwd emits +Z, +0
-    Y, so after flip we should see -Z (from +Z flipped)."""
-    pass_ = _FakePass()  # default: opencv → opengl
+def test_axis_convention_outward_raw_to_opengl() -> None:
+    """DSINE's raw output is the negated OpenCV normal (README: a wall facing
+    the camera is (0, 0, +1)). The fake emits exactly that wall, which in
+    OpenGL must face the camera (+Z); X is negated (raw ramp -> -ramp)."""
+    pass_ = _FakePass()  # default: negate, then opencv → opengl
     plate = np.full((1, 32, 32, 3), 0.5, dtype=np.float32)
     out = pass_.postprocess(pass_.infer(pass_.preprocess(plate)))
 
-    # Fake Nz was +1 in OpenCV. Flipping to OpenGL negates it.
-    # After renormalize, Nz ≈ -1 / norm, norm depends on Nx ramp but stays <= 1.
-    assert float(out[CH_N_Z].mean()) < 0.0
+    assert float(out[CH_N_Z].min()) > 0.0
+    assert float(out[CH_N_X][:, 0].mean()) > 0.0 > float(out[CH_N_X][:, -1].mean())
 
 
 def test_convert_axes_helper_is_involutory() -> None:

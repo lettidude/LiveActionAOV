@@ -21,6 +21,15 @@ uses [semantic versioning](https://semver.org/).
   workshop (locked-off, was 0/100 frames): 100/100 at 0.97 px. The splat
   skips a nodal camera with a clear message (no parallax, no clean plate).
 
+### Fixed
+- **DSINE normals were inverted.** DSINE's raw output is the negated OpenCV
+  normal ("outward" in its README: a wall facing the camera is +Z), and the
+  pass only flipped Y and Z, so `N` came out pointing into the surface on
+  all three axes. Now it negates first (`negate_raw`), so DSINE matches the
+  spec (OpenGL: +Y up, +Z toward camera) and NormalCrafter. Found against
+  MoGe-2's documented OpenCV normals: before, the two disagreed by 162 deg;
+  after, by 16 deg on the same plate.
+
 ## [0.10.1] — 2026-10-31
 
 ### Added

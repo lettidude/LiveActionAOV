@@ -26,9 +26,14 @@ Spec §11.3 traps handled:
   (design §8.4).
 
 Axis convention:
-- DSINE outputs OpenCV convention (+X right, +Y down, +Z forward into scene).
+- DSINE uses OpenCV axes (+X right, +Y down, +Z forward into scene) but its
+  README says the normals are "outward": a wall facing the camera is
+  (0, 0, +1). So the raw output is the NEGATED OpenCV normal. Verified
+  2026-11-01 against MoGe-2 (documented OpenCV normals) on two plates: all
+  three axes came out opposite.
 - Spec §10.3 locks +X right, +Y up, +Z toward camera (OpenGL/Maya convention).
-- Conversion: flip Y and Z signs before writing channels.
+- Conversion: negate (`negate_raw`), then flip Y and Z before writing channels.
+  Before v0.10.2 the negation was missing and N came out inverted.
 """
 
 from __future__ import annotations
@@ -78,8 +83,9 @@ class DSINEPass(UtilityPass):
         "fy": None,
         "cx": None,
         "cy": None,
-        # Axis convention. DSINE = "opencv", spec = "opengl". Postprocess flips
-        # Y and Z when converting opencv → opengl.
+        # Axis convention. DSINE = negated "opencv", spec = "opengl".
+        # Postprocess negates, then flips Y and Z (opencv → opengl).
+        "negate_raw": True,
         "input_axes": "opencv",
         "output_axes": "opengl",
     }
@@ -262,6 +268,8 @@ class DSINEPass(UtilityPass):
         mag = torch.sqrt((n_up**2).sum(dim=1, keepdim=True)).clamp_min(1e-6)
         n_unit = n_up / mag
         n_np = n_unit[0].cpu().numpy().astype(np.float32)  # (3, H, W)
+        if self.params.get("negate_raw", True):
+            n_np = -n_np  # DSINE's "outward" normals -> true OpenCV normals
 
         n_np = _convert_axes(
             n_np,
