@@ -346,6 +346,8 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
             if skip:
                 rp["skip_labels"] = skip
             out.append(PassConfig(name=n, params=rp) if rp else PassConfig(name=n))
+        elif n == "moge3":
+            out.append(PassConfig(name=n, params=_moge3_params(state.enabled_models)))
         else:
             out.append(PassConfig(name=n))
     # Dedicated passes for per-object engine assignments not already
@@ -365,6 +367,15 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
             params["comfy_url"] = comfy_url()
         out.append(PassConfig(name=eng_plugin, params=params))
     return out
+
+
+def _moge3_params(enabled: list[str]) -> dict[str, object]:
+    """MoGe-3 fills only the slots it was picked for (Depth and/or Normals),
+    so it never overwrites another backend's Z or N."""
+    return {
+        "emit_depth": "moge3_depth" in enabled,
+        "emit_normals": "moge3_normals" in enabled,
+    }
 
 
 #: ShotState.default_engine -> refiner plugin (the run's main engine).

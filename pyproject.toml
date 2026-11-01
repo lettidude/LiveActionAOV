@@ -112,6 +112,16 @@ birefnet = ["timm>=0.9", "einops>=0.4", "kornia>=0.7"]
 # imports `geffnet` (EfficientNet backbone) — without the extra installed,
 # torch.hub raises `Missing dependencies: geffnet` at first load.
 dsine = ["geffnet>=1.0"]
+# MoGe-3 (Microsoft, MIT): metric depth + normals + FOV with a sparse 3D
+# refiner. Model code is vendored (vendored/moge: upstream pins numpy>=2 and
+# pulls a gradio demo); these are its runtime deps. FlexGEMM is pure Triton
+# (no CUDA build); Triton ships with torch on Linux, triton-windows here.
+moge3 = [
+    "scipy>=1.11",
+    "utils3d-moge @ git+https://github.com/EasternJournalist/utils3d-moge.git@62f09d58509485564e24d5d9f6aac9ee9ebc0c37",
+    "flex-gemm @ git+https://github.com/JeffreyXiang/FlexGEMM.git@b2fadb29d41846c7981ade6801ffc689fae119cf",
+    "triton-windows>=3.2,<3.8; sys_platform == 'win32'",
+]
 matanyone2 = []
 # Camera track — classical SfM via pycolmap (BSD-3-Clause). PyPI wheels for
 # Windows/Linux/macOS, no C++ build, no CUDA toolkit; SIFT runs on CPU.
@@ -139,6 +149,7 @@ all = [
     "live-action-aov[birefnet]",
     "live-action-aov[matanyone2]",
     "live-action-aov[dsine]",
+    "live-action-aov[moge3]",
     "live-action-aov[sam3]",
     "live-action-aov[rvm]",
     "live-action-aov[camera]",
@@ -172,6 +183,7 @@ depthcrafter         = "live_action_aov.passes.depth.depthcrafter:DepthCrafterPa
 depthpro             = "live_action_aov.passes.depth.depthpro:DepthProPass"
 dsine              = "live_action_aov.passes.normals.dsine:DSINEPass"
 normalcrafter      = "live_action_aov.passes.normals.normalcrafter:NormalCrafterPass"
+moge3              = "live_action_aov.passes.normals.moge3:MoGe3Pass"
 sam3_matte         = "live_action_aov.passes.matte.sam3:SAM3MattePass"
 rvm_refiner        = "live_action_aov.passes.matte.rvm:RVMRefinerPass"
 birefnet_refiner   = "live_action_aov.passes.matte.birefnet:BiRefNetRefinerPass"
@@ -243,6 +255,12 @@ torchvision = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/live_action_aov"]
+
+# The moge3 extra pins two git deps (utils3d-moge, FlexGEMM) that have no
+# PyPI release. Installs go through the repo (install.bat / uv sync), never
+# PyPI, so direct references are fine.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.ruff]
 line-length = 100

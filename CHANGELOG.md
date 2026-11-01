@@ -20,6 +20,21 @@ uses [semantic versioning](https://semver.org/).
   1399.9 / 1400 px, rotations within 0.006 deg, 0.11 px; ALEXA Mini LF
   workshop (locked-off, was 0/100 frames): 100/100 at 0.97 px. The splat
   skips a nodal camera with a clear message (no parallax, no clean plate).
+- **MoGe-3 geometry pass (`moge3`), the new default normals engine.**
+  Microsoft MoGe-3 ViT-L (MIT; code vendored in `vendored/moge`, weights
+  `Ruicheng/moge-3-vitl`, 1.5 GB). One pass writes metric `Z` (metres),
+  `N` (OpenGL) and, via PositionFromDepth, `P` built with the same FOV the
+  model used (new `depth_intrinsics` artifact). Shot-level fixes for a
+  per-frame model: one FOV per shot (`fov_x_deg` > camera track unless its
+  focal is a guess > median of MoGe over `fov_samples` frames), metric scale
+  stabilised over `scale_window` frames (`Z_raw` keeps the raw values),
+  letterbox cropped. GUI: "MoGe-3" in both Depth and Normals; it writes only
+  the slots it is picked for. CLI: `--normals-backend` defaults to `moge3`.
+  PF0071, 150 frames: 2.6 GB VRAM at 1K proxy and full HD; 111 s / 205 s;
+  scale jitter 2.6% -> 0.74%; normals 3-8x steadier than DSINE. New
+  `moge3` extra (in `all`): scipy, utils3d-moge and FlexGEMM (git pins,
+  pure Triton) + triton-windows. The camera solve now records where a nodal
+  focal came from (`intrinsics.source`: nodal_pan / lens_metadata / guess).
 
 ### Fixed
 - **DSINE normals were inverted.** DSINE's raw output is the negated OpenCV

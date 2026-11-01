@@ -82,8 +82,8 @@ If you skip this, the matte pass fails on first use with `OSError: You are tryin
 Given a plate like `/shots/sh020/plate/v003/sh020_plt.####.exr`, the tool produces:
 
 - `<out>/sh020/v001/passes/sh020_v001.utility.####.exr` — sidecar with:
-  - `Z` depth channel
-  - `N.x / N.y / N.z` camera-space normals
+  - `Z` depth channel (in metres with MoGe-3)
+  - `N.x / N.y / N.z` camera-space normals (OpenGL: +Y up, +Z toward camera)
   - `motion.x / motion.y` forward motion vectors (pixels)
   - `back.x / back.y` backward motion vectors
   - `matte.r / g / b / a` top-4 soft hero mattes
@@ -169,6 +169,12 @@ The Masks tab: seed objects with a box or a few clicks, preview the SAM 3 mask o
 For the hard objects, pick **LTX Alpha** as that object's engine in the Masks tab. SAM 3 tracks the object, the tool crops a rectangle around it (with its surroundings, so the model sees context), and **LTX-2.5 + the alpha-gen IC-LoRA** generates the matte in chunks of 49 frames that are cross-faded back together and put back at plate scale. It keeps what trimap matting loses: semi-transparent motion blur, strands of hair, splashes. The result is held to the object with ViTMatte's guided trimap, so whatever else LTX sees in the crop (a car door, the person next to it) stays out.
 
 It runs in **your own ComfyUI** (weights are not bundled): set its address in **Models → ComfyUI for LTX Alpha** and press **Test** — it checks the server, the nodes and the model files. If ComfyUI is not running, that object falls back to ViTMatte and the run carries on. About 3–5 minutes per object for 150 frames at 2K on an RTX 5090. LTX-2 is under the LTX-2 Community License: free for organisations under USD 10M annual revenue.
+
+### MoGe-3 — metric geometry: depth in metres, normals, position
+
+**MoGe-3** (Microsoft, MIT) is the default normals engine and a Depth option. In one pass it gives depth **in metres**, camera-space normals and, through the position post, a `P` pass you can drop into PositionToPoints or a relight. Its geometry is sharp: no halo around people, real structure in hair and faces. Its normals are 3–8x steadier frame to frame than DSINE's.
+
+The tool fixes what a per-frame model gets wrong over a shot. It uses **one FOV per shot**: from the camera track when the shot has one, otherwise the median of MoGe's own estimate. It also **stabilises the metric scale** (frame-to-frame jitter 2.6% → 0.7% on a 150-frame test), and it **crops letterbox bars** before the model sees them. Sky is flagged in `depth.confidence`. Pick it in the Depth slot, the Normals slot or both: it only writes the slots it was picked for. About 0.7–1.4 s per frame end to end at 1K–HD, **2.6 GB VRAM** at any resolution.
 
 ---
 

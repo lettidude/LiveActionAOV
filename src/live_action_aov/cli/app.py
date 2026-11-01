@@ -94,6 +94,7 @@ _DEFAULT_PREFETCH = [
     "depth_anything_v2",
     "video_depth_anything",
     "dsine",
+    "moge3",
     "sam3_matte",
     "rvm_refiner",
     "birefnet_refiner",
@@ -291,9 +292,10 @@ def run_shot(
         str,
         typer.Option(
             "--normals-backend",
-            help="Backend for the semantic `normals` pass. Default: dsine (MIT).",
+            help="Backend for the semantic `normals` pass. Default: moge3 (MIT; "
+            "sharp, stable). `dsine` is the lighter alternative.",
         ),
-    ] = "dsine",
+    ] = "moge3",
     matte_detector: Annotated[
         str,
         typer.Option(
@@ -384,9 +386,13 @@ def run_shot(
             out / folder.name if out is not None else plate_sibling_dir(folder)
         ),
     )
+    moge3 = _moge3_outputs(raw_names, depth_backend=depth_backend, normals_backend=normals_backend)
     job = Job(
         shot=shot,
-        passes=[PassConfig(name=n) for n in pass_names],
+        passes=[
+            PassConfig(name=n, params=moge3) if n == "moge3" else PassConfig(name=n)
+            for n in pass_names
+        ],
     )
 
     console.print(
@@ -537,6 +543,19 @@ def _resolve_semantic_passes(
             continue
         _add(scalar_mapping.get(name, name))
     return resolved
+
+
+def _moge3_outputs(
+    raw_names: list[str], *, depth_backend: str, normals_backend: str
+) -> dict[str, bool]:
+    """Which slots MoGe-3 fills: the ones resolved to it (or both when it is
+    named directly), so it never overwrites another depth/normals backend."""
+    if "moge3" in raw_names:
+        return {"emit_depth": True, "emit_normals": True}
+    return {
+        "emit_depth": "depth" in raw_names and depth_backend == "moge3",
+        "emit_normals": "normals" in raw_names and normals_backend == "moge3",
+    }
 
 
 def _sniff_sequence(folder: Path) -> tuple[str, tuple[int, int], tuple[int, int], float]:

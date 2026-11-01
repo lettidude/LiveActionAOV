@@ -60,6 +60,16 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             True,
             ("depth_anything_v2",),
         ),
+        # MoGe-3 serves the Depth and the Normals slot from ONE pass: both
+        # entries expand to `moge3`, the submit worker tells it which outputs
+        # to write (so it never overwrites another depth/normals backend).
+        ModelEntry(
+            "moge3_depth",
+            "MoGe-3 (metric depth in metres + P, sharp)",
+            "MIT",
+            True,
+            ("moge3",),
+        ),
         ModelEntry(
             "video_depth_anything",
             "Video Depth Anything",
@@ -101,6 +111,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ),
     ],
     "Normals": [
+        ModelEntry("moge3_normals", "MoGe-3 (sharp, stable)", "MIT", True, ("moge3",)),
         ModelEntry("dsine", "DSINE", "MIT", True, ("dsine",)),
         ModelEntry(
             "normalcrafter",

@@ -18,10 +18,12 @@ Intrinsics source priority (first hit wins):
 
 1. Explicit `fx` / `fy` / `cx` / `cy` params passed to the post-processor
    (the GUI's per-shot intrinsics dropdown will populate these).
-2. `Shot.fx` / `Shot.fy` / `Shot.cx` / `Shot.cy` if the shot carries them.
-3. Camera-track solver output (Phase 2a — not yet implemented; will feed
+2. The depth pass's own intrinsics (`depth_intrinsics` artifact, normalised
+   fx, fy, cx, cy): MoGe-3 predicts depth FOR a FOV, so P must use it.
+3. `Shot.fx` / `Shot.fy` / `Shot.cx` / `Shot.cy` if the shot carries them.
+4. Camera-track solver output (Phase 2a — not yet implemented; will feed
    through the same shot attributes).
-4. Approximate intrinsics derived from plate resolution assuming
+5. Approximate intrinsics derived from plate resolution assuming
    `horizontal_fov_deg` (default 60°, a reasonable wide-normal guess for
    stock VFX footage). `cx = W/2`, `cy = H/2`.
 
@@ -74,6 +76,14 @@ class PositionFromDepth:
         # Stamped by `apply` so the executor can write it into metadata.
         self.intrinsics_source: str = "unknown"
         self.resolved_intrinsics: tuple[float, float, float, float] | None = None
+        self._depth_intrinsics: tuple[float, float, float, float] | None = None
+
+    def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:
+        """Pick up `depth_intrinsics` (normalised fx, fy, cx, cy) when the
+        depth pass published the intrinsics its depth was predicted for."""
+        k = next(iter((artifacts.get("depth_intrinsics") or {}).values()), None)
+        if k is not None and len(k) == 4:
+            self._depth_intrinsics = tuple(float(v) for v in k)  # type: ignore[assignment]
 
     def apply(
         self,
@@ -149,6 +159,11 @@ class PositionFromDepth:
         if p_fx is not None and p_fy is not None and p_cx is not None and p_cy is not None:
             self.intrinsics_source = "params"
             return float(p_fx), float(p_fy), float(p_cx), float(p_cy)
+
+        if self._depth_intrinsics is not None:
+            nfx, nfy, ncx, ncy = self._depth_intrinsics
+            self.intrinsics_source = "depth_pass"
+            return nfx * width, nfy * height, ncx * width, ncy * height
 
         s_fx = getattr(shot, "fx", None) if shot is not None else None
         s_fy = getattr(shot, "fy", None) if shot is not None else None

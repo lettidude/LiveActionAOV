@@ -500,6 +500,9 @@ class PyColmapCameraPass(UtilityPass):
             masked_labels=self._masked_labels,
             pairs=pairs,
             lens_mm=None if measured else self._lens_mm,
+            focal_source="nodal_pan"
+            if measured
+            else ("lens_metadata" if self._lens_mm else "guess"),
         )
         solve.quality.warnings.insert(
             0, f"No parallax: rotation-only (nodal) camera, translation fixed at 0; {focal_note}."
@@ -770,6 +773,7 @@ def build_solve_from_nodal(
     masked_labels: list[str] | None = None,
     pairs: list[tuple[int, int, np.ndarray, np.ndarray]] | None = None,
     lens_mm: float | None = None,
+    focal_source: str = "nodal_pan",
     point_distance: float = 100.0,
     max_points: int = 4000,
 ) -> CameraSolve:
@@ -793,6 +797,7 @@ def build_solve_from_nodal(
         focal_mm_hint=float(lens_mm) if lens_mm else f * hap / max(pw, 1),
         distortion_model="pinhole",
         distortion_params=[],
+        source=focal_source,
     )
     extrinsics: list[Extrinsic] = []
     per_err: dict[int, float] = {}
