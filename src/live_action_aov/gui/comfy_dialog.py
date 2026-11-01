@@ -69,6 +69,9 @@ class ComfyDialog(QDialog):
             "LTX-2.5 Alpha runs in YOUR ComfyUI (the weights are not bundled). "
             "It needs the LTX-2.5 22B distilled model, its VAEs and text encoder, "
             "and the alpha-gen IC-LoRA, plus ComfyUI-VideoHelperSuite.\n"
+            "Smaller GPU (8-16 GB): a GGUF of the model works too (ComfyUI-GGUF, "
+            "e.g. Q4_K_M, 13.6 GB) - it is picked up automatically.\n"
+            "ComfyUI on another machine: put its address here (http://<host>:8188).\n"
             "Licence: LTX-2 Community - free under USD 10M annual revenue."
         )
         intro.setWordWrap(True)
