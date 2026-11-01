@@ -7,7 +7,7 @@ Part of the [LiveActionAOV](https://github.com/lettidude/LiveActionAOV) toolkit 
 
 ---
 
-- **Version:** 1.11
+- **Version:** 1.12
 - **Copyright** (c) 2026 Leonardo Paolini
 - **Developed with** Claude (Anthropic)
 - **License:** MIT (see `LICENSE`)
@@ -86,7 +86,7 @@ The **Output Mode** dropdown on the Output tab lets you preview any single layer
 - Combined (all layers)
 - Key only / Spec only / Rim only / Bounce only / Glow only / Fog only
 - Key mask (grayscale NdotL × atten)
-- Normals (after convention flags applied)
+- Normals (raw N from the sidecar, before the convention flags)
 - Depth (bracket via Z Near / Z Far)
 - AO
 
@@ -94,16 +94,16 @@ The **Output Mode** dropdown on the Output tab lets you preview any single layer
 
 ## Conventions and adaptation
 
-**Sidecar data conventions** (typical for LiveActionAOV / NormalCrafter):
+**Sidecar data conventions** (every LiveActionAOV normals engine: MoGe-3, DSINE, NormalCrafter):
 - Normals: camera-space OpenGL (+Y up, +Z toward camera), unit length
-- Position: image-space (+Y down, +Z away from camera), normalized or metric
+- Position: image-space (+Y down, +Z away from camera), normalized or metric (MoGe-3: metres, sky at 10000 m flagged in `depth.confidence`; auto-scale skips it)
 - AO: 0 = exposed, 1 = occluded
 - Depth: scalar on `.r` or `.x`, same units as P.z
 
 **Normal convention selector** (Channels tab):
 - **Flip N.x** (default OFF) — enable if left/right lighting reads swapped
-- **Flip N.y** (default ON) — default for NormalCrafter (Y-up → Y-down)
-- **Flip N.z** (default ON) — default for NormalCrafter (+Z toward cam → +Z away)
+- **Flip N.y** (default ON) — default for LiveActionAOV normals (Y-up → Y-down)
+- **Flip N.z** (default ON) — default for LiveActionAOV normals (+Z toward cam → +Z away)
 - **Swap N.y ↔ N.z** (default OFF) — for Z-up world-frame estimators
 
 If you swap to a different normal estimator (Marigold, DSINE, GeoWizard, etc.) and shading looks inverted on some surfaces, toggle these.

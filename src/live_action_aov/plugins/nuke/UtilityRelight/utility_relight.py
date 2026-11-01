@@ -1,5 +1,5 @@
 """
-UtilityRelight v1.11
+UtilityRelight v1.12
 Part of the LiveActionAOV toolkit - https://github.com/lettidude/LiveActionAOV
 
 Copyright (c) 2026 Leonardo Paolini
@@ -10,6 +10,15 @@ License: MIT
 
 A standalone-render-layer relight node for Nuke, with always-on 3D
 light placement via Nuke's 3D viewer.
+
+v1.12 changes:
+  - Picker never pushes the light past the camera; auto-scale is capped
+    by the median depth (a far background no longer blows up the radius).
+  - Depth layer falls back to Nuke's `depth` layer (EXR "Z" = depth.Z).
+  - Auto-scale ignores sky: skips pixels flagged invalid in
+    depth.confidence and the Z = 10000 m sky of metric (MoGe-3) sidecars,
+    and brackets the scene with the 10th-90th percentile of a 7x7 grid.
+    Before, one sky sample made the scene 10 km deep (light radius ~3 km).
 
 v1.11 changes:
   - Removed the Switch and View Mode dropdown. 3D scene preview is
@@ -230,17 +239,18 @@ def _add_user_knobs(group):
          "Which channels of the Normals layer carry X/Y/Z.")
 
     text("<b>Normals convention</b> - align the estimator's output with the "
-         "Position pass frame. Defaults match NormalCrafter (OpenGL view-space "
-         "flipped into image-space). If shading looks inverted on some surfaces, "
+         "Position pass frame. Defaults match every LiveActionAOV normals engine "
+         "(MoGe-3, DSINE, NormalCrafter: OpenGL view-space, flipped into the "
+         "image-space P frame). If shading looks inverted on some surfaces, "
          "toggle these.")
     k = nuke.Boolean_Knob("n_flip_x", "Flip N.x")
     k.setValue(False); k.setTooltip("Negate N.x. Enable if left/right lighting looks swapped.")
     group.addKnob(k)
     k = nuke.Boolean_Knob("n_flip_y", "Flip N.y")
-    k.setValue(True);  k.setTooltip("Negate N.y. Default ON for NormalCrafter (Y-up -> Y-down).")
+    k.setValue(True);  k.setTooltip("Negate N.y. Default ON for LiveActionAOV normals (Y-up -> Y-down).")
     group.addKnob(k)
     k = nuke.Boolean_Knob("n_flip_z", "Flip N.z")
-    k.setValue(True);  k.setTooltip("Negate N.z. Default ON for NormalCrafter (+Z toward cam -> +Z away).")
+    k.setValue(True);  k.setTooltip("Negate N.z. Default ON for LiveActionAOV normals (+Z toward cam -> +Z away).")
     group.addKnob(k)
     k = nuke.Boolean_Knob("n_swap_yz", "Swap N.y <-> N.z")
     k.setValue(False); k.setTooltip("Swap Y and Z axes. Enable if your estimator uses Z-up world frame.")
@@ -697,23 +707,38 @@ def _auto_scale(group):
         except Exception:
             W, H = 1920, 1080
 
+        # v1.12: metric sidecars (MoGe-3) put the sky at Z = 10000 m and flag
+        # it in depth.confidence. Sky samples used to set the scene depth to
+        # 10 km (light radius ~3 km): skip pixels the sidecar marks invalid,
+        # skip the sky sentinel, and bracket with the 10th-90th percentile
+        # of a 7x7 grid instead of min/max of 3x3.
         samples_z = []
-        for gy in (1, 2, 3):
-            for gx in (1, 2, 3):
-                x = int(W * gx / 4); y = int(H * gy / 4)
+        for gy in range(1, 8):
+            for gx in range(1, 8):
+                x = int(W * gx / 8); y = int(H * gy / 8)
+                conf = _sample_any(aov, "depth", ("confidence",), x, y)
+                if conf is not None and conf < 0.5:
+                    continue
                 z = None
                 if has_p and layer_P != "none":
                     z = _sample_any(aov, layer_P, ("z", "blue"), x, y)
                 elif has_z and layer_Z != "none":
-                    z = _sample_any(aov, layer_Z, ("red", "z", "x"), x, y)
-                if z is not None and z > 1e-4 and z < 1e5:
+                    z = _sample_any(aov, layer_Z, ("red", "Z", "z", "x"), x, y)
+                if z is not None and z > 1e-4 and z < 5000.0:
                     samples_z.append(z)
 
         if len(samples_z) < 3:
             return
 
-        z_min = min(samples_z); z_max = max(samples_z); z_mid = (z_min + z_max) * 0.5
-        scene_scale = max(z_max - z_min, z_mid * 0.5)
+        samples_z.sort()
+        n = len(samples_z)
+        z_min = samples_z[int(0.1 * (n - 1))]
+        z_max = samples_z[int(round(0.9 * (n - 1)))]
+        z_mid = samples_z[n // 2]
+        # Capped by the median depth: a metric plate with a far background
+        # (river to 80 m, subject at 12 m) gave a 78 m scale -> 23 m light
+        # radius and a picker offset that pushed the light behind the camera.
+        scene_scale = max(min(z_max - z_min, z_mid), z_mid * 0.5)
 
         r = scene_scale * 0.3
         try: group["light_radius"].setValue(max(r, 1e-3))
@@ -781,7 +806,7 @@ def sample_and_place_light(group):
             Py = _sample_any(aov, layer_P, ("y", "green"), px, py)
             Pz = _sample_any(aov, layer_P, ("z", "blue"),  px, py)
         elif has_z and layer_Z != "none":
-            Zv = _sample_any(aov, layer_Z, ("red", "z", "x"), px, py)
+            Zv = _sample_any(aov, layer_Z, ("red", "Z", "z", "x"), px, py)
             if Zv is None:
                 return
             fx = group["fx"].value()
@@ -802,7 +827,8 @@ def sample_and_place_light(group):
         if Plen < 1e-3:
             return
 
-        off = group["light_depth_offset"].value()
+        # Never push the light past the camera (half the way at most).
+        off = min(group["light_depth_offset"].value(), 0.5 * Plen)
         ux = -Px / Plen; uy = -Py / Plen; uz = -Pz / Plen
         Px += ux * off; Py += uy * off; Pz += uz * off
 
@@ -860,6 +886,8 @@ def sync(group):
                     k.setValue(current)
                 else:
                     want = defaults.get(kn, "none")
+                    if want not in opts and kn == "layer_Z" and "depth" in opts:
+                        want = "depth"  # an EXR "Z" channel reads as depth.Z in Nuke
                     k.setValue(want if want in opts else "none")
 
         def sel(name):
@@ -911,7 +939,7 @@ def create():
     group = nuke.createNode("Group", inpanel=False)
     group.setName("UtilityRelight1", uncollide=True)
     group["help"].setValue(
-        "UtilityRelight v1.11 - part of the LiveActionAOV toolkit. "
+        "UtilityRelight v1.12 - part of the LiveActionAOV toolkit. "
         "Standalone light render layer. Connect: 0=plate, 1=AOV sidecar. "
         "Merge (plus) onto plate downstream. Press Tab in viewer for "
         "3D mode - drag the LightAxis to position the light in real 3D."

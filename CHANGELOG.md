@@ -37,6 +37,16 @@ uses [semantic versioning](https://semver.org/).
   focal came from (`intrinsics.source`: nodal_pan / lens_metadata / guess).
 
 ### Fixed
+- **UtilityRelight 1.12: metric sidecars.** With MoGe-3's metric P the
+  node's auto-scale took the sky (Z = 10000 m) and a far background as the
+  scene depth: light radius 3 km, then 23 m, and the 2D picker pushed the
+  light behind the camera. Now it skips pixels flagged in
+  `depth.confidence`, brackets with percentiles, caps the scale by the
+  median depth (PF0071: radius 4 m) and never moves the light past the
+  camera. Normal-convention defaults already fit every engine (MoGe-3,
+  DSINE, NormalCrafter all write OpenGL N). Checked in Nuke 16 headless on
+  PF0071: soldiers lit with clean volume where DA-V2 + DSINE gave faceted
+  blotches.
 - **DSINE normals were inverted.** DSINE's raw output is the negated OpenCV
   normal ("outward" in its README: a wall facing the camera is +Z), and the
   pass only flipped Y and Z, so `N` came out pointing into the surface on

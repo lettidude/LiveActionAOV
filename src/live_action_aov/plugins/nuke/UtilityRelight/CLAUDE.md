@@ -218,6 +218,13 @@ If those pass, it will at least LOAD in Nuke. Actual behavior testing requires t
 - **v1.10** — Switch-based single-Output design, PositionToPoints2 proper 3-input wiring, kernel-lit preview cloud, Key Color always tints, preview X/Y flip with kernel compensation.
 - **v1.10.1** — Bugfix: 2D picker now applies preview X/Y flip to sampled P before writing LightAxis. Previously the light landed mirrored from the clicked surface when flips were on (the default).
 - **v1.11** — Removed the Switch and View Mode dropdown. Always-on 3D preview via ScanlineRender + Merge2(copy) so the 3D geometry stays attached to the output graph continuously. Press Tab in viewer to toggle 2D/3D the Nuke-native way.
+- **v1.12** — Metric sidecars (MoGe-3: P in metres, sky at Z = 10000 m flagged in `depth.confidence`). Auto-scale skips invalid/sky samples, uses a 7x7 grid with 10th-90th percentile, and caps the scale by the median depth; the picker never pushes the light past the camera; Depth layer falls back to Nuke's `depth` layer. Verified headless in Nuke 16 on PF0071 (`_dev/relight_test/`).
+
+## Headless testing (nuke -t)
+
+- Clear the group's `knobChanged` before wiring inputs and call `sync()` yourself, or the callbacks loop.
+- Render `RelightKernel` from inside the group (`with group:`), not the group output: the ScanlineRender preview branch hangs in -t.
+- Numbers as trailing script args are eaten by Nuke as a frame range: pass them as text (e.g. `p1630x580`).
 
 ---
 
