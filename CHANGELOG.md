@@ -6,6 +6,8 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-11-01
+
 ### Added
 - **Portable offline build** (`scripts/build_portable.py`) for studios whose
   workstations have no internet (TPN): one relocatable folder (Python + every
@@ -624,6 +626,9 @@ uses [semantic versioning](https://semver.org/).
   alongside the `.python-version` pin from 0.4.1 — belt-and-suspenders so the
   venv is never built against an unsupported system Python.
 
+[0.11.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.11.0
+[0.10.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.10.1
+[0.10.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.10.0
 [0.9.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.9.0
 [0.8.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.8.0
 [0.7.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.7.1

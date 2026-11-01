@@ -50,6 +50,11 @@ uv run liveaov --help        # CLI reference
 > `%USERPROFILE%\.cache\huggingface\hub` (Windows). Subsequent runs are
 > offline-capable for any pass whose weights you've already pulled.
 
+> **Studio machines with no internet (TPN)?** Build one portable folder on
+> a machine that is online (`scripts/build_portable.py`), put it on the
+> server, and each artist installs/updates it with `install_local.bat`.
+> See [docs/install.md](docs/install.md#portable-build-for-studios-without-internet-tpn).
+
 ### Hugging Face authentication (one-time, required for SAM 3)
 
 **SAM 3** is **gated** on Hugging Face — Meta's license terms, not ours — so the matte pass needs a one-time HF token. Three steps:
