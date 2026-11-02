@@ -6,6 +6,8 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-11-02
+
 ### Added
 - **LTX Alpha on a smaller or a remote GPU.** The model files are now found
   on the ComfyUI server: the int8 safetensors when present, otherwise a GGUF
@@ -643,6 +645,7 @@ uses [semantic versioning](https://semver.org/).
   alongside the `.python-version` pin from 0.4.1 — belt-and-suspenders so the
   venv is never built against an unsupported system Python.
 
+[0.11.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.11.1
 [0.11.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.11.0
 [0.10.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.10.1
 [0.10.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.10.0
