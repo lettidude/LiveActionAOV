@@ -75,11 +75,27 @@ _NODES = (
     "LTXVCropGuides",
 )
 
-#: LTX-2.5 transformer / text encoder as GGUF (ComfyUI-GGUF), picked when
-#: the configured int8 safetensors is not on the server; best quality first.
-_GGUF_UNET = ("ltx-2.5-22b-distilled", (".gguf",))
-_GGUF_TE = ("gemma4-12b-with-proj-ltx-2.5", (".gguf",))
+#: LTX-2.5 transformer / text encoder as GGUF (ComfyUI-GGUF), picked when no
+#: safetensors of the same model is on the server; best quality first. The
+#: key is a set of name tokens, all of which must appear (case-insensitive):
+#: community GGUFs drop the "22b" ("LTX-2.5-Distilled-Q4_K_S.gguf").
+_GGUF_UNET = (("ltx-2.5", "distilled"), (".gguf",))
+_GGUF_TE = (("gemma4-12b-with-proj-ltx-2.5",), (".gguf",))
 _GGUF_ORDER = ("Q8_0", "Q6_K", "Q5_K", "Q4_K", "Q3_K", "Q2_K")
+#: Another precision of the configured safetensors (same model) is preferred
+#: over any GGUF: int8, then fp8, then bf16 (all fit a 32 GB card with offload).
+_PRECISION_ORDER = ("int8", "fp8", "bf16", "fp16")
+_PRECISION_TOKENS = (
+    "-comfy-int8-convrot",
+    "-int8",
+    "_int8",
+    "-fp8",
+    "_fp8",
+    "-bf16",
+    "_bf16",
+    "-fp16",
+    "_fp16",
+)
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
@@ -373,6 +389,11 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
             upload_image(self._url("/upload/image"), f, sub)
         return {"class_type": "VHS_LoadImages", "inputs": {"directory": sub, **common}}
 
+    def _name(self, key: str) -> str:
+        """The server's file name for a configured model (resolved by `_resolve`)."""
+        got = self._models.get(key)
+        return got[1] if got else str(self.params[key])
+
     def _graph(self, folder: Path, ww: int, wh: int, nf: int, prefix: str) -> dict[str, Any]:
         p = self.params
         unet_node, unet = self._models.get("unet", ("UNETLoader", str(p["unet"])))
@@ -384,10 +405,14 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
             "1": {"class_type": unet_node, "inputs": unet_inputs},
             "2": {
                 "class_type": "LTXICLoRALoaderModelOnly",
-                "inputs": {"model": ["1", 0], "lora_name": p["lora"], "strength_model": 1.0},
+                "inputs": {
+                    "model": ["1", 0],
+                    "lora_name": self._name("lora"),
+                    "strength_model": 1.0,
+                },
             },
-            "3": {"class_type": "VAELoader", "inputs": {"vae_name": p["video_vae"]}},
-            "4": {"class_type": "VAELoader", "inputs": {"vae_name": p["audio_vae"]}},
+            "3": {"class_type": "VAELoader", "inputs": {"vae_name": self._name("video_vae")}},
+            "4": {"class_type": "VAELoader", "inputs": {"vae_name": self._name("audio_vae")}},
             "5": {"class_type": te_node, "inputs": {"clip_name": te, "type": "ltxv"}},
             "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["5", 0]}},
             "7": {
@@ -562,15 +587,19 @@ def _resolve(
     if not any(n in info for n in ("VHS_LoadImagesPath", "VHS_LoadImages")):
         missing.append("node VHS_LoadImages (ComfyUI-VideoHelperSuite)")
     missing += [f"{p[k]} (or a GGUF of it)" for k, v in picked.items() if v is None]
-    missing += [
-        str(p[key])
-        for key, node, field in (
-            ("lora", "LTXICLoRALoaderModelOnly", "lora_name"),
-            ("video_vae", "VAELoader", "vae_name"),
-            ("audio_vae", "VAELoader", "vae_name"),
-        )
-        if node in info and str(p[key]) not in _choices(info[node], field)
-    ]
+    for key, node, field in (
+        ("lora", "LTXICLoRALoaderModelOnly", "lora_name"),
+        ("video_vae", "VAELoader", "vae_name"),
+        ("audio_vae", "VAELoader", "vae_name"),
+    ):
+        if node not in info:
+            continue
+        choices = _choices(info[node], field)
+        name = str(p[key]) if str(p[key]) in choices else find_by_basename(choices, str(p[key]))
+        if name is None:
+            missing.append(str(p[key]))
+        else:
+            picked[key] = (node, name)
     if missing:
         return False, f"ComfyUI at {url} is missing: " + ", ".join(missing), {}
     models = {k: v for k, v in picked.items() if v is not None}
@@ -585,19 +614,35 @@ def pick_model(
     node: str,
     gguf_node: str,
     field: str,
-    gguf: tuple[str, tuple[str, ...]],
+    gguf: tuple[Any, tuple[str, ...]],
 ) -> tuple[str, str] | None:
-    """(loader node, file) for a model: `wanted` when the server has it,
-    else the best-quality GGUF whose name contains gguf[0]; None if neither."""
-    if node in info and wanted in _choices(info[node], field):
-        return node, wanted
+    """(loader node, file) for a model, None if the server has none of these:
+
+    1. `wanted` exactly;
+    2. the same file in another folder of the model tree (studios keep LoRAs and
+       models in sub-folders: `ltxv/ltx25/...` instead of `LTX-2.5/...`);
+    3. another precision of the same safetensors (int8 > fp8 > bf16), e.g. the
+       bf16 distilled transformer when the int8 one was never downloaded;
+    4. the best-quality GGUF whose name holds every token of gguf[0].
+    """
+    if node in info:
+        choices = _choices(info[node], field)
+        if wanted in choices:
+            return node, wanted
+        same = find_by_basename(choices, wanted)
+        if same:
+            return node, same
+        other = _other_precision(choices, wanted)
+        if other:
+            return node, other
     if gguf_node not in info:
         return None
     key, exts = gguf
+    tokens = (key,) if isinstance(key, str) else tuple(key)
     cands = [
         f
         for f in _choices(info[gguf_node], field)
-        if key.lower() in f.lower() and f.lower().endswith(exts)
+        if all(t.lower() in f.lower() for t in tokens) and f.lower().endswith(exts)
     ]
 
     def rank(f: str) -> int:
@@ -605,6 +650,37 @@ def pick_model(
         return next((i for i, q in enumerate(_GGUF_ORDER) if q in u), len(_GGUF_ORDER))
 
     return (gguf_node, sorted(cands, key=rank)[0]) if cands else None
+
+
+def _basename(name: str) -> str:
+    return name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def find_by_basename(choices: list[str], wanted: str) -> str | None:
+    """The server's name for `wanted` when it sits in another sub-folder."""
+    b = _basename(wanted)
+    return next((c for c in choices if _basename(c) == b), None)
+
+
+def _strip_precision(name: str) -> str:
+    n = _basename(name)
+    for t in _PRECISION_TOKENS:
+        n = n.replace(t, "")
+    return n
+
+
+def _other_precision(choices: list[str], wanted: str) -> str | None:
+    """Same model file in another precision (int8 > fp8 > bf16)."""
+    stem = _strip_precision(wanted)
+    same = [
+        c for c in choices if _strip_precision(c) == stem and c.lower().endswith(".safetensors")
+    ]
+
+    def rank(c: str) -> int:
+        b = _basename(c)
+        return next((i for i, q in enumerate(_PRECISION_ORDER) if q in b), len(_PRECISION_ORDER))
+
+    return sorted(same, key=rank)[0] if same else None
 
 
 def upload_image(url: str, path: Path, subfolder: str) -> None:

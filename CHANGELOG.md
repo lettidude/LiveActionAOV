@@ -6,6 +6,17 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **LTX Alpha found nothing on a ComfyUI with its own folder layout.** The pass looked for exact
+  file names (`LTX-2.5\ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors`, the int8 transformer, a GGUF
+  with "22b" in the name), so a server that keeps the LoRA in `ltxv\ltx25\`, has the bf16 distilled
+  transformer instead of the int8 one, or a community GGUF named `LTX-2.5-Distilled-Q4_K_S.gguf`, got
+  "missing" and every object fell back to ViTMatte. `pick_model` now tries: the exact name, the same
+  file in another folder, another precision of the same model (int8 > fp8 > bf16), then the best GGUF
+  whose name holds every token (`ltx-2.5` + `distilled`). LoRA and VAEs are found by file name in any
+  folder, and the graph uses the names the server reported. Tested against a real ComfyUI that failed
+  before with the default settings.
+
 ## [0.11.1] — 2026-11-02
 
 ### Added
