@@ -6,6 +6,18 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Depth-anchored PnP camera fallback** (`pnp_fallback`, on by default). Fast handheld action often
+  gives COLMAP almost no usable parallax (only a few frames register) while the camera clearly
+  translates, so the rotation-only fallback does not fit either and the run had no camera. Now the camera pass tries a third route: MoGe-3 metric depth of the middle frame gives the
+  3D points of the static set (SAM 3 objects masked out, corners on depth edges skipped), their corners
+  are tracked through the shot with pyramidal Lucas-Kanade (forward-backward checked, dropped on
+  tracked objects), and each frame is solved with RANSAC EPnP + LM refine. Accepted when it fits
+  (`pnp_max_error_px` 2.0 at solve resolution, `min_registered_fraction` of the frames). Scale is
+  MoGe-3's metric
+  estimate; the solve says so in its warnings (`mapper: depth_pnp`, intrinsics source
+  `moge3_depth_pnp`). `pnp_fov_x_deg` overrides MoGe-3's FOV estimate.
+
 ## [0.11.1] — 2026-11-02
 
 ### Added

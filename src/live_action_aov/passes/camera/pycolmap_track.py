@@ -141,6 +141,14 @@ class PyColmapCameraPass(UtilityPass):
         # Image motion below this fraction of the long edge cannot measure
         # the focal: use the lens metadata (ARRI FocalLength), else a guess.
         "nodal_min_motion": 0.03,
+        # Neither fits (fast handheld action: COLMAP registers a handful of
+        # frames, the camera translates): depth-anchored PnP
+        # (passes/camera/pnp.py) - MoGe-3 depth of the middle frame + its
+        # corners tracked through the shot. Accepted only if it fits that well.
+        "pnp_fallback": True,
+        "pnp_max_error_px": 2.0,  # median over the solved frames, at solve resolution
+        "pnp_fov_x_deg": None,  # horizontal FOV of the plate; None = MoGe-3's estimate
+        "pnp_max_corners": 6000,
         "keep_workdir": False,
     }
 
@@ -154,6 +162,7 @@ class PyColmapCameraPass(UtilityPass):
         self._sparse_dir: Path | None = None
         self._masked_labels: list[str] = []
         self._lens_mm: float | None = None
+        self._pnp_fov_source = ""
 
     # --- per-frame hooks unused (VIDEO_CLIP) ---
     def preprocess(self, frames: np.ndarray) -> Any:  # pragma: no cover
@@ -213,6 +222,11 @@ class PyColmapCameraPass(UtilityPass):
             nodal = self._solve_nodal(self._workdir / "database.db", frame_list, plate_wh, solve_wh)
             if nodal is not None:
                 self._solve, self._sparse_dir = nodal, None
+                return {}
+        if (self._solve is None or short) and self.params.get("pnp_fallback", True):
+            pnp_solve = self._solve_pnp(reader, frame_list, plate_wh, solve_wh, image_dir, mask_dir)
+            if pnp_solve is not None:
+                self._solve, self._sparse_dir = pnp_solve, None
                 return {}
         if self._solve is None:
             raise failure or RuntimeError("Camera track: no reconstruction.")
@@ -520,6 +534,120 @@ class PyColmapCameraPass(UtilityPass):
         for warn in q.warnings:
             _log.warning("Camera solve: %s", warn)
         return solve
+
+    def _solve_pnp(
+        self,
+        reader: Any,
+        frame_list: list[tuple[int, str]],
+        plate_wh: tuple[int, int],
+        solve_wh: tuple[int, int],
+        image_dir: Path,
+        mask_dir: Path | None,
+    ) -> CameraSolve | None:
+        """Depth-anchored PnP (passes/camera/pnp.py), or None when it does
+        not fit or MoGe-3 is not installed."""
+        import cv2
+
+        from live_action_aov.passes.camera import pnp
+
+        sw, sh = solve_wh
+        anchor = len(frame_list) // 2
+        try:
+            img = np.asarray(reader.read_frame(frame_list[anchor][0])[0], dtype=np.float32)[..., :3]
+            depth, fov = self._anchor_depth(img)
+        except (ImportError, RuntimeError) as e:
+            _log.info("Camera solve: PnP fallback unavailable (%s).", e)
+            return None
+        depth = cv2.resize(depth, (sw, sh), interpolation=cv2.INTER_NEAREST)
+        f = pnp.focal_from_fov(sw, fov)
+        K = np.array([[f, 0.0, sw / 2.0], [0.0, f, sh / 2.0], [0.0, 0.0, 1.0]])
+        gray = [cv2.imread(str(image_dir / name), cv2.IMREAD_GRAYSCALE) for _, name in frame_list]
+        static: list[np.ndarray | None] = [
+            cv2.imread(str(mask_dir / f"{name}.png"), cv2.IMREAD_GRAYSCALE) > 0
+            if mask_dir is not None and (mask_dir / f"{name}.png").is_file()
+            else None
+            for _, name in frame_list
+        ]
+        usable = ~pnp.near_depth_edges(depth, radius=11)  # = the LK window (21 px)
+        if static[anchor] is not None:
+            usable &= static[anchor]
+        uv = pnp.anchor_corners(
+            gray[anchor], usable, int(self.params.get("pnp_max_corners", 6000)), max(4, sw // 400)
+        )
+        if len(uv) < 50:
+            _log.info("Camera solve: PnP fallback found only %d static corners.", len(uv))
+            return None
+        rgb = cv2.resize(np.clip(img, 0.0, 1.0), (sw, sh), interpolation=cv2.INTER_AREA)
+        xi = np.clip(np.round(uv[:, 0]).astype(int), 0, sw - 1)
+        yi = np.clip(np.round(uv[:, 1]).astype(int), 0, sh - 1)
+        sol = pnp.PnPSolve(
+            K=K,
+            anchor=anchor,
+            points=pnp.back_project(uv, depth, K),
+            colors=(rgb[yi, xi] * 255.0 + 0.5).astype(np.uint8),
+        )
+        tracks = pnp.track_klt(gray, anchor, uv, static)
+        pnp.solve_poses(sol, tracks)
+        errs = [e for k, e in sol.frame_error_px.items() if k != anchor]
+        med = float(np.median(errs)) if errs else 1e9
+        need = float(self.params.get("min_registered_fraction", 0.5)) * len(frame_list)
+        if med > float(self.params.get("pnp_max_error_px", 2.0)) or len(sol.poses) < need:
+            _log.info(
+                "Camera solve: depth-anchored PnP does not fit either (median %.2f px, %d/%d "
+                "frames).",
+                med,
+                len(sol.poses),
+                len(frame_list),
+            )
+            return None
+        solve = build_solve_from_pnp(
+            sol,
+            frame_list=frame_list,
+            plate_wh=plate_wh,
+            solve_wh=solve_wh,
+            params=self.params,
+            masked_labels=self._masked_labels,
+            fov_note=self._pnp_fov_source,
+        )
+        q = solve.quality
+        _log.info(
+            "Camera solve (depth-anchored PnP): %d/%d frames, %.3f px (plate res), focal %.1f px "
+            "(%s); masked: %s",
+            q.registered_frame_count,
+            q.total_frame_count,
+            q.aggregate_reprojection_error_px,
+            solve.intrinsics.fx_px,
+            self._pnp_fov_source,
+            ", ".join(self._masked_labels) or "none",
+        )
+        for warn in q.warnings:
+            _log.warning("Camera solve: %s", warn)
+        return solve
+
+    def _anchor_depth(self, img: np.ndarray) -> tuple[np.ndarray, float]:
+        """MoGe-3 metric depth (H, W, 0 = invalid) of one display-referred
+        frame and the horizontal FOV used. Unloaded right after."""
+        from live_action_aov.passes.normals.moge3 import MoGe3Pass
+
+        fov_param = self.params.get("pnp_fov_x_deg")
+        moge = MoGe3Pass({"emit_normals": False})
+        try:
+            r = moge.infer(
+                moge.preprocess(img[None]), float(fov_param) if fov_param is not None else None
+            )
+        finally:
+            moge._model = None
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:  # pragma: no cover
+                pass
+        self._pnp_fov_source = f"FOV {float(r['fov_x']):.1f} deg " + (
+            "from pnp_fov_x_deg" if fov_param is not None else "estimated by MoGe-3"
+        )
+        return r["depth"], float(r["fov_x"])
 
     def _pick_model(self, recs: dict[int, Any], out: Path) -> tuple[Any, Path]:
         """Largest of the mapper's models and its folder."""
@@ -850,6 +978,94 @@ def build_solve_from_nodal(
             sift_max_features=int(params.get("sift_max_features", 8192)),
             max_image_size=int(params.get("max_image_size", 2048)),
             mapper="nodal",
+            masked_labels=list(masked_labels or []),
+        ),
+        conventions=Conventions(),
+        intrinsics=intr,
+        extrinsics=extrinsics,
+        unregistered_frames=sorted(fr for fr, _ in frame_list if fr not in registered),
+        points=points,
+        quality=quality,
+    )
+
+
+def build_solve_from_pnp(
+    sol: Any,
+    *,
+    frame_list: list[tuple[int, str]],
+    plate_wh: tuple[int, int],
+    solve_wh: tuple[int, int],
+    params: dict[str, Any],
+    masked_labels: list[str] | None = None,
+    fov_note: str = "",
+    max_points: int = 30000,
+) -> CameraSolve:
+    """`pnp.PnPSolve` -> `CameraSolve`: world = the anchor camera (OpenCV),
+    flipped to Y-up like every other solve; metres from MoGe-3."""
+    sw, _sh = solve_wh
+    pw, ph = plate_wh if plate_wh[0] > 0 else solve_wh
+    scale = pw / max(sw, 1)
+    f = float(sol.K[0, 0]) * scale
+    hap = float(params.get("haperture_mm", 24.892))
+    intr = Intrinsics(
+        fx_px=f,
+        fy_px=f,
+        cx_px=pw / 2.0,
+        cy_px=ph / 2.0,
+        width_px=pw,
+        height_px=ph,
+        haperture_mm_hint=hap,
+        vaperture_mm_hint=hap * ph / max(pw, 1),
+        focal_mm_hint=f * hap / max(pw, 1),
+        distortion_model="pinhole",
+        distortion_params=[],
+        source="moge3_depth_pnp",
+    )
+    extrinsics: list[Extrinsic] = []
+    per_err: dict[int, float] = {}
+    per_count: dict[int, int] = {}
+    for k, (R_cw, t_cw) in sorted(sol.poses.items()):
+        frame = frame_list[k][0]
+        R_gl, t_gl = opencv_to_opengl_world_from_camera(R_cw, t_cw)
+        extrinsics.append(
+            Extrinsic(
+                frame=frame,
+                translation=(float(t_gl[0]), float(t_gl[1]), float(t_gl[2])),
+                rotation_euler_zxy_deg=rotation_matrix_to_euler_zxy_deg(R_gl),
+                rotation_matrix=tuple(tuple(float(v) for v in row) for row in R_gl),  # type: ignore[arg-type]
+            )
+        )
+        per_err[frame] = float(sol.frame_error_px.get(k, 0.0)) * scale
+        per_count[frame] = int(sol.frame_inliers.get(k, 0))
+    step = max(1, len(sol.points) // max_points)
+    points = [
+        ScenePoint(
+            xyz=world_point_to_gl((float(p[0]), float(p[1]), float(p[2]))),
+            color_rgb=(int(c[0]), int(c[1]), int(c[2])),
+            reprojection_error_px=0.0,
+            track_length=1,
+        )
+        for p, c in zip(sol.points[::step], sol.colors[::step], strict=True)
+    ]
+    registered = {e.frame for e in extrinsics}
+    quality = _quality(per_err, per_count, len(registered), len(frame_list), intr, extrinsics)
+    quality.warnings.insert(
+        0,
+        "Depth-anchored PnP camera (SfM found too little parallax): 3D from MoGe-3 depth of "
+        f"frame {frame_list[sol.anchor][0]}, {fov_note or 'FOV estimated by MoGe-3'}; "
+        "scale in metres is MoGe-3's estimate.",
+    )
+    return CameraSolve(
+        shot=ShotRef(),
+        backend=BackendInfo(
+            name="pycolmap",
+            version=_pycolmap_version(),
+            matcher=str(params.get("matcher", "sequential")),
+            sequential_overlap=int(params.get("sequential_overlap", 10)),
+            camera_model="PINHOLE",
+            sift_max_features=int(params.get("sift_max_features", 8192)),
+            max_image_size=int(params.get("max_image_size", 2048)),
+            mapper="depth_pnp",
             masked_labels=list(masked_labels or []),
         ),
         conventions=Conventions(),
