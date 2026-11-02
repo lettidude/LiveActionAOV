@@ -94,6 +94,11 @@ class MoGe3Pass(UtilityPass):
     optional_artifacts = ["camera_solve"]
     smoothable_channels = [CH_Z, CH_N_X, CH_N_Y, CH_N_Z]
 
+    @classmethod
+    def smoothable_for(cls, params: dict[str, Any]) -> list[str]:
+        out = [CH_Z] if params.get("emit_depth", True) else []
+        return out + ([CH_N_X, CH_N_Y, CH_N_Z] if params.get("emit_normals", True) else [])
+
     DEFAULT_PARAMS: dict[str, Any] = {
         "model_id": "Ruicheng/moge-3-vitl",
         "emit_depth": True,

@@ -149,6 +149,13 @@ class UtilityPass(ABC):
     # smooth" (used by the flow pass itself and by stubs).
     smoothable_channels: list[str] = []
 
+    @classmethod
+    def smoothable_for(cls, params: dict[str, Any]) -> list[str]:
+        """`smoothable_channels` for this configuration. A pass whose params
+        switch outputs off narrows it, so it never smooths a channel another
+        pass wrote (MoGe-3 serving only normals next to VDA's Z)."""
+        return list(cls.smoothable_channels)
+
     # --- Pass parameters (populated from YAML via `configure`) ---
     params: dict[str, Any]
 

@@ -319,7 +319,11 @@ class LocalExecutor(Executor):
                         continue
                     if getattr(cls, "temporal_mode", None) != TemporalMode.PER_FRAME:
                         continue
-                    smoothable = list(getattr(cls, "smoothable_channels", []) or [])
+                    if hasattr(cls, "smoothable_for"):
+                        merged = {**getattr(cls, "DEFAULT_PARAMS", {}), **pc.params}
+                        smoothable = cls.smoothable_for(merged)
+                    else:
+                        smoothable = list(getattr(cls, "smoothable_channels", []) or [])
                     if not smoothable:
                         continue
                     auto_name = f"temporal_smooth::{node.name}"

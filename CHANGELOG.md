@@ -16,6 +16,13 @@ uses [semantic versioning](https://semver.org/).
   from a local folder (`send_frames`: auto / path / upload). Models > ComfyUI
   for LTX Alpha reports which GGUF it found.
 
+### Fixed
+- **MoGe-3 normals next to another depth backend** (e.g. Video Depth
+  Anything for Z, MoGe-3 for N): the auto temporal smoother of MoGe-3 also
+  smoothed the other pass's Z. It now touches only the outputs MoGe-3 writes.
+  Measured on PF0071 (48 frames, flow-compensated): smoothing cuts MoGe-3
+  normal flicker by about a third (p90 4.2 -> 2.7 deg).
+
 ## [0.11.0] — 2026-11-01
 
 ### Added

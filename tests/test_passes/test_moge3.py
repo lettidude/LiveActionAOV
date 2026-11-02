@@ -152,6 +152,18 @@ def test_slot_flags_limit_outputs() -> None:
     assert CH_N_X not in out[1] and CH_Z in out[1]
 
 
+def test_smoother_only_touches_the_slots_it_emits() -> None:
+    # Normals-only MoGe next to VDA depth must not smooth VDA's Z.
+    cls = moge3.MoGe3Pass
+    assert cls.smoothable_for({"emit_depth": False, "emit_normals": True}) == [
+        CH_N_X,
+        CH_N_Y,
+        CH_N_Z,
+    ]
+    assert cls.smoothable_for({"emit_depth": True, "emit_normals": False}) == [CH_Z]
+    assert set(cls.smoothable_for(cls.DEFAULT_PARAMS)) == set(cls.smoothable_channels)
+
+
 def test_position_from_depth_uses_the_depth_pass_intrinsics() -> None:
     p = _FakePass({"fov_x_deg": 90.0})
     out = p.run_shot(_Reader(), (1, 1))
