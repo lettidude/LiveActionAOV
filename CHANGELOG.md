@@ -6,6 +6,21 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **GUI: SAM 3.1 detector, whole-frame LTX engine, PnP camera toggle.** Passes tab: a "Detector"
+  choice (SAM 3 built in / SAM 3.1 Object Multiplex; Submit checks the SAM 3.1 environment up front),
+  "LTX Alpha whole frame" under the default engine's Advanced menu (sent with the ComfyUI URL; the
+  Masks-tab preview uses ViTMatte for it), and "Camera: solve from depth when SfM fails". All three
+  are saved in the session and copied by "Apply passes to all shots".
+
+### Fixed
+- **A failed shot stopped an overnight batch.** Shots ticked while a batch runs (Submit is disabled
+  meanwhile) were never added to it; when the last submitted shot failed, the GUI treated it as a
+  single-shot run and showed a blocking error dialog, and the shots ticked later never ran. The
+  batch now picks up shots ticked during the run when its queue drains (same output-root check;
+  non-commercial models still need a Submit to confirm them), and failure dialogs no longer block
+  the queue.
+
 ## [0.11.1] — 2026-11-02
 
 ### Added

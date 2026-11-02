@@ -270,6 +270,8 @@ def _sam3_matte_params(state: ShotState) -> dict[str, Any]:
     params: dict[str, Any] = {}
     if (state.small_objects or "auto") != "auto":  # "auto" is the pass default
         params["small_objects"] = state.small_objects
+    if (state.detector or "sam3") != "sam3":
+        params["detector"] = state.detector
     concepts = _parse_concepts(state.sam3_concepts)
     if concepts:
         params["concepts"] = concepts
@@ -345,7 +347,15 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
             skip = [lab for eng, labs in assigned.items() if eng != n for lab in labs]
             if skip:
                 rp["skip_labels"] = skip
+            if n == "ltx_alpha_refiner":
+                from live_action_aov.gui.comfy_dialog import comfy_url
+
+                rp["comfy_url"] = comfy_url()
+                if state.default_engine == "ltx_whole":
+                    rp["mode"] = "whole_frame"
             out.append(PassConfig(name=n, params=rp) if rp else PassConfig(name=n))
+        elif n == "camera_pycolmap" and not state.camera_pnp_fallback:
+            out.append(PassConfig(name=n, params={"pnp_fallback": False}))
         elif n == "moge3":
             out.append(PassConfig(name=n, params=_moge3_params(state.enabled_models)))
         else:
@@ -384,6 +394,7 @@ _DEFAULT_ENGINE_PLUGIN = {
     "vitmatte": "vitmatte_refiner",
     "chromakey": "chroma_key",
     "rvm": "rvm_refiner",
+    "ltx_whole": "ltx_alpha_refiner",
 }
 
 #: ClickInstance.refiner value -> refiner plugin name (per-object engines).

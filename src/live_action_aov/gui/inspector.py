@@ -443,6 +443,31 @@ class InspectorPanel(QWidget):
         small_row.addWidget(self._small_objects_label)
         small_row.addWidget(self._small_objects_combo, stretch=1)
 
+        # Detector: SAM 3 (built in) or SAM 3.1 Object Multiplex.
+        self._detector_combo = QComboBox()
+        self._detector_combo.addItem("SAM 3 (built in)", "sam3")
+        self._detector_combo.addItem("SAM 3.1 Object Multiplex - many objects, fast motion", "sam3.1")
+        self._detector_combo.setToolTip(
+            "SAM 3.1 tracks every instance of a concept together and keeps identities "
+            "where SAM 3 can swap two similar objects or lose a part in motion blur. "
+            "It runs in its own Python 3.12 environment: set LAOV_SAM31_PYTHON to its "
+            "python.exe (docs/install.md, SAM 3.1). Clicked objects still use SAM 3."
+        )
+        self._detector_combo.currentIndexChanged.connect(self._on_detector_changed)
+        detector_row = QHBoxLayout()
+        self._detector_label = QLabel("Detector:")
+        detector_row.addWidget(self._detector_label)
+        detector_row.addWidget(self._detector_combo, stretch=1)
+
+        self._pnp_check = QCheckBox("Camera: solve from depth when SfM fails (PnP fallback)")
+        self._pnp_check.setToolTip(
+            "Fast handheld action often gives COLMAP no usable parallax, and the camera "
+            "moves too much for the rotation-only fallback. Then the camera is solved "
+            "from MoGe-3 depth of the middle frame plus tracked corners. Scale is "
+            "MoGe-3's metric estimate. Camera track only."
+        )
+        self._pnp_check.toggled.connect(self._on_pnp_toggled)
+
         refiner_weights_row = QHBoxLayout()
         self._refiner_weights_label = QLabel("Default engine:")
         refiner_weights_row.addWidget(self._refiner_weights_label)
@@ -450,8 +475,10 @@ class InspectorPanel(QWidget):
         passes_block.addSpacing(8)
         passes_block.addLayout(refiner_weights_row)
         passes_block.addLayout(small_row)
+        passes_block.addLayout(detector_row)
         passes_block.addWidget(self._refine_all_check)
         passes_block.addWidget(self._outline_check)
+        passes_block.addWidget(self._pnp_check)
 
         # "Apply to all shots" — one-click broadcast of the active
         # shot's pass selections to every other shot in the queue.
@@ -874,6 +901,13 @@ class InspectorPanel(QWidget):
             so = self._small_objects_combo.findData(shot.small_objects or "auto")
             self._small_objects_combo.setCurrentIndex(max(so, 0))
             self._small_objects_combo.blockSignals(False)
+            self._detector_combo.blockSignals(True)
+            di = self._detector_combo.findData(shot.detector or "sam3")
+            self._detector_combo.setCurrentIndex(max(di, 0))
+            self._detector_combo.blockSignals(False)
+            self._pnp_check.blockSignals(True)
+            self._pnp_check.setChecked(bool(shot.camera_pnp_fallback))
+            self._pnp_check.blockSignals(False)
 
             self._default_engine_combo.set_current((shot.default_engine, shot.refiner_model))
             # The preview follows each object's engine (no separate preview pick).
@@ -1052,6 +1086,16 @@ class InspectorPanel(QWidget):
             return
         self._current.small_objects = str(self._small_objects_combo.itemData(idx) or "auto")
 
+    def _on_detector_changed(self, idx: int) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.detector = str(self._detector_combo.itemData(idx) or "sam3")
+
+    def _on_pnp_toggled(self, checked: bool) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.camera_pnp_fallback = bool(checked)
+
     def _on_default_engine_changed(self, data: tuple[str, str]) -> None:
         if self._building or self._current is None:
             return
@@ -1070,6 +1114,11 @@ class InspectorPanel(QWidget):
         self._default_engine_combo.setEnabled("sam3_matte_on" in enabled)
         self._small_objects_combo.setEnabled("sam3_matte_on" in enabled)
         self._small_objects_label.setEnabled("sam3_matte_on" in enabled)
+        self._detector_combo.setEnabled("sam3_matte_on" in enabled)
+        self._detector_label.setEnabled("sam3_matte_on" in enabled)
+        from live_action_aov.gui.pass_catalog import expand_models
+
+        self._pnp_check.setEnabled("camera_pycolmap" in expand_models(list(enabled)))
         self._refiner_weights_label.setEnabled("sam3_matte_on" in enabled)
         if "sam3_matte_on" not in enabled:
             self._preview_refiner_note.setText(
@@ -1340,6 +1389,8 @@ class InspectorPanel(QWidget):
         src_refine_all = bool(self._current.refine_all_masks)
         src_outline = bool(self._current.refiner_outline)
         src_small = self._current.small_objects
+        src_detector = self._current.detector
+        src_pnp = bool(self._current.camera_pnp_fallback)
         src_refiner_model = self._current.refiner_model
         src_default_engine = self._current.default_engine
         count = 0
@@ -1351,6 +1402,8 @@ class InspectorPanel(QWidget):
             shot.refine_all_masks = src_refine_all
             shot.refiner_outline = src_outline
             shot.small_objects = src_small
+            shot.detector = src_detector
+            shot.camera_pnp_fallback = src_pnp
             shot.refiner_model = src_refiner_model
             shot.default_engine = src_default_engine
             self._registry.notify_updated(shot)
