@@ -322,6 +322,21 @@ class SAM3MattePass(UtilityPass):
         # doesn't shift the clicks)}. ADDITIVE to text concepts: empty list =
         # concept detection only.
         "prompt_instances": [],
+        # Detector + tracker for the text concepts. "sam3" = SAM 3 through
+        # transformers (above). "sam3.1" = Meta's SAM 3.1 Object Multiplex
+        # (facebook/sam3.1, gated), run in its own Python 3.12 environment
+        # (`sam31_bridge`): every instance of a concept tracked jointly, which
+        # keeps identities apart where SAM 3 can swap two similar
+        # objects. Clicks still use SAM 3's tracker; re-detection is skipped
+        # (SAM 3.1 propagates from the seed frame both ways).
+        "detector": "sam3",
+        "sam31_python": "",  # its python.exe; "" = $LAOV_SAM31_PYTHON
+        "sam31_checkpoint": "",  # "" = sam3.1_multiplex.pt from the HF cache
+        "sam31_timeout_s": 3600,
+        # SAM 3.1 false hits (shelf items, posters): an object must cover this
+        # much of the frame on its biggest frame, on at least that many frames.
+        "sam31_min_peak_coverage": 0.005,
+        "sam31_min_frames": 3,
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -840,6 +855,53 @@ class SAM3MattePass(UtilityPass):
 
         return out
 
+    def _use_sam31(self) -> bool:
+        return str(self.params.get("detector", "sam3")).lower().replace(".", "") == "sam31"
+
+    def _add_sam31(
+        self, frames: np.ndarray, concepts: list[str], seed_local: int, first: int
+    ) -> None:
+        """Detect + track the concepts with SAM 3.1 (separate environment)
+        and append the objects to `self._instances`, like `_track_objects`."""
+        import cv2
+
+        from live_action_aov.passes.matte import sam31_bridge
+
+        python = sam31_bridge.find_python(self.params)
+        n, h, w = int(frames.shape[0]), int(frames.shape[1]), int(frames.shape[2])
+        found = sam31_bridge.run_sam31(
+            frames,
+            concepts,
+            seed_local,
+            python,
+            timeout_s=float(self.params.get("sam31_timeout_s", 3600)),
+            checkpoint=str(self.params.get("sam31_checkpoint", "") or ""),
+        )
+        min_cov = float(self.params.get("sam31_min_peak_coverage", 0.005))
+        min_frames = int(self.params.get("sam31_min_frames", 3))
+        used = {i.track_id for i in self._instances}
+        next_id = 1
+        kept = 0
+        for o in found:
+            st = o.stack
+            if st.shape[0] != n:
+                raise ValueError(f"SAM 3.1 returned {st.shape[0]} frames for a {n}-frame shot")
+            if st.shape[1:] != (h, w):  # NEAREST keeps the masks binary
+                st = np.stack([cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST) for m in st])
+            if not sam31_bridge.keep_object(st, min_cov, min_frames):
+                _log.info(
+                    "SAM 3.1: dropped '%s' object %d (too small / too brief).", o.label, o.obj_id
+                )
+                continue
+            while next_id in used:
+                next_id += 1
+            used.add(next_id)
+            masks = MaskDict((first + k, st[k]) for k in range(n))
+            self._instances.append(_DetectedInstance(next_id, o.label, masks))
+            self._priority[next_id] = 0
+            kept += 1
+        _log.info("SAM 3.1: %d object(s) kept of %d.", kept, len(found))
+
     def _track_objects(
         self,
         frames: np.ndarray,
@@ -1304,7 +1366,8 @@ class SAM3MattePass(UtilityPass):
             str(self.params.get("small_objects", "auto")).lower() != "off"
         )
         self._det_hw = self._full_hw() if on_plate else (plate_h, plate_w)
-        seeds = self._detect_frame(frames, seed_local, concepts)
+        use31 = self._use_sam31()
+        seeds = [] if use31 else self._detect_frame(frames, seed_local, concepts)
 
         # Pre-flight host-RAM check (fail fast, before the minutes-long track).
         # Peak host RAM is dominated by holding every instance's whole-clip mask
@@ -1418,10 +1481,12 @@ class SAM3MattePass(UtilityPass):
         self._priority = {}
         self._parent = {}
         self._track_objects(frames, objs, first, area_floor)
+        if use31 and concepts:
+            self._add_sam31(frames, concepts, seed_local, first)
 
         # --- Re-detection: objects that enter later / the tracker lost ---
         stride = self.params.get("redetect_stride")
-        if stride and concepts:
+        if stride and concepts and not use31:
             self._redetect(frames, concepts, int(stride), seed_local, first, area_floor)
         if self._user_concepts:
             _warn_unmatched_concepts(concepts, {i.label for i in self._instances})
