@@ -29,6 +29,19 @@ alpha (it needs context to understand what is foreground). Per track:
    background. (`gate="dilate"`: the SAM mask grown by `gate_frac`, which
    left soft fog over whatever LTX matted next to the object.)
 
+`mode="whole_frame"` instead runs LTX ONCE over the full frame (per chunk,
+not per object) and gives each object the foreground nearest to it: every
+foreground pixel goes to the closest SAM track (distance transforms, with a
+`seam_px` feathered seam where two objects touch); foreground farther than
+`far_frac` of the width from every track belongs to no object and is only in
+the `foreground.a` layer (props, blood, untracked people). No SAM gate cuts
+LTX's outline, so a shoulder SAM missed stays in, and N objects cost one LTX
+run instead of N.
+
+`cache_dir`: each LTX call's raw result is saved there, keyed by a hash of
+the frames sent and the models / settings, so a rerun (a crash later in the
+shot, a change downstream) never repeats the diffusion.
+
 ComfyUI not running, or a node / model missing: the object falls back to
 ViTMatte with a warning - the run never fails because of it.
 
@@ -39,6 +52,7 @@ the GUI label and in the sidecar metadata.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import shutil
@@ -130,6 +144,16 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         "send_frames": "auto",
         # Dev: save each track's ungated LTX alpha + SAM mask here (npz).
         "debug_dir": "",
+        # "per_object": one LTX run per object on a crop, gated by SAM.
+        # "whole_frame": one LTX run on the full frame, split between the
+        # objects by nearest track (see the module docstring).
+        "mode": "per_object",
+        "whole_long_edge": 1920,  # whole-frame working resolution
+        "whole_chunk": 97,  # whole-frame frames per LTX call, 8n+1
+        "far_frac": 0.06,  # foreground farther than this x width from every track: no owner
+        "seam_px": 2.0,  # feather of the seam between two objects (working-res px)
+        # Folder for the raw LTX results (one .npy per call); "" = no cache.
+        "cache_dir": "",
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -139,6 +163,12 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         self._models: dict[str, tuple[str, str]] = {}
         self._track_id: int | None = None
         self._first = 0
+        # Whole-frame mode: LTX foreground at working res (T, wh, ww) and the
+        # nearest-owner map (T, wh, ww), -1 = no owner; built once per shot.
+        self._fg_work: np.ndarray | None = None
+        self._owner: np.ndarray | None = None
+        self._owner_ids: list[int] = []
+        self._plate_hw = (0, 0)
 
     def _trust_outline(self) -> bool:
         # Generates its own outline on purpose; the SAM gate bounds it.
@@ -156,11 +186,27 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         self, reader: Any, frame_range: tuple[int, int]
     ) -> dict[int, dict[str, np.ndarray]]:
         self._first = int(frame_range[0])
+        self._fg_work, self._owner, self._owner_ids = None, None, []
         try:
-            return super().run_shot(reader, frame_range)
+            out = super().run_shot(reader, frame_range)
         finally:
             if self._comfy_ok:
                 self._free()
+        if self._fg_work is not None and bool(self.params.get("pack_heroes", True)):
+            # The whole foreground, owned or not (props, blood, extras).
+            import cv2
+
+            sfx = str(self.params.get("channel_suffix", "") or "")
+            h, w = self._plate_hw
+            for i, f in enumerate(range(frame_range[0], frame_range[1] + 1)):
+                out.setdefault(f, {})[f"foreground{sfx}.a"] = np.clip(
+                    cv2.resize(
+                        self._fg_work[i].astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR
+                    ),
+                    0.0,
+                    1.0,
+                )
+        return out
 
     def _refine_track(
         self,
@@ -184,6 +230,8 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
     def _refine_instance(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
         if not self._comfy_ready():
             return self._vitmatte()._refine_instance(plate_stack, hard_stack)
+        if str(self.params.get("mode", "per_object")) == "whole_frame":
+            return self._whole_frame_share(plate_stack, hard_stack)
         import cv2
 
         T, H, W = hard_stack.shape
@@ -223,7 +271,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
                         cv2.cvtColor((crop * 255.0 + 0.5).astype(np.uint8), cv2.COLOR_RGB2BGR),
                     )
                 t0 = time.time()
-                raw = self._run_ltx(d, ww, wh, nf)
+                raw = self._ltx(d, ww, wh, nf)
                 _log.info(
                     "LTX alpha: track %s chunk %d/%d, frames %d-%d, box %dx%d -> %dx%d, %.1fs",
                     self._track_id,
@@ -262,6 +310,142 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         if str(self.params.get("gate", "dilate")) == "trimap":
             return alpha * self._trimap_gate(plate_stack, hard_stack)
         return alpha * sam_gate(hard_stack, float(self.params["gate_frac"]))
+
+    # ------------------------------------------------------------------
+    # Whole-frame mode
+    # ------------------------------------------------------------------
+
+    def _whole_frame_share(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
+        """This track's share of the whole-frame LTX foreground."""
+        import cv2
+
+        T, H, W = hard_stack.shape
+        if self._fg_work is None:
+            self._plate_hw = (H, W)
+            self._fg_work = self._whole_frame_alpha(plate_stack)
+            self._owner, self._owner_ids = self._owner_map(T)
+        assert self._owner is not None
+        if self._track_id not in self._owner_ids:
+            # A part refined on its own (parts_from_whole off): no owner of
+            # its own, so the SAM gate decides, as in per-object mode.
+            up = np.stack(
+                [
+                    cv2.resize(
+                        self._fg_work[t].astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR
+                    )
+                    for t in range(T)
+                ]
+            )
+            return up * sam_gate(hard_stack, float(self.params["gate_frac"]))
+        k = self._owner_ids.index(int(self._track_id))  # type: ignore[arg-type]
+        seam = float(self.params["seam_px"])
+        out = np.zeros((T, H, W), np.float32)
+        for t in range(T):
+            if not hard_stack[t].any():
+                continue
+            mine = (self._owner[t] == k).astype(np.float32)
+            share = cv2.GaussianBlur(mine, (0, 0), seam) if seam > 0 else mine
+            # Sum of the blurred one-hots = blur(has an owner) <= 1, so the
+            # objects' shares add up to the foreground away from the seams.
+            out[t] = cv2.resize(
+                share * self._fg_work[t].astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR
+            )
+        return np.clip(out, 0.0, 1.0)
+
+    def _whole_frame_alpha(self, plate_stack: np.ndarray) -> np.ndarray:
+        """LTX on the full frame, chunked and cross-faded: (T, wh, ww) float16."""
+        import cv2
+
+        T, H, W = plate_stack.shape[:3]
+        ww, wh = work_size(W, H, int(self.params["whole_long_edge"]))
+        chunk = int(self.params["whole_chunk"])
+        overlap = int(self.params["overlap"])
+        acc = np.zeros((T, wh, ww), np.float32)
+        wsum = np.zeros((T, 1, 1), np.float32)
+        work = Path(tempfile.mkdtemp(prefix="laov_ltx_wf_"))
+        try:
+            spans = chunk_spans(T, chunk, overlap)
+            for ci, (s0, nf) in enumerate(spans):
+                idx = [min(s0 + j, T - 1) for j in range(nf)]
+                d = work / f"c{ci:03d}"
+                d.mkdir()
+                for j, k in enumerate(idx):
+                    fr = cv2.resize(
+                        np.clip(plate_stack[k, :, :, :3], 0.0, 1.0),
+                        (ww, wh),
+                        interpolation=cv2.INTER_AREA if ww < W else cv2.INTER_CUBIC,
+                    )
+                    cv2.imwrite(
+                        str(d / f"f_{j:04d}.png"),
+                        cv2.cvtColor((fr * 255.0 + 0.5).astype(np.uint8), cv2.COLOR_RGB2BGR),
+                    )
+                t0 = time.time()
+                raw = levels(self._ltx(d, ww, wh, nf))  # each call levelled on its own
+                _log.info(
+                    "LTX alpha (whole frame): chunk %d/%d, frames %d-%d at %dx%d, %.1fs",
+                    ci + 1,
+                    len(spans),
+                    self._first + idx[0],
+                    self._first + idx[-1],
+                    ww,
+                    wh,
+                    time.time() - t0,
+                )
+                for j, k in enumerate(idx):
+                    if j > 0 and idx[j - 1] == k:
+                        continue  # padding frames
+                    w = crossfade_weight(j, nf, overlap, ci == 0, ci == len(spans) - 1)
+                    acc[k] += w * raw[j]
+                    wsum[k] += w
+                shutil.rmtree(d, ignore_errors=True)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        return (acc / np.maximum(wsum, 1e-6)).astype(np.float16)
+
+    def _owner_map(self, T: int) -> tuple[np.ndarray, list[int]]:
+        """Nearest track per working-res pixel (-1 = none within `far_frac`).
+        Owners = every top-level track (parts belong to their whole), whether
+        or not this pass refines it: a neighbour refined by another engine
+        still keeps its foreground."""
+        import cv2
+
+        assert self._fg_work is not None
+        wh, ww = self._fg_work.shape[1:]
+        ids = [
+            int(t)
+            for t, tr in sorted(self._hard_masks.items())
+            if tr.get("parent") is None or int(tr["parent"]) not in self._hard_masks
+        ]
+        far = float(self.params["far_frac"]) * ww
+        owner = np.full((T, wh, ww), -1, np.int16)
+        dense: list[dict[int, np.ndarray]] = []
+        for t in ids:
+            tr = self._hard_masks[t]
+            st = tr.get("stack")
+            per: dict[int, np.ndarray] = {}
+            for k, f in enumerate(tr.get("frames") or []):
+                li = int(f) - self._first
+                if 0 <= li < T and np.asarray(st[k]).any():
+                    per[li] = cv2.resize(
+                        (np.asarray(st[k]) > 0).astype(np.uint8),
+                        (ww, wh),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+            dense.append(per)
+        for i in range(T):
+            ds = [
+                cv2.distanceTransform(1 - per[i], cv2.DIST_L2, 5)
+                if i in per and per[i].any()
+                else np.full((wh, ww), np.inf, np.float32)
+                for per in dense
+            ]
+            if not ds:
+                continue
+            d = np.stack(ds)
+            near = np.argmin(d, 0)
+            dmin = np.take_along_axis(d, near[None], 0)[0]
+            owner[i] = np.where(dmin <= far, near, -1).astype(np.int16)
+        return owner, ids
 
     def _trimap_gate(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
         """1 where ViTMatte's guided trimap is not certain background,
@@ -473,6 +657,32 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
             },
         }
 
+    def _ltx(self, folder: Path, ww: int, wh: int, nf: int) -> np.ndarray:
+        """`_run_ltx` through the `cache_dir` cache (key: the frames sent +
+        the models and settings that change the result)."""
+        cache = str(self.params.get("cache_dir", "") or "")
+        if not cache:
+            return self._run_ltx(folder, ww, wh, nf)
+        key = ltx_cache_key(folder, ww, wh, nf, self.params, self._models)
+        f = Path(cache) / f"ltx_{key}.npy"
+        if f.is_file():
+            try:
+                raw = np.load(f)
+                if raw.shape[0] >= nf and raw.shape[1:] == (wh, ww):
+                    _log.info("LTX alpha: reused cached call %s", f.name)
+                    return raw[:nf].astype(np.float32)
+            except (OSError, ValueError):
+                pass  # unreadable: run it again
+        raw = self._run_ltx(folder, ww, wh, nf)
+        try:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            tmp = f.with_name(f.stem + "_tmp.npy")
+            np.save(tmp, raw.astype(np.float16))
+            tmp.replace(f)
+        except OSError as e:
+            _log.warning("LTX alpha: could not cache the call (%s)", e)
+        return raw
+
     def _run_ltx(self, folder: Path, ww: int, wh: int, nf: int) -> np.ndarray:
         """One LTX call: the PNG crops in `folder` -> (nf, wh, ww) alpha."""
         import cv2
@@ -637,6 +847,36 @@ def _choices(node_info: dict[str, Any], field: str) -> list[str]:
     if len(spec) > 1 and isinstance(spec[1], dict):
         return [str(x) for x in spec[1].get("options") or []]
     return []
+
+
+def ltx_cache_key(
+    folder: Path,
+    ww: int,
+    wh: int,
+    nf: int,
+    params: dict[str, Any],
+    models: dict[str, tuple[str, str]],
+) -> str:
+    """Hash of everything that changes an LTX call's result: the PNG frames
+    sent, the working size, the seed and the model files used."""
+    h = hashlib.sha1()
+    keep = ("seed", "unet", "lora", "video_vae", "audio_vae", "text_encoder")
+    h.update(
+        json.dumps(
+            {
+                "ww": ww,
+                "wh": wh,
+                "nf": nf,
+                "params": {k: str(params.get(k, "")) for k in keep},
+                "models": {k: list(v) for k, v in sorted(models.items())},
+                "sigmas": _SIGMAS,
+            },
+            sort_keys=True,
+        ).encode()
+    )
+    for f in sorted(folder.glob("*.png")):
+        h.update(f.read_bytes())
+    return h.hexdigest()[:20]
 
 
 def chunk_spans(n: int, chunk: int, overlap: int) -> list[tuple[int, int]]:

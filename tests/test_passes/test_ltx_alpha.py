@@ -277,3 +277,87 @@ def test_graph_uses_the_gguf_loaders_and_uploads_to_a_remote_comfyui(tmp_path: P
     # Same machine: the temp folder is read in place, nothing is uploaded.
     local = LTXAlphaRefinerPass({"comfy_url": "http://127.0.0.1:8188"})
     assert local._graph(tmp_path, 512, 288, 9, "x")["8"]["class_type"] == "VHS_LoadImagesPath"
+
+
+def _two_actors(n: int, h: int = 120, w: int = 240) -> tuple[list[np.ndarray], dict]:
+    """Two white squares side by side (tracks 1 and 2), SAM shrunk by 3 px
+    (a missed shoulder), and a far bright prop nobody tracks."""
+    frames = []
+    hard1, hard2 = np.zeros((n, h, w), np.uint8), np.zeros((n, h, w), np.uint8)
+    for t in range(n):
+        f = np.zeros((h, w, 3), np.float32)
+        f[30:90, 40:80] = 1.0
+        f[30:90, 90:130] = 1.0
+        f[100:115, 200:235] = 1.0  # prop, > far_frac from both
+        frames.append(f)
+        hard1[t, 33:87, 43:77] = 1
+        hard2[t, 33:87, 93:127] = 1
+    art = {
+        "sam3_hard_masks": {
+            0: {
+                1: {"label": "person", "frames": list(range(1, n + 1)), "stack": hard1},
+                2: {"label": "person", "frames": list(range(1, n + 1)), "stack": hard2},
+            }
+        },
+        "sam3_instances": {
+            0: [
+                {
+                    "track_id": 1,
+                    "slot": "r",
+                    "label": "person",
+                    "score": 0.9,
+                    "frames": list(range(1, n + 1)),
+                },
+                {
+                    "track_id": 2,
+                    "slot": "g",
+                    "label": "person",
+                    "score": 0.9,
+                    "frames": list(range(1, n + 1)),
+                },
+            ]
+        },
+    }
+    return frames, art
+
+
+def _run_whole(n: int, **params: object) -> tuple[_FakeComfy, dict]:
+    frames, art = _two_actors(n)
+    _FakeComfy.calls = []
+    p = _FakeComfy(
+        {"mode": "whole_frame", "whole_long_edge": 256, "whole_chunk": 17, "overlap": 8, **params}
+    )
+    p.ingest_artifacts(art)
+    return p, p.run_shot(_Reader(frames), frame_range=(1, n))
+
+
+def test_whole_frame_runs_ltx_once_for_every_object() -> None:
+    p, out = _run_whole(9)
+    assert len(p.calls) == 1  # two objects, one call
+    ww, wh, nf = p.calls[0]
+    assert (ww, wh, nf) == (256, 128, 9)
+    a, b, fg = out[5]["matte.r"], out[5]["matte.g"], out[5]["foreground.a"]
+    assert a[60, 42] > 0.9 and a[60, 60] > 0.9  # SAM missed 40-42: LTX keeps it
+    assert b[60, 92] > 0.9 and b[60, 110] > 0.9
+    assert a[60, 110] < 0.05 and b[60, 60] < 0.05  # each keeps only its own
+    assert a[107, 220] < 0.05 and b[107, 220] < 0.05  # far prop: no owner ...
+    assert fg[107, 220] > 0.9  # ... but in the foreground layer
+    assert fg[10, 10] < 0.05
+
+
+def test_whole_frame_chunks_long_shots_in_8n_plus_1_calls() -> None:
+    p, out = _run_whole(40)
+    assert len(p.calls) > 1
+    assert all((nf - 1) % 8 == 0 for _, _, nf in p.calls)
+    for t in (1, 20, 40):
+        assert out[t]["matte.r"][60, 60] > 0.9
+
+
+def test_ltx_cache_skips_the_second_run(tmp_path: Path) -> None:
+    p1, out1 = _run_whole(9, cache_dir=str(tmp_path))
+    assert len(p1.calls) == 1 and len(list(tmp_path.glob("ltx_*.npy"))) == 1
+    p2, out2 = _run_whole(9, cache_dir=str(tmp_path))
+    assert p2.calls == []  # served from the cache
+    np.testing.assert_allclose(out1[5]["matte.r"], out2[5]["matte.r"], atol=2e-3)
+    p3, _ = _run_whole(9, cache_dir=str(tmp_path), seed=7)
+    assert len(p3.calls) == 1  # another seed is another result

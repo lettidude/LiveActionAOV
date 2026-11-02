@@ -6,6 +6,18 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **LTX Alpha whole-frame mode** (`mode: whole_frame`). LTX-2.5 alpha-gen runs ONCE over the full
+  frame (97-frame 8n+1 chunks, cross-faded) instead of once per object on a SAM-gated crop, and each
+  object gets the foreground nearest to it (distance transforms, 2 px feathered seam where two objects
+  touch). No SAM gate cuts LTX's outline, so an edge SAM missed (a shoulder, motion blur) stays in the
+  matte, and N objects cost one LTX run instead of N. Foreground farther than `far_frac` (6 % of the
+  width) from every object
+  belongs to nobody and is written to a new `foreground.a` layer (props, blood, untracked extras).
+- **LTX call cache** (`cache_dir`). Each LTX call's raw result is saved as `.npy`, keyed by a hash of
+  the frames sent, the working size, the seed and the model files, so a rerun never repeats the
+  diffusion. Works in both modes.
+
 ## [0.11.1] — 2026-11-02
 
 ### Added
