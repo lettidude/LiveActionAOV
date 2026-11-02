@@ -6,6 +6,18 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Nuke's Cryptomatte node crashed on our sidecars.** The per-pass provenance
+  keys `liveaov/cryptomatte/{model,version,license,commercial}` contain the
+  substring `cryptomatte/`, which Nuke's Cryptomatte plugin scans every header
+  key for (it takes the text before it as a layer id): Nuke 13.2v6 segfaulted
+  the moment the node evaluated, GUI and `-t` alike. Bisected on a production
+  plate: those four keys alone reproduce it, the pixel data, compression and
+  the spec `cryptomatte/<id>/*` keys are fine. The cryptomatte pass is now
+  recorded under `liveaov/cryptomatte_pass/...`; no provenance key may contain
+  `cryptomatte/` (`executors.local.provenance_key`, with a test). Existing
+  files are fixed by dropping those four header keys (no pixel change).
+
 ## [0.11.1] — 2026-11-02
 
 ### Added
