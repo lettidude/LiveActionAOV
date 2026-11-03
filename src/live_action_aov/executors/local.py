@@ -60,12 +60,15 @@ def provenance_key(pass_name: str) -> str:
     ``liveaov/cryptomatte/*`` keys alone reproduce it, every other key is
     fine). So no provenance key may contain that substring: the cryptomatte
     pass is recorded under ``liveaov/cryptomatte_pass/...``.
+
+    The mapping is injective, so two passes never share provenance keys: a
+    name ending in ``cryptomatte`` or in ``_pass`` gets ``_pass`` appended,
+    every other name is kept (``cryptomatte`` -> ``cryptomatte_pass``, a
+    registered ``cryptomatte_pass`` -> ``cryptomatte_pass_pass``).
     """
-    return (
-        pass_name.replace("cryptomatte", "cryptomatte_pass")
-        if "cryptomatte" in pass_name
-        else pass_name
-    )
+    if pass_name.endswith(("cryptomatte", "_pass")):
+        return pass_name + "_pass"
+    return pass_name
 
 
 def _retry_io(
