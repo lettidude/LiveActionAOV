@@ -195,3 +195,18 @@ def test_build_solve_keeps_unsolved_frames_out() -> None:
     assert s.unregistered_frames == [11]
     assert [e.frame for e in s.extrinsics] == [10, 12]
     assert s.extrinsics[1].translation[0] == pytest.approx(1.0)
+
+
+def test_plate_size_comes_from_the_full_res_plate(tmp_path: Path) -> None:
+    """A proxied reader: frames are exported at the proxy size, but px
+    reported at plate res scale to the plate's own width."""
+
+    class _Proxied(_Reader):
+        def full_res_resolution(self) -> tuple[int, int]:
+            return (4 * W, 4 * H)
+
+    frames, _depth = _scene()
+    p = PyColmapCameraPass({"max_image_size": W})
+    _out, plate_wh, solve_wh = p._export_frames(_Proxied(frames), (1001, 1003), tmp_path)
+    assert solve_wh == (W, H)
+    assert plate_wh == (4 * W, 4 * H)

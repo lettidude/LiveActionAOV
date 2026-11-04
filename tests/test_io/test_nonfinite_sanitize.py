@@ -130,3 +130,16 @@ def test_undecodable_colorspace_warns_once(caplog: Any, monkeypatch: Any) -> Non
     decode_warnings = [r for r in caplog.records if "could not linearize" in r.message]
     assert len(decode_warnings) == 1  # once per shot, not per frame
     assert "arri_logc4" in decode_warnings[0].message
+
+
+def test_full_res_resolution_sees_through_the_proxy() -> None:
+    """Behind a proxy the reader serves small frames but still knows the
+    plate's own size (px reported 'at plate res' depend on it)."""
+    from live_action_aov.io.readers.proxy import ProxyReader
+
+    plate = _FakeReader(np.full((40, 80, 3), 0.18, dtype=np.float32))
+    params = DisplayTransformParams(manual_exposure_ev=0.0)
+    proxied = DisplayTransformedReader(ProxyReader(plate, 40), params=params)
+    assert proxied.resolution() == (40, 20)
+    assert proxied.full_res_resolution() == (80, 40)
+    assert DisplayTransformedReader(plate, params=params).full_res_resolution() == (80, 40)

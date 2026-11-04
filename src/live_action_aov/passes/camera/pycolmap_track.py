@@ -344,6 +344,11 @@ class PyColmapCameraPass(UtilityPass):
             name = f"frame_{f:06d}.png"
             cv2.imwrite(str(image_dir / name), g8)
             out.append((f, name))
+        # Behind a proxy the frames are smaller than the plate: px reported
+        # "at plate res" (errors, intrinsics) must use the plate's own size.
+        full = getattr(reader, "full_res_resolution", None)
+        if callable(full):
+            plate_wh = tuple(full())
         return out, plate_wh, solve_wh
 
     def _export_masks(
@@ -575,8 +580,9 @@ class PyColmapCameraPass(UtilityPass):
             for _, name in frame_list
         ]
         usable = ~pnp.near_depth_edges(depth, radius=11)  # = the LK window (21 px)
-        if static[anchor] is not None:
-            usable &= static[anchor]
+        anchor_static = static[anchor]
+        if anchor_static is not None:
+            usable &= anchor_static
         uv = pnp.anchor_corners(
             gray[anchor], usable, int(self.params.get("pnp_max_corners", 6000)), max(4, sw // 400)
         )
@@ -597,8 +603,9 @@ class PyColmapCameraPass(UtilityPass):
         pnp.solve_poses(sol, tracks, held=held)
         need = float(self.params.get("min_registered_fraction", 0.5)) * len(frame_list)
         if len(sol.poses) < need:
-            _log.info(
-                "Camera solve: depth-anchored PnP solved only %d/%d frames.",
+            _log.warning(
+                "Camera solve: depth-anchored PnP FAILED - point tracks lost, only %d/%d frames "
+                "solved (fast motion or blur).",
                 len(sol.poses),
                 len(frame_list),
             )
