@@ -39,9 +39,12 @@ Honest limits:
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import math
 import shutil
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, NoReturn
@@ -141,6 +144,11 @@ class PyColmapCameraPass(UtilityPass):
         # Image motion below this fraction of the long edge cannot measure
         # the focal: use the lens metadata (ARRI FocalLength), else a guess.
         "nodal_min_motion": 0.03,
+        # COLMAP (SIFT, matching, mapping) runs in its own process: a native
+        # crash in pycolmap then loses the camera only, not every pass of the
+        # run, and the fallbacks still get their turn. 0 = no time limit.
+        "colmap_subprocess": True,
+        "colmap_timeout_s": 0,
         "keep_workdir": False,
     }
 
@@ -377,67 +385,23 @@ class PyColmapCameraPass(UtilityPass):
         mask_dir: Path | None,
         frame_list: list[tuple[int, str]],
     ) -> Any:
-        pycolmap: Any = importlib.import_module("pycolmap")  # no usable type stubs
-
-        db = workdir / "database.db"
-        reader_opts = pycolmap.ImageReaderOptions()
-        reader_opts.camera_model = str(self.params["camera_model"]).upper()
-        if mask_dir is not None:
-            reader_opts.mask_path = str(mask_dir)
-        ext = pycolmap.FeatureExtractionOptions()
-        ext.sift.max_num_features = int(self.params["sift_max_features"])
-        ext.sift.peak_threshold = float(self.params["sift_peak_threshold"])
-        pycolmap.extract_features(
-            database_path=db,
-            image_path=image_dir,
-            image_names=[n for _, n in frame_list],
-            camera_mode=pycolmap.CameraMode.SINGLE,
-            reader_options=reader_opts,
-            extraction_options=ext,
-        )
-        if self.params["matcher"] == "exhaustive":
-            pycolmap.match_exhaustive(db)
-        else:
-            pairing = pycolmap.SequentialPairingOptions()
-            pairing.overlap = int(self.params["sequential_overlap"])
-            pycolmap.match_sequential(db, pairing_options=pairing)
-        sparse = workdir / "sparse"
-        sparse.mkdir(exist_ok=True)
-        if self.params.get("mapper") == "global":
-            recs = pycolmap.global_mapping(
-                database_path=db, image_path=image_dir, output_path=sparse
-            )
-            rec, self._sparse_dir = self._pick_model(recs, sparse)
+        """COLMAP reconstruction (pycolmap `Reconstruction`); sets
+        `_sparse_dir`. In a child process unless `colmap_subprocess` is off."""
+        names = [n for _, n in frame_list]
+        if not self.params.get("colmap_subprocess", True):
+            rec, self._sparse_dir = run_colmap(workdir, image_dir, mask_dir, names, self.params)
             return rec
-        need = float(self.params.get("min_registered_fraction", 0.5)) * len(frame_list)
-        attempts = max(1, int(self.params.get("mapping_attempts", 1)))
-        best: tuple[Any, Path] | None = None
-        for seed in range(attempts):
-            out = sparse / f"seed{seed}"
-            out.mkdir(exist_ok=True)
-            opts = pycolmap.IncrementalPipelineOptions()
-            opts.random_seed = seed
-            recs = pycolmap.incremental_mapping(
-                database_path=db, image_path=image_dir, output_path=out, options=opts
-            )
-            if recs:
-                rec, model_dir = self._pick_model(recs, out)
-                if best is None or rec.num_reg_images() > best[0].num_reg_images():
-                    best = (rec, model_dir)
-                if rec.num_reg_images() >= need:
-                    break
-            got = best[0].num_reg_images() if best else 0
-            if seed + 1 < attempts:
-                _log.info(
-                    "Camera solve: mapping seed %d covered %d/%d frames, retrying",
-                    seed,
-                    got,
-                    len(frame_list),
-                )
-        if best is None:
-            self._no_reconstruction()
-        self._sparse_dir = best[1]
-        return best[0]
+        model_dir = run_colmap_subprocess(
+            workdir,
+            image_dir,
+            mask_dir,
+            names,
+            self.params,
+            timeout_s=float(self.params.get("colmap_timeout_s", 0) or 0),
+        )
+        pycolmap: Any = importlib.import_module("pycolmap")
+        self._sparse_dir = model_dir
+        return pycolmap.Reconstruction(str(model_dir))
 
     def _solve_nodal(
         self,
@@ -450,7 +414,13 @@ class PyColmapCameraPass(UtilityPass):
         it does not fit (the camera really translates, or too few matches)."""
         from live_action_aov.passes.camera import nodal
 
-        pairs = read_verified_pairs(db_path, frame_list)
+        if not db_path.is_file():  # COLMAP crashed before writing its database
+            return None
+        try:
+            pairs = read_verified_pairs(db_path, frame_list)
+        except RuntimeError as e:  # a database left half-written by a crash
+            _log.info("Camera solve: nodal fallback cannot read COLMAP's matches (%s).", e)
+            return None
         if not pairs:
             return None
         w, h = solve_wh
@@ -521,23 +491,167 @@ class PyColmapCameraPass(UtilityPass):
             _log.warning("Camera solve: %s", warn)
         return solve
 
-    def _pick_model(self, recs: dict[int, Any], out: Path) -> tuple[Any, Path]:
-        """Largest of the mapper's models and its folder."""
-        if not recs:
-            self._no_reconstruction()
-        key, rec = max(recs.items(), key=lambda kv: kv[1].num_reg_images())
-        model_dir = out / str(key)
-        if not model_dir.exists():  # some pycolmap builds write only the best model
-            model_dir.mkdir(parents=True, exist_ok=True)
-            rec.write(str(model_dir))
-        return rec, model_dir
 
-    @staticmethod
-    def _no_reconstruction() -> NoReturn:
-        raise RuntimeError(
-            "Camera track: no reconstruction. Likely causes: no parallax "
-            "(locked-off / pure pan), heavy motion blur, or a textureless plate."
+# ---------------------------------------------------------------------------
+# COLMAP pipeline (in this process, or in a child via colmap_worker)
+# ---------------------------------------------------------------------------
+
+_COLMAP_PARAMS = (
+    "camera_model",
+    "sift_max_features",
+    "sift_peak_threshold",
+    "matcher",
+    "sequential_overlap",
+    "mapper",
+    "min_registered_fraction",
+    "mapping_attempts",
+)
+
+
+def run_colmap(
+    workdir: Path,
+    image_dir: Path,
+    mask_dir: Path | None,
+    image_names: list[str],
+    params: dict[str, Any],
+) -> tuple[Any, Path]:
+    """SIFT -> matching -> mapping; (largest reconstruction, its folder).
+    Raises RuntimeError when nothing reconstructs."""
+    pycolmap: Any = importlib.import_module("pycolmap")  # no usable type stubs
+
+    db = workdir / "database.db"
+    reader_opts = pycolmap.ImageReaderOptions()
+    reader_opts.camera_model = str(params["camera_model"]).upper()
+    if mask_dir is not None:
+        reader_opts.mask_path = str(mask_dir)
+    ext = pycolmap.FeatureExtractionOptions()
+    ext.sift.max_num_features = int(params["sift_max_features"])
+    ext.sift.peak_threshold = float(params["sift_peak_threshold"])
+    pycolmap.extract_features(
+        database_path=db,
+        image_path=image_dir,
+        image_names=list(image_names),
+        camera_mode=pycolmap.CameraMode.SINGLE,
+        reader_options=reader_opts,
+        extraction_options=ext,
+    )
+    if params["matcher"] == "exhaustive":
+        pycolmap.match_exhaustive(db)
+    else:
+        pairing = pycolmap.SequentialPairingOptions()
+        pairing.overlap = int(params["sequential_overlap"])
+        pycolmap.match_sequential(db, pairing_options=pairing)
+    sparse = workdir / "sparse"
+    sparse.mkdir(exist_ok=True)
+    if params.get("mapper") == "global":
+        recs = pycolmap.global_mapping(database_path=db, image_path=image_dir, output_path=sparse)
+        return _pick_model(recs, sparse)
+    need = float(params.get("min_registered_fraction", 0.5)) * len(image_names)
+    attempts = max(1, int(params.get("mapping_attempts", 1)))
+    best: tuple[Any, Path] | None = None
+    for seed in range(attempts):
+        out = sparse / f"seed{seed}"
+        out.mkdir(exist_ok=True)
+        opts = pycolmap.IncrementalPipelineOptions()
+        opts.random_seed = seed
+        recs = pycolmap.incremental_mapping(
+            database_path=db, image_path=image_dir, output_path=out, options=opts
         )
+        if recs:
+            rec, model_dir = _pick_model(recs, out)
+            if best is None or rec.num_reg_images() > best[0].num_reg_images():
+                best = (rec, model_dir)
+            if rec.num_reg_images() >= need:
+                break
+        got = best[0].num_reg_images() if best else 0
+        if seed + 1 < attempts:
+            _log.info(
+                "Camera solve: mapping seed %d covered %d/%d frames, retrying",
+                seed,
+                got,
+                len(image_names),
+            )
+    if best is None:
+        _no_reconstruction()
+    return best
+
+
+def run_colmap_subprocess(
+    workdir: Path,
+    image_dir: Path,
+    mask_dir: Path | None,
+    image_names: list[str],
+    params: dict[str, Any],
+    timeout_s: float = 0.0,
+) -> Path:
+    """`run_colmap` in a child Python (`colmap_worker`): a native crash
+    (pycolmap can segfault in SIFT extraction on long shots) becomes a
+    RuntimeError here instead of killing the whole run. Returns the model
+    folder."""
+    job = workdir / "colmap_job.json"
+    result = workdir / "colmap_result.json"
+    result.unlink(missing_ok=True)
+    job.write_text(
+        json.dumps(
+            {
+                "workdir": str(workdir),
+                "image_dir": str(image_dir),
+                "mask_dir": str(mask_dir) if mask_dir is not None else None,
+                "image_names": list(image_names),
+                "params": {k: params[k] for k in _COLMAP_PARAMS if k in params},
+                "result": str(result),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cmd = [sys.executable, "-m", "live_action_aov.passes.camera.colmap_worker", str(job)]
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout_s or None,
+            creationflags=flags,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"Camera track: COLMAP did not finish in {timeout_s:.0f} s.") from e
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("Camera solve:"):
+            _log.info("%s", line)
+    if proc.returncode != 0 or not result.is_file():
+        tail = " | ".join((proc.stderr or proc.stdout or "").strip().splitlines()[-3:])
+        code = proc.returncode
+        # Windows reports an access violation as 0xC0000005, POSIX as -signal.
+        shown = f"signal {-code}" if code < 0 else f"0x{code:08X}" if code > 255 else str(code)
+        raise RuntimeError(
+            f"Camera track: COLMAP crashed (exit code {shown}); the other passes are not "
+            f"affected. {tail}".strip()
+        )
+    out = json.loads(result.read_text(encoding="utf-8"))
+    if "error" in out:
+        raise RuntimeError(out["error"])
+    return Path(out["model_dir"])
+
+
+def _pick_model(recs: dict[int, Any], out: Path) -> tuple[Any, Path]:
+    """Largest of the mapper's models and its folder."""
+    if not recs:
+        _no_reconstruction()
+    key, rec = max(recs.items(), key=lambda kv: kv[1].num_reg_images())
+    model_dir = out / str(key)
+    if not model_dir.exists():  # some pycolmap builds write only the best model
+        model_dir.mkdir(parents=True, exist_ok=True)
+        rec.write(str(model_dir))
+    return rec, model_dir
+
+
+def _no_reconstruction() -> NoReturn:
+    raise RuntimeError(
+        "Camera track: no reconstruction. Likely causes: no parallax "
+        "(locked-off / pure pan), heavy motion blur, or a textureless plate."
+    )
 
 
 # ---------------------------------------------------------------------------

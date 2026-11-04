@@ -494,15 +494,48 @@ def test_mapping_retries_another_seed_when_it_covers_too_little(
     )
     monkeypatch.setattr(mod.importlib, "import_module", lambda name: fake)
     frames = [(1000 + i, f"f{i}.png") for i in range(100)]
-    p = PyColmapCameraPass()
-    rec = p._solve_colmap(tmp_path, tmp_path, None, frames)
+    names = [n for _, n in frames]
+    rec, model_dir = mod.run_colmap(tmp_path, tmp_path, None, names, PyColmapCameraPass().params)
     assert rec.num_reg_images() == 100 and seeds == [0, 1]
-    assert p._sparse_dir == tmp_path / "sparse" / "seed1" / "0"
+    assert model_dir == tmp_path / "sparse" / "seed1" / "0"
 
     seeds.clear()
     covered.clear()  # never enough: every attempt runs, the best one is kept
     covered[2] = 20
-    rec = PyColmapCameraPass({"mapping_attempts": 3})._solve_colmap(
-        tmp_path, tmp_path, None, frames
+    rec, _ = mod.run_colmap(
+        tmp_path, tmp_path, None, names, PyColmapCameraPass({"mapping_attempts": 3}).params
     )
     assert seeds == [0, 1, 2] and rec.num_reg_images() == 20
+
+
+def test_a_colmap_crash_is_a_camera_failure_not_a_run_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """pycolmap can segfault natively. In the child process that is an
+    exit code, reported as an ordinary camera failure."""
+    import subprocess
+
+    def crashed(cmd, **kw):
+        assert cmd[1:3] == ["-m", "live_action_aov.passes.camera.colmap_worker"]
+        return subprocess.CompletedProcess(cmd, 0xC0000005, "", "SIFT extraction\n")
+
+    monkeypatch.setattr(mod.subprocess, "run", crashed)
+    with pytest.raises(RuntimeError, match=r"COLMAP crashed \(exit code 0xC0000005\)"):
+        mod.run_colmap_subprocess(tmp_path, tmp_path, None, ["a.png"], {})
+    # The nodal fallback then finds no database and declines instead of failing.
+    assert PyColmapCameraPass()._solve_nodal(tmp_path / "database.db", [], (8, 8), (8, 8)) is None
+
+
+def test_colmap_worker_round_trip(tmp_path: Path):
+    """The real child process: noise images reconstruct nothing, which comes
+    back as the usual 'no reconstruction' error."""
+    pytest.importorskip("pycolmap")
+    import cv2
+
+    rng = np.random.default_rng(0)
+    names = []
+    for i in range(3):
+        names.append(f"f{i}.png")
+        cv2.imwrite(str(tmp_path / names[-1]), (rng.random((64, 96)) * 255).astype(np.uint8))
+    with pytest.raises(RuntimeError, match="no reconstruction"):
+        mod.run_colmap_subprocess(tmp_path, tmp_path, None, names, PyColmapCameraPass().params)

@@ -6,6 +6,14 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **A native crash in COLMAP no longer kills the whole run.** pycolmap can segfault (e.g. in SIFT
+  extraction on long shots); since every pass runs in one process, that lost the mattes, depth and
+  everything else of the run. COLMAP's feature extraction, matching and mapping now run in a child
+  process (`colmap_subprocess`, on by default; `colmap_timeout_s` optional). A crash is reported as
+  an ordinary camera failure with its exit code, the nodal fallback declines cleanly when COLMAP left
+  no database, and the rest of the run carries on.
+
 ## [0.11.1] — 2026-11-02
 
 ### Added
