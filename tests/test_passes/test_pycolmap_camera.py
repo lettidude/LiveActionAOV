@@ -18,6 +18,7 @@ image features. Instead:
 
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 from typing import Any
@@ -508,22 +509,76 @@ def test_mapping_retries_another_seed_when_it_covers_too_little(
     assert seeds == [0, 1, 2] and rec.num_reg_images() == 20
 
 
+class _FakeChild:
+    """Stands in for the COLMAP child: prints `lines`, exits with `code`."""
+
+    def __init__(self, cmd, lines: list[str], code: int):
+        assert cmd[1:3] == ["-m", "live_action_aov.passes.camera.colmap_worker"]
+        self.stdout = iter(f"{line}\n" for line in lines)
+        self.code = code
+
+    def wait(self) -> int:
+        return self.code
+
+    def kill(self) -> None:
+        pass
+
+
 def test_a_colmap_crash_is_a_camera_failure_not_a_run_crash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
     """pycolmap can segfault natively. In the child process that is an
     exit code, reported as an ordinary camera failure."""
-    import subprocess
-
-    def crashed(cmd, **kw):
-        assert cmd[1:3] == ["-m", "live_action_aov.passes.camera.colmap_worker"]
-        return subprocess.CompletedProcess(cmd, 0xC0000005, "", "SIFT extraction\n")
-
-    monkeypatch.setattr(mod.subprocess, "run", crashed)
-    with pytest.raises(RuntimeError, match=r"COLMAP crashed \(exit code 0xC0000005\)"):
+    lines = ["Camera solve: extracting features on 1 frames", "SIFT extraction"]
+    monkeypatch.setattr(
+        mod.subprocess, "Popen", lambda cmd, **kw: _FakeChild(cmd, lines, 0xC0000005)
+    )
+    with (
+        caplog.at_level(logging.INFO, logger=mod._log.name),
+        pytest.raises(
+            RuntimeError, match=r"COLMAP crashed \(exit code 0xC0000005\).*SIFT extraction"
+        ),
+    ):
         mod.run_colmap_subprocess(tmp_path, tmp_path, None, ["a.png"], {})
+    # The child's progress lines reach the log.
+    assert "extracting features on 1 frames" in caplog.text
     # The nodal fallback then finds no database and declines instead of failing.
     assert PyColmapCameraPass()._solve_nodal(tmp_path / "database.db", [], (8, 8), (8, 8)) is None
+
+
+def test_the_workdir_goes_when_the_camera_fails(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    """It holds plate frames: a failed shot removes it too, a kept one is
+    a warning with its path."""
+    p = PyColmapCameraPass()
+    p._workdir = tmp_path / "w"
+    p._workdir.mkdir()
+    p.unload()
+    assert not (tmp_path / "w").exists()
+    kept = PyColmapCameraPass({"keep_workdir": True})
+    kept._workdir = tmp_path / "k"
+    kept._workdir.mkdir()
+    with caplog.at_level(logging.WARNING, logger=mod._log.name):
+        kept.unload()
+    assert (tmp_path / "k").exists()
+    assert "contains plate frames" in caplog.text
+
+
+def test_colmap_timeout(tmp_path: Path):
+    """A child that outlives `colmap_timeout_s` is killed and reported."""
+    script = tmp_path / "slow.py"
+    script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    real = mod.subprocess.Popen
+
+    def slow(cmd, **kw):
+        return real([cmd[0], str(script)], **kw)
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(mod.subprocess, "Popen", slow)
+    try:
+        with pytest.raises(RuntimeError, match="did not finish in 1 s"):
+            mod.run_colmap_subprocess(tmp_path, tmp_path, None, ["a.png"], {}, timeout_s=1.0)
+    finally:
+        mp.undo()
 
 
 def test_colmap_worker_round_trip(tmp_path: Path):

@@ -46,6 +46,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -284,17 +285,23 @@ class PyColmapCameraPass(UtilityPass):
             shutil.rmtree(model_dir, ignore_errors=True)
             shutil.copytree(self._sparse_dir, model_dir)
             paths["camera_colmap"] = model_dir
-        if self._workdir is not None:
-            if self.params.get("keep_workdir"):
-                _log.info("COLMAP workdir kept at: %s", self._workdir)
-            else:
-                shutil.rmtree(self._workdir, ignore_errors=True)
+        self._drop_workdir()
         return paths
 
     def unload(self) -> None:
-        # Safety net when emit_sidecars never ran (failed shot).
-        if self._workdir is not None and not self.params.get("keep_workdir"):
+        # Safety net when emit_sidecars never ran (failed shot, COLMAP crash).
+        self._drop_workdir()
+
+    def _drop_workdir(self) -> None:
+        if self._workdir is None:
+            return
+        if self.params.get("keep_workdir"):
+            # It holds frames exported from the plate: outside the project
+            # tree, so say where it is.
+            _log.warning("COLMAP workdir kept (contains plate frames): %s", self._workdir)
+        else:
             shutil.rmtree(self._workdir, ignore_errors=True)
+        self._workdir = None
 
     # --- internals ---
     def _export_frames(
@@ -527,6 +534,7 @@ def run_colmap(
     ext = pycolmap.FeatureExtractionOptions()
     ext.sift.max_num_features = int(params["sift_max_features"])
     ext.sift.peak_threshold = float(params["sift_peak_threshold"])
+    _log.info("Camera solve: extracting features on %d frames", len(image_names))
     pycolmap.extract_features(
         database_path=db,
         image_path=image_dir,
@@ -535,6 +543,7 @@ def run_colmap(
         reader_options=reader_opts,
         extraction_options=ext,
     )
+    _log.info("Camera solve: matching (%s)", params["matcher"])
     if params["matcher"] == "exhaustive":
         pycolmap.match_exhaustive(db)
     else:
@@ -543,6 +552,7 @@ def run_colmap(
         pycolmap.match_sequential(db, pairing_options=pairing)
     sparse = workdir / "sparse"
     sparse.mkdir(exist_ok=True)
+    _log.info("Camera solve: mapping")
     if params.get("mapper") == "global":
         recs = pycolmap.global_mapping(database_path=db, image_path=image_dir, output_path=sparse)
         return _pick_model(recs, sparse)
@@ -606,28 +616,45 @@ def run_colmap_subprocess(
     )
     cmd = [sys.executable, "-m", "live_action_aov.passes.camera.colmap_worker", str(job)]
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        creationflags=flags,
+    )
+    # Line by line, so a 30-minute SIFT run shows its progress live.
+    killed = threading.Event()
+
+    def _kill() -> None:
+        killed.set()
+        proc.kill()
+
+    timer = threading.Timer(timeout_s, _kill) if timeout_s else None
+    if timer is not None:
+        timer.start()
+    tail: list[str] = []
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=timeout_s or None,
-            creationflags=flags,
-        )
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"Camera track: COLMAP did not finish in {timeout_s:.0f} s.") from e
-    for line in (proc.stdout or "").splitlines():
-        if line.startswith("Camera solve:"):
-            _log.info("%s", line)
-    if proc.returncode != 0 or not result.is_file():
-        tail = " | ".join((proc.stderr or proc.stdout or "").strip().splitlines()[-3:])
-        code = proc.returncode
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            if line.startswith("Camera solve:"):
+                _log.info("%s", line)
+            elif line:
+                tail = [*tail[-2:], line]
+        code = proc.wait()
+    finally:
+        if timer is not None:
+            timer.cancel()
+    if killed.is_set() and not result.is_file():
+        raise RuntimeError(f"Camera track: COLMAP did not finish in {timeout_s:.0f} s.")
+    if code != 0 or not result.is_file():
         # Windows reports an access violation as 0xC0000005, POSIX as -signal.
         shown = f"signal {-code}" if code < 0 else f"0x{code:08X}" if code > 255 else str(code)
         raise RuntimeError(
             f"Camera track: COLMAP crashed (exit code {shown}); the other passes are not "
-            f"affected. {tail}".strip()
+            f"affected. {' | '.join(tail)}".strip()
         )
     out = json.loads(result.read_text(encoding="utf-8"))
     if "error" in out:
