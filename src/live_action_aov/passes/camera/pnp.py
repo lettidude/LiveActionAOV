@@ -34,8 +34,10 @@ from the anchor view) stay unregistered.
 
 from __future__ import annotations
 
+import importlib
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -135,7 +137,7 @@ def track_klt(
     """Track `uv` (N, 2) from frame `anchor` through `gray` (uint8 frames)
     both ways. Returns (T, N, 2), NaN once a point is lost (it never comes
     back: a re-found point could be another one)."""
-    import cv2
+    cv2: Any = importlib.import_module("cv2")  # its stubs reject the None arguments
 
     T, N = len(gray), len(uv)
     out = np.full((T, N, 2), np.nan, np.float32)
@@ -181,7 +183,7 @@ def solve_poses(
     """Per-frame PnP of `sol.points` against `tracks` (T, N, 2). Points in
     `held` (bool, N) are not used by the solve; their median reprojection
     error goes to `frame_heldout_px` (inf when none is visible)."""
-    import cv2
+    cv2: Any = importlib.import_module("cv2")  # its stubs reject the None arguments
 
     n = len(sol.points)
     held = np.zeros(n, bool) if held is None else held

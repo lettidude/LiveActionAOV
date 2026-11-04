@@ -200,7 +200,7 @@ class _MarigoldV2BridgeBase(UtilityPass):
             return self._collect(out_dir, first, last, plate_shape)
         finally:
             if bool(self.params.get("keep_temp")):
-                _log.info("%s: exchange dir kept at %s", self.name, work)
+                _log.warning("%s: exchange dir kept (contains plate frames): %s", self.name, work)
             else:
                 shutil.rmtree(work, ignore_errors=True)
 
