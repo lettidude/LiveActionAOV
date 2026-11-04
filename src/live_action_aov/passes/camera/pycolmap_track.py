@@ -864,12 +864,12 @@ def read_verified_pairs(
         for pid, g in zip(pair_ids, geoms, strict=False):
             a, b = int(pid) // 2147483647, int(pid) % 2147483647  # COLMAP pair id
             m = np.asarray(g.inlier_matches)
-            if len(m) < min_inliers or ids.get(a) is None or ids.get(b) is None:
+            i, j = ids.get(a), ids.get(b)
+            if len(m) < min_inliers or i is None or j is None:
                 continue
             for iid in (a, b):
                 if iid not in kp:
                     kp[iid] = np.asarray(db.read_keypoints(iid))[:, :2].astype(np.float64)
-            i, j = ids[a], ids[b]
             xi, xj = kp[a][m[:, 0]], kp[b][m[:, 1]]
             out.append((i, j, xi, xj) if i < j else (j, i, xj, xi))
         return out
