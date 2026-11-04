@@ -9,14 +9,18 @@ uses [semantic versioning](https://semver.org/).
 ### Added
 - **Depth-anchored PnP camera fallback** (`pnp_fallback`, on by default). Fast handheld action often
   gives COLMAP almost no usable parallax (only a few frames register) while the camera clearly
-  translates, so the rotation-only fallback does not fit either and the run had no camera. Now the camera pass tries a third route: MoGe-3 metric depth of the middle frame gives the
-  3D points of the static set (SAM 3 objects masked out, corners on depth edges skipped), their corners
-  are tracked through the shot with pyramidal Lucas-Kanade (forward-backward checked, dropped on
-  tracked objects), and each frame is solved with RANSAC EPnP + LM refine. Accepted when it fits
-  (`pnp_max_error_px` 2.0 at solve resolution, `min_registered_fraction` of the frames). Scale is
-  MoGe-3's metric
-  estimate; the solve says so in its warnings (`mapper: depth_pnp`, intrinsics source
-  `moge3_depth_pnp`). `pnp_fov_x_deg` overrides MoGe-3's FOV estimate.
+  translates, so the rotation-only fallback does not fit either and the run had no camera. Now the
+  camera pass tries a third route: MoGe-3 metric depth of the middle frame gives the 3D points of the
+  static set (SAM 3 objects masked out, corners on depth edges skipped), their corners are tracked
+  through the shot with pyramidal Lucas-Kanade (forward-backward checked, dropped on tracked
+  objects), and each frame is solved with RANSAC EPnP + LM refine. The fit error alone can hide a
+  wrong camera, so every `pnp_holdout_every`-th point is kept out of the solve and the camera is
+  judged on those: **GOOD / WEAK / FAILED** (`pnp_good_frac` / `pnp_weak_frac` of the image width,
+  plus the share of reliable frames), travel measured on reliable frames only, and a NODAL flag when
+  the camera moves less than 2 % of the scene depth. The verdict leads the warnings and the Nuke
+  camera label; a FAILED camera says "DO NOT USE" (`pnp_keep_failed: false` drops it instead) and
+  the splat pass refuses it. Units are declared as metres (MoGe-3's estimate), with `verdict` and
+  `heldout_error_px` in the camera JSON. `pnp_fov_x_deg` overrides MoGe-3's FOV estimate.
 
 ## [0.11.1] — 2026-11-02
 

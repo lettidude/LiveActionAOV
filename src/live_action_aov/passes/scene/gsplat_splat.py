@@ -164,6 +164,11 @@ class GsplatSplatPass(UtilityPass):
                 "splat_gsplat: the camera only rotates (nodal solve, no parallax) - a splat "
                 "cannot recover depth or what is behind objects. No clean plate written."
             )
+        if solve.quality.verdict == "FAILED":
+            raise RuntimeError(
+                "splat_gsplat: the camera solve FAILED its held-out check (do not use it) - "
+                "no clean plate written."
+            )
         dev = torch.device("cuda")
         torch.manual_seed(int(self.params["seed"]))
         np.random.seed(int(self.params["seed"]))

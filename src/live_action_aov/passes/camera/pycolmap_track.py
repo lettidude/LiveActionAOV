@@ -144,9 +144,15 @@ class PyColmapCameraPass(UtilityPass):
         # Neither fits (fast handheld action: COLMAP registers a handful of
         # frames, the camera translates): depth-anchored PnP
         # (passes/camera/pnp.py) - MoGe-3 depth of the middle frame + its
-        # corners tracked through the shot. Accepted only if it fits that well.
+        # corners tracked through the shot. Judged on held-out points
+        # (every `pnp_holdout_every`-th one never enters the solve): GOOD /
+        # WEAK limits are fractions of the image width. A FAILED camera is
+        # still written when `pnp_keep_failed`, labelled "do not use".
         "pnp_fallback": True,
-        "pnp_max_error_px": 2.0,  # median over the solved frames, at solve resolution
+        "pnp_holdout_every": 5,
+        "pnp_good_frac": 0.0011,
+        "pnp_weak_frac": 0.0027,
+        "pnp_keep_failed": True,
         "pnp_fov_x_deg": None,  # horizontal FOV of the plate; None = MoGe-3's estimate
         "pnp_max_corners": 6000,
         "keep_workdir": False,
@@ -587,19 +593,34 @@ class PyColmapCameraPass(UtilityPass):
             colors=(rgb[yi, xi] * 255.0 + 0.5).astype(np.uint8),
         )
         tracks = pnp.track_klt(gray, anchor, uv, static)
-        pnp.solve_poses(sol, tracks)
-        errs = [e for k, e in sol.frame_error_px.items() if k != anchor]
-        med = float(np.median(errs)) if errs else 1e9
+        held = pnp.holdout_mask(len(uv), int(self.params.get("pnp_holdout_every", 5)))
+        pnp.solve_poses(sol, tracks, held=held)
         need = float(self.params.get("min_registered_fraction", 0.5)) * len(frame_list)
-        if med > float(self.params.get("pnp_max_error_px", 2.0)) or len(sol.poses) < need:
+        if len(sol.poses) < need:
             _log.info(
-                "Camera solve: depth-anchored PnP does not fit either (median %.2f px, %d/%d "
-                "frames).",
-                med,
+                "Camera solve: depth-anchored PnP solved only %d/%d frames.",
                 len(sol.poses),
                 len(frame_list),
             )
             return None
+        verdict = pnp.assess(
+            sol,
+            sw,
+            len(frame_list),
+            good_frac=float(self.params.get("pnp_good_frac", 0.0011)),
+            weak_frac=float(self.params.get("pnp_weak_frac", 0.0027)),
+        )
+        if verdict.verdict == "FAILED" and not self.params.get("pnp_keep_failed", True):
+            _log.info(
+                "Camera solve: depth-anchored PnP FAILED (held-out %.2f px at solve res).",
+                verdict.heldout_px,
+            )
+            return None
+        if verdict.verdict != "FAILED":
+            # Unreliable frames would make the camera jump: leave them out
+            # (Nuke interpolates over the gap).
+            keep = set(verdict.reliable)
+            sol.poses = {k: v for k, v in sol.poses.items() if k in keep}
         solve = build_solve_from_pnp(
             sol,
             frame_list=frame_list,
@@ -608,6 +629,7 @@ class PyColmapCameraPass(UtilityPass):
             params=self.params,
             masked_labels=self._masked_labels,
             fov_note=self._pnp_fov_source,
+            verdict=verdict,
         )
         q = solve.quality
         _log.info(
@@ -999,9 +1021,11 @@ def build_solve_from_pnp(
     masked_labels: list[str] | None = None,
     fov_note: str = "",
     max_points: int = 30000,
+    verdict: Any = None,
 ) -> CameraSolve:
     """`pnp.PnPSolve` -> `CameraSolve`: world = the anchor camera (OpenCV),
-    flipped to Y-up like every other solve; metres from MoGe-3."""
+    flipped to Y-up like every other solve; metres from MoGe-3. `verdict`
+    (`pnp.PnPVerdict`) leads the warnings, hence the Nuke camera label."""
     sw, _sh = solve_wh
     pw, ph = plate_wh if plate_wh[0] > 0 else solve_wh
     scale = pw / max(sw, 1)
@@ -1055,6 +1079,19 @@ def build_solve_from_pnp(
         f"frame {frame_list[sol.anchor][0]}, {fov_note or 'FOV estimated by MoGe-3'}; "
         "scale in metres is MoGe-3's estimate.",
     )
+    if verdict is not None:
+        held_plate = float(verdict.heldout_px) * scale
+        line = (
+            f"{verdict.verdict} CANDIDATE - {'NODAL' if verdict.nodal else 'translated'}: "
+            f"held-out error {held_plate:.1f} px (plate res), {len(verdict.reliable)}/"
+            f"{len(frame_list)} reliable frames, travel {verdict.travel_m:.2f} m = "
+            f"{100 * verdict.parallax:.1f} % of the {verdict.depth_m:.1f} m median depth"
+        )
+        if verdict.verdict == "FAILED":
+            line += " - DO NOT USE"
+        quality.warnings.insert(0, line)
+        quality.verdict = verdict.verdict
+        quality.heldout_error_px = held_plate
     return CameraSolve(
         shot=ShotRef(),
         backend=BackendInfo(
@@ -1068,7 +1105,10 @@ def build_solve_from_pnp(
             mapper="depth_pnp",
             masked_labels=list(masked_labels or []),
         ),
-        conventions=Conventions(),
+        conventions=Conventions(
+            units="metres",
+            unit_note="Metric scale from MoGe-3 depth of one frame: an estimate, not a survey.",
+        ),
         intrinsics=intr,
         extrinsics=extrinsics,
         unregistered_frames=sorted(fr for fr, _ in frame_list if fr not in registered),

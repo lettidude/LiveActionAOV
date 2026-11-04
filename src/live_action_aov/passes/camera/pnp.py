@@ -20,6 +20,11 @@ moves, so the rotation-only (nodal) fallback does not fit either. Here the
    forward-backward check fails, they leave the frame or land on a tracked
    object.
 3. Per frame, `solvePnPRansac` (EPnP) + Levenberg-Marquardt refine.
+4. Held-out check: every `holdout_every`-th point never enters the solve and
+   is reprojected afterwards. The fit error alone can lie - RANSAC can fit a
+   small consistent subset (e.g. tracks on things that move) with a low
+   error while the camera is wrong - so the verdict (GOOD / WEAK / FAILED),
+   the travel and the nodal flag come from the held-out points.
 
 The scale is MoGe-3's metric estimate (approximate), the poses are as good as
 the anchor depth: good enough to line up a point cloud, a card or a matte
@@ -46,6 +51,27 @@ class PnPSolve:
     poses: dict[int, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)  # R_cw, t_cw
     frame_error_px: dict[int, float] = field(default_factory=dict)  # median, solve res
     frame_inliers: dict[int, int] = field(default_factory=dict)
+    # median reprojection error of the held-out points, solve res
+    frame_heldout_px: dict[int, float] = field(default_factory=dict)
+
+
+@dataclass
+class PnPVerdict:
+    verdict: str  # GOOD / WEAK / FAILED
+    heldout_px: float  # median of the per-frame held-out errors, solve res
+    reliable: list[int]  # local frame indices whose held-out error is <= the WEAK limit
+    travel_m: float  # extent of the camera centres over the reliable frames
+    depth_m: float  # median anchor depth of the static points
+    nodal: bool  # travel < `nodal_parallax` x depth
+
+    @property
+    def parallax(self) -> float:
+        return self.travel_m / max(self.depth_m, 1e-9)
+
+
+def holdout_mask(n: int, every: int = 5) -> np.ndarray:
+    """True for the points kept out of the solve (every `every`-th one)."""
+    return (np.arange(n) % max(int(every), 2)) == 0
 
 
 def focal_from_fov(width: int, fov_x_deg: float) -> float:
@@ -150,21 +176,28 @@ def solve_poses(
     tracks: np.ndarray,
     min_inliers: int = 30,
     reproj_px: float = 3.0,
+    held: np.ndarray | None = None,
 ) -> PnPSolve:
-    """Per-frame PnP of `sol.points` against `tracks` (T, N, 2)."""
+    """Per-frame PnP of `sol.points` against `tracks` (T, N, 2). Points in
+    `held` (bool, N) are not used by the solve; their median reprojection
+    error goes to `frame_heldout_px` (inf when none is visible)."""
     import cv2
 
+    n = len(sol.points)
+    held = np.zeros(n, bool) if held is None else held
     for t in range(tracks.shape[0]):
         vis = np.isfinite(tracks[t, :, 0])
         if t == sol.anchor:
             sol.poses[t] = (np.eye(3), np.zeros(3))
             sol.frame_error_px[t] = 0.0
             sol.frame_inliers[t] = int(vis.sum())
+            sol.frame_heldout_px[t] = 0.0
             continue
-        if vis.sum() < max(min_inliers, 6):
+        fit = vis & ~held
+        if fit.sum() < max(min_inliers, 6):
             continue
-        obj = sol.points[vis].astype(np.float64)
-        img = tracks[t, vis].astype(np.float64)
+        obj = sol.points[fit].astype(np.float64)
+        img = tracks[t, fit].astype(np.float64)
         ok, rvec, tvec, inl = cv2.solvePnPRansac(
             obj,
             img,
@@ -185,14 +218,62 @@ def solve_poses(
         sol.poses[t] = (R, tvec.reshape(3))
         sol.frame_error_px[t] = float(np.median(err))
         sol.frame_inliers[t] = int(len(inl))
+        test = vis & held
+        if test.any():
+            hp, _ = cv2.projectPoints(sol.points[test].astype(np.float64), rvec, tvec, sol.K, None)
+            herr = np.linalg.norm(hp[:, 0] - tracks[t, test], axis=1)
+            sol.frame_heldout_px[t] = float(np.median(herr))
+        else:
+            sol.frame_heldout_px[t] = float("inf")
     return sol
+
+
+def assess(
+    sol: PnPSolve,
+    width: int,
+    n_frames: int,
+    good_frac: float = 0.0011,
+    weak_frac: float = 0.0027,
+    nodal_parallax: float = 0.02,
+) -> PnPVerdict:
+    """Verdict from the held-out errors. Limits are fractions of the solve
+    width (resolution independent). GOOD: median held-out error <= good
+    limit and >= 90 % of the shot's frames reliable; WEAK: <= weak limit and
+    >= 60 %; else FAILED. Travel uses reliable frames only, since an
+    unreliable frame can put the camera anywhere."""
+    good_px, weak_px = good_frac * width, weak_frac * width
+    errs = {t: sol.frame_heldout_px.get(t, float("inf")) for t in sol.poses}
+    solved = [e for t, e in errs.items() if t != sol.anchor]
+    med = float(np.median(solved)) if solved else float("inf")
+    reliable = sorted(t for t, e in errs.items() if e <= weak_px)
+    frac = len(reliable) / max(n_frames, 1)
+    if med <= good_px and frac >= 0.9:
+        verdict = "GOOD"
+    elif med <= weak_px and frac >= 0.6:
+        verdict = "WEAK"
+    else:
+        verdict = "FAILED"
+    centres = np.array([-sol.poses[t][0].T @ sol.poses[t][1] for t in reliable]).reshape(-1, 3)
+    travel = float(np.linalg.norm(centres.max(0) - centres.min(0))) if len(centres) > 1 else 0.0
+    depth = float(np.median(sol.points[:, 2])) if len(sol.points) else 0.0
+    return PnPVerdict(
+        verdict=verdict,
+        heldout_px=med,
+        reliable=reliable,
+        travel_m=travel,
+        depth_m=depth,
+        nodal=travel < nodal_parallax * depth,
+    )
 
 
 __all__ = [
     "PnPSolve",
+    "PnPVerdict",
     "anchor_corners",
+    "assess",
     "back_project",
     "focal_from_fov",
+    "holdout_mask",
     "near_depth_edges",
     "solve_poses",
     "track_klt",

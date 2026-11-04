@@ -133,6 +133,10 @@ class Quality(BaseModel):
     total_frame_count: int = 0
     solve_confidence: float = 0.0
     warnings: list[str] = Field(default_factory=list)
+    # Solvers that hold points out of the fit (depth-anchored PnP): GOOD /
+    # WEAK / FAILED and the median held-out error at plate resolution.
+    verdict: str = ""
+    heldout_error_px: float | None = None
 
 
 class CameraSolve(BaseModel):
