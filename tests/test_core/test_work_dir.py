@@ -28,3 +28,11 @@ def test_a_set_root_is_used_and_created(tmp_path: Path, monkeypatch: pytest.Monk
     assert d.parent == root and d.name.startswith("laov_test_") and d.is_dir()
     set_work_root("")
     assert work_root() is None
+
+
+def test_a_relative_root_becomes_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Child processes run elsewhere (Marigold in its own repo): paths must be absolute."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(ENV_VAR, "scratch")
+    d = make_work_dir("laov_test_")
+    assert d.is_absolute() and d.parent == (tmp_path / "scratch").resolve()

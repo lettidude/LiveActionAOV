@@ -24,7 +24,9 @@ ENV_VAR = "LAOV_WORK_ROOT"
 def work_root() -> Path | None:
     """The configured root, or None for the system temp folder."""
     v = os.environ.get(ENV_VAR, "").strip()
-    return Path(v) if v else None
+    # Absolute: passes hand these paths to child processes that run in
+    # another working directory (Marigold runs in its own repo).
+    return Path(v).expanduser().resolve() if v else None
 
 
 def set_work_root(path: str | Path | None) -> None:
