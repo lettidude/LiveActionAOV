@@ -42,6 +42,7 @@ import importlib
 import json
 import logging
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -124,8 +125,14 @@ class PyColmapCameraPass(UtilityPass):
         "mapping_attempts": 4,
         "camera_model": "SIMPLE_PINHOLE",
         # Long edge of the images SIFT sees. PF0081 (2048 wide): 2048 ->
-        # 0.86 px / 62 s per 32 frames, 1024 -> 0.6 px@1K / 21 s.
-        "max_image_size": 2048,
+        # 0.86 px / 62 s per 32 frames, 1024 -> 0.6 px@1K / 21 s. Handheld
+        # tests: 1920 gives the same cameras as 2816 at a third of SIFT's RAM.
+        # Above the proxy size the frames are read from the full-res plate.
+        "max_image_size": 1920,
+        # SIFT extraction threads. 0 = as many as fit in free RAM (each
+        # thread holds ~0.25 GB per megapixel; all 32 threads at 2816 px
+        # took +42 GB for ~10 s and could crash a long shot).
+        "sift_num_threads": 0,
         "sift_max_features": 8192,
         # COLMAP default 0.0067 starves dark / low-contrast plates.
         "sift_peak_threshold": 0.002,
@@ -195,6 +202,17 @@ class PyColmapCameraPass(UtilityPass):
 
     # --- shot entry point ---
     def run_shot(
+        self, reader: Any, frame_range: tuple[int, int]
+    ) -> dict[int, dict[str, np.ndarray]]:
+        try:
+            return self._run_shot(reader, frame_range)
+        except BaseException:
+            # The workdir holds plate frames: gone on any failure, whoever
+            # the caller is (emit_sidecars only runs after a success).
+            self._drop_workdir()
+            raise
+
+    def _run_shot(
         self, reader: Any, frame_range: tuple[int, int]
     ) -> dict[int, dict[str, np.ndarray]]:
         try:
@@ -337,8 +355,16 @@ class PyColmapCameraPass(UtilityPass):
         )
         out: list[tuple[int, str]] = []
         plate_wh = solve_wh = (0, 0)
+        read = reader.read_frame
+        full_read = getattr(reader, "read_frame_full_res", None)
+        full_wh = getattr(reader, "full_res_resolution", None)
+        if callable(full_read) and callable(full_wh):
+            proxy_long, plate_long = max(reader.resolution()), max(full_wh())
+            if proxy_long < min(max_size, plate_long):
+                # The proxy would cap `max_image_size`: read the plate itself.
+                read = full_read
         for f in range(frame_range[0], frame_range[1] + 1):
-            arr, attrs = reader.read_frame(f)
+            arr, attrs = read(f)
             if f == frame_range[0]:
                 self._lens_mm = lens_focal_mm(attrs)
             arr = np.nan_to_num(np.asarray(arr, dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
@@ -662,6 +688,7 @@ class PyColmapCameraPass(UtilityPass):
 
 _COLMAP_PARAMS = (
     "camera_model",
+    "sift_num_threads",
     "sift_max_features",
     "sift_peak_threshold",
     "matcher",
@@ -691,7 +718,18 @@ def run_colmap(
     ext = pycolmap.FeatureExtractionOptions()
     ext.sift.max_num_features = int(params["sift_max_features"])
     ext.sift.peak_threshold = float(params["sift_peak_threshold"])
-    _log.info("Camera solve: extracting features on %d frames", len(image_names))
+    threads = int(params.get("sift_num_threads", 0) or 0)
+    w, h = _image_size(image_dir / image_names[0])
+    if threads <= 0:
+        threads = sift_threads_for_ram(w, h, _free_ram_gb(), os.cpu_count() or 1)
+    ext.num_threads = threads
+    _log.info(
+        "Camera solve: extracting features on %d frames at %dx%d, %d threads",
+        len(image_names),
+        w,
+        h,
+        threads,
+    )
     pycolmap.extract_features(
         database_path=db,
         image_path=image_dir,
@@ -817,6 +855,35 @@ def run_colmap_subprocess(
     if "error" in out:
         raise RuntimeError(out["error"])
     return Path(out["model_dir"])
+
+
+#: SIFT extraction RAM per thread, GB per megapixel of the solve image
+#: (measured: ~0.45 GB at 1920, ~1.3 at 2816, ~1.65 at 3840 px wide).
+_SIFT_GB_PER_MPIX = 0.3
+
+
+def sift_threads_for_ram(w: int, h: int, free_gb: float | None, cpus: int) -> int:
+    """SIFT threads that fit in `free_gb` (keeping 20 % headroom); every
+    core when the free RAM is unknown."""
+    if free_gb is None:
+        return max(1, cpus)
+    per_thread = 0.1 + _SIFT_GB_PER_MPIX * w * h / 1e6
+    return max(1, min(cpus, int(0.8 * free_gb / per_thread)))
+
+
+def _free_ram_gb() -> float | None:
+    try:
+        import psutil
+    except ImportError:  # pragma: no cover - psutil ships with the torch stack
+        return None
+    return float(psutil.virtual_memory().available) / 1e9
+
+
+def _image_size(path: Path) -> tuple[int, int]:
+    import cv2
+
+    img = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    return (int(img.shape[1]), int(img.shape[0])) if img is not None else (0, 0)
 
 
 def _pick_model(recs: dict[int, Any], out: Path) -> tuple[Any, Path]:
@@ -1006,7 +1073,7 @@ def build_solve_from_reconstruction(
             sequential_overlap=int(params.get("sequential_overlap", 10)),
             camera_model=str(params.get("camera_model", "SIMPLE_PINHOLE")),
             sift_max_features=int(params.get("sift_max_features", 8192)),
-            max_image_size=int(params.get("max_image_size", 2048)),
+            max_image_size=int(params.get("max_image_size", 1920)),
             mapper=str(params.get("mapper", "incremental")),
             masked_labels=list(masked_labels or []),
         ),
@@ -1146,7 +1213,7 @@ def build_solve_from_nodal(
             sequential_overlap=int(params.get("sequential_overlap", 10)),
             camera_model="SIMPLE_PINHOLE",
             sift_max_features=int(params.get("sift_max_features", 8192)),
-            max_image_size=int(params.get("max_image_size", 2048)),
+            max_image_size=int(params.get("max_image_size", 1920)),
             mapper="nodal",
             masked_labels=list(masked_labels or []),
         ),
@@ -1249,7 +1316,7 @@ def build_solve_from_pnp(
             sequential_overlap=int(params.get("sequential_overlap", 10)),
             camera_model="PINHOLE",
             sift_max_features=int(params.get("sift_max_features", 8192)),
-            max_image_size=int(params.get("max_image_size", 2048)),
+            max_image_size=int(params.get("max_image_size", 1920)),
             mapper="depth_pnp",
             masked_labels=list(masked_labels or []),
         ),
