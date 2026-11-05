@@ -42,7 +42,6 @@ import importlib
 import logging
 import math
 import shutil
-import tempfile
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -56,6 +55,7 @@ from live_action_aov.core.pass_base import (
     TemporalMode,
     UtilityPass,
 )
+from live_action_aov.core.work_dir import make_work_dir
 from live_action_aov.io.camera_schema import (
     BackendInfo,
     CameraSolve,
@@ -184,7 +184,7 @@ class PyColmapCameraPass(UtilityPass):
         if model not in _SUPPORTED_MODELS:
             raise ValueError(f"camera_model must be one of {_SUPPORTED_MODELS}, got {model!r}")
 
-        self._workdir = Path(tempfile.mkdtemp(prefix="laaov_colmap_"))
+        self._workdir = make_work_dir("laaov_colmap_")
         image_dir = self._workdir / "images"
         image_dir.mkdir(parents=True)
         frame_list, plate_wh, solve_wh = self._export_frames(reader, frame_range, image_dir)

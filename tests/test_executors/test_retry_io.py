@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from live_action_aov.executors.local import _retry_io
+from live_action_aov.io.oiio_io import OiioError
 
 
 def test_recovers_on_transient_oserror() -> None:
@@ -39,3 +40,17 @@ def test_does_not_retry_non_io_errors() -> None:
     with pytest.raises(ValueError):
         _retry_io(fn, what="write", attempts=3, base_delay=0.0)
     assert len(calls) == 1
+
+
+def test_recovers_when_oiio_loses_the_share() -> None:
+    # OIIO reports a share that dropped mid-write as a failed open, not OSError.
+    calls: list[int] = []
+
+    def fn() -> str:
+        calls.append(1)
+        if len(calls) < 3:
+            raise OiioError("Failed to open for write: x.exr (could not open file)")
+        return "ok"
+
+    assert _retry_io(fn, what="write", base_delay=0.0) == "ok"
+    assert len(calls) == 3

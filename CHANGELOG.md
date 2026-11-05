@@ -6,6 +6,20 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Temp folder setting** (`--work-root`, `LAOV_WORK_ROOT`, GUI File > Temp folder). Frames that
+  passes export from the plate (camera solve, LTX crops, Marigold) go there instead of the system
+  temp folder, e.g. a project folder on a local disk under content-security rules. Keep it local:
+  the camera's database does not work reliably on a network share.
+
+### Fixed
+- **A network-share blip no longer aborts the job.** The sidecar write retry only caught
+  `OSError`, but OIIO reports a vanished share as its own error, so the retry never ran. It now
+  covers both and waits ~40 s in all (longer than an SMB reconnect).
+- **LTX Alpha no longer leaves mattes in ComfyUI's `output/`.** They come back through ComfyUI's
+  temp folder, which ComfyUI wipes when it starts and exits. With a remote ComfyUI, the uploaded
+  crops stay in its `input/` (ComfyUI has no delete endpoint): a warning says so.
+
 ## [0.11.1] — 2026-11-02
 
 ### Added
