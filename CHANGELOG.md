@@ -21,6 +21,10 @@ uses [semantic versioning](https://semver.org/).
   camera label; a FAILED camera says "DO NOT USE" (`pnp_keep_failed: false` drops it instead) and
   the splat pass refuses it. Units are declared as metres (MoGe-3's estimate), with `verdict` and
   `heldout_error_px` in the camera JSON. `pnp_fov_x_deg` overrides MoGe-3's FOV estimate.
+  When the job also runs a flow pass (MegaFlow / RAFT) and the LK camera is not GOOD, PnP retries
+  with LK guided by the flow vectors (`pnp_tracker: auto`; `klt` / `flow` force one): the guide
+  follows fast motion that LK loses, LK keeps each step locked to the texture (the vectors chained
+  alone drift ~0.2 px/frame), and the better verdict wins.
 
 ### Fixed
 - **A native crash in COLMAP no longer kills the whole run.** pycolmap can segfault (e.g. in SIFT

@@ -106,7 +106,7 @@ class PyColmapCameraPass(UtilityPass):
         SidecarSpec(name="camera_points", format="ply"),
     ]
     # Soft dep: SAM 3 masks exclude moving objects when SAM 3 is in the job.
-    optional_artifacts = ["sam3_hard_masks"]
+    optional_artifacts = ["sam3_hard_masks", "forward_flow", "backward_flow"]
     # The solve itself, for downstream passes (Gaussian splat).
     provides_artifacts = ["camera_solve"]
     # No parallax (locked-off, pure pan) is a property of the shot, not a bug:
@@ -166,6 +166,9 @@ class PyColmapCameraPass(UtilityPass):
         "pnp_keep_failed": True,
         "pnp_fov_x_deg": None,  # horizontal FOV of the plate; None = MoGe-3's estimate
         "pnp_max_corners": 6000,
+        # "auto": LK, then LK guided by the job's flow pass (MegaFlow / RAFT)
+        # when LK's camera is not GOOD; "klt" / "flow" force one of them.
+        "pnp_tracker": "auto",
         # COLMAP (SIFT, matching, mapping) runs in its own process: a native
         # crash in pycolmap then loses the camera only, not every pass of the
         # run, and the fallbacks still get their turn. 0 = no time limit.
@@ -199,6 +202,9 @@ class PyColmapCameraPass(UtilityPass):
     def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:
         hard = artifacts.get("sam3_hard_masks") or {}
         self._hard_masks = next(iter(hard.values())) if hard else {}
+        # A flow pass in the job (MegaFlow / RAFT): PnP tracks on its vectors.
+        self._fwd_flow = dict(artifacts.get("forward_flow") or {})
+        self._bwd_flow = dict(artifacts.get("backward_flow") or {})
 
     # --- shot entry point ---
     def run_shot(
@@ -601,11 +607,31 @@ class PyColmapCameraPass(UtilityPass):
             points=pnp.back_project(uv, depth, K),
             colors=(rgb[yi, xi] * 255.0 + 0.5).astype(np.uint8),
         )
-        tracks = pnp.track_klt(gray, anchor, uv, static)
         held = pnp.holdout_mask(len(uv), int(self.params.get("pnp_holdout_every", 5)))
-        pnp.solve_poses(sol, tracks, held=held)
         need = float(self.params.get("min_registered_fraction", 0.5)) * len(frame_list)
-        if len(sol.poses) < need:
+        rank = {"GOOD": 2, "WEAK": 1, "FAILED": 0}
+        best: tuple[tuple[float, ...], pnp.PnPSolve, pnp.PnPVerdict | None] | None = None
+        for guide in self._pnp_guides(frame_list, sw):
+            trial = pnp.PnPSolve(K=K, anchor=anchor, points=sol.points, colors=sol.colors)
+            tracks = self._track_pnp(gray, anchor, uv, static, guide)
+            pnp.solve_poses(trial, tracks, held=held)
+            v = None
+            if len(trial.poses) >= need:
+                v = pnp.assess(
+                    trial,
+                    sw,
+                    len(frame_list),
+                    good_frac=float(self.params.get("pnp_good_frac", 0.0011)),
+                    weak_frac=float(self.params.get("pnp_weak_frac", 0.0027)),
+                )
+            score = (-1.0,) if v is None else (rank[v.verdict], len(v.reliable), -v.heldout_px)
+            if best is None or score > best[0]:
+                best = (score, trial, v)
+            if v is not None and v.verdict == "GOOD":
+                break
+        assert best is not None
+        sol, verdict = best[1], best[2]
+        if verdict is None:
             _log.warning(
                 "Camera solve: depth-anchored PnP FAILED - point tracks lost, only %d/%d frames "
                 "solved (fast motion or blur).",
@@ -613,13 +639,6 @@ class PyColmapCameraPass(UtilityPass):
                 len(frame_list),
             )
             return None
-        verdict = pnp.assess(
-            sol,
-            sw,
-            len(frame_list),
-            good_frac=float(self.params.get("pnp_good_frac", 0.0011)),
-            weak_frac=float(self.params.get("pnp_weak_frac", 0.0027)),
-        )
         if verdict.verdict == "FAILED" and not self.params.get("pnp_keep_failed", True):
             _log.info(
                 "Camera solve: depth-anchored PnP FAILED (held-out %.2f px at solve res).",
@@ -655,6 +674,48 @@ class PyColmapCameraPass(UtilityPass):
         for warn in q.warnings:
             _log.warning("Camera solve: %s", warn)
         return solve
+
+    def _pnp_guides(self, frame_list: list[tuple[int, str]], sw: int) -> list[Any]:
+        """Trackers to try, in order: None = plain LK, else a flow guide.
+
+        `pnp_tracker: auto` tries LK first and, when the job has a flow pass
+        (MegaFlow / RAFT) and LK's camera is not GOOD, LK guided by the flow
+        vectors: it follows fast handheld motion that LK loses, but on slow
+        shots its extra points are noisier, so it never replaces a GOOD LK."""
+        from live_action_aov.passes.camera import pnp
+
+        frames = [f for f, _ in frame_list]
+        mode = str(self.params.get("pnp_tracker", "auto"))
+        fwd = getattr(self, "_fwd_flow", {})
+        bwd = getattr(self, "_bwd_flow", {})
+        if mode == "klt" or not all(f in fwd and f in bwd for f in frames):
+            if mode == "flow":
+                _log.warning("Camera solve: pnp_tracker 'flow' but the job has no flow pass.")
+            return [None]
+        scale = sw / max(int(fwd[frames[0]].shape[-1]), 1)
+        guide = pnp.flow_guide(fwd, bwd, frames, scale=scale)
+        return [guide] if mode == "flow" else [None, guide]
+
+    def _track_pnp(
+        self,
+        gray: list[np.ndarray],
+        anchor: int,
+        uv: np.ndarray,
+        static: list[np.ndarray | None],
+        guide: Any,
+    ) -> np.ndarray:
+        from live_action_aov.passes.camera import pnp
+
+        tracks = pnp.track_klt(gray, anchor, uv, static, guide=guide)
+        alive = np.isfinite(tracks[..., 0]).sum(axis=1)
+        _log.info(
+            "Camera solve: PnP tracks (%s), %d points; alive at the ends %d / %d",
+            "LK guided by the flow pass" if guide is not None else "LK",
+            len(uv),
+            int(alive[0]),
+            int(alive[-1]),
+        )
+        return tracks
 
     def _anchor_depth(self, img: np.ndarray) -> tuple[np.ndarray, float]:
         """MoGe-3 metric depth (H, W, 0 = invalid) of one display-referred

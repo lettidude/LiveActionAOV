@@ -446,9 +446,13 @@ def test_declared_contract():
         "camera_nk",
         "camera_points",
     }
-    # SAM 3 is a SOFT dependency: the camera runs with or without it.
+    # SAM 3 and a flow pass are SOFT dependencies: the camera runs with or without them.
     assert PyColmapCameraPass.requires_artifacts == []
-    assert PyColmapCameraPass.optional_artifacts == ["sam3_hard_masks"]
+    assert PyColmapCameraPass.optional_artifacts == [
+        "sam3_hard_masks",
+        "forward_flow",
+        "backward_flow",
+    ]
     assert mod._SUPPORTED_MODELS == ("SIMPLE_PINHOLE", "PINHOLE", "SIMPLE_RADIAL")
 
 
