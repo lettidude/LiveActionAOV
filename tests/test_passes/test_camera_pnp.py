@@ -279,3 +279,32 @@ def test_auto_keeps_a_good_lk_camera_and_flow_forces_the_guide(tmp_path: Path) -
     pos = {e.frame: e.translation for e in solve.extrinsics}
     for t in range(N_FR):
         assert pos[1001 + t][0] == pytest.approx((t - ANCHOR) * TX, abs=0.01)
+
+
+def test_fov_sweep_picks_a_clearly_better_fov_and_ignores_noise() -> None:
+    """The decision rule: another FOV wins only if it cuts the held-out by
+    >= 15 %, is inside the sweep, solves as many frames and is within WEAK."""
+    from types import SimpleNamespace
+
+    K = _K()
+    true_f = pnp.focal_from_fov(W, 60.0)
+
+    def attempt_for(err_of_f):
+        def attempt(Kt, tracks, sub=None):
+            n = len(sub) if sub is not None else tracks.shape[0]
+            trial = SimpleNamespace(poses=dict.fromkeys(range(n)))
+            return trial, SimpleNamespace(heldout_px=err_of_f(Kt[0, 0]))
+
+        return attempt
+
+    tracks = np.zeros((9, 4, 2))
+    p = PyColmapCameraPass()
+    # Estimate 66 deg, plate 60 deg: error grows with the focal mismatch.
+    sharp = attempt_for(lambda f: 0.05 + abs(f - true_f) / 20)
+    assert p._fov_sweep(sharp, tracks, K, 66.0, W, 0.0027) == pytest.approx(0.9)
+    # A flat error curve (+-5 %): the estimate is kept.
+    flat = attempt_for(lambda f: 0.5 + 0.02 * (f < true_f))
+    assert p._fov_sweep(flat, tracks, K, 66.0, W, 0.0027) == 1.0
+    # The best FOV still above the WEAK limit: noise, kept.
+    bad = attempt_for(lambda f: 5.0 + abs(f - true_f))
+    assert p._fov_sweep(bad, tracks, K, 66.0, W, 0.0027) == 1.0

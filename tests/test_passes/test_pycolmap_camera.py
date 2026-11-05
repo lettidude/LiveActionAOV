@@ -646,3 +646,14 @@ def test_frames_come_from_the_plate_when_the_proxy_is_smaller(tmp_path: Path):
     p = PyColmapCameraPass({"max_image_size": 40})
     _out, _plate, solve_wh = p._export_frames(_Proxied(), (1, 3), tmp_path)
     assert solve_wh == (40, 20)
+
+
+def test_fov_from_a_partial_colmap_solve():
+    from live_action_aov.io.camera_schema import Intrinsics
+
+    def solve_with(fx: float) -> CameraSolve:
+        intr = Intrinsics(fx_px=fx, fy_px=fx, cx_px=960, cy_px=540, width_px=1920, height_px=1080)
+        return CameraSolve(backend={"name": "t", "version": "0"}, intrinsics=intr)
+
+    assert mod._fov_x_deg(solve_with(960.0)) == pytest.approx(90.0)
+    assert mod._fov_x_deg(solve_with(0.0)) is None

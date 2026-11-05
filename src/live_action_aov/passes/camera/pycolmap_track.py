@@ -166,6 +166,12 @@ class PyColmapCameraPass(UtilityPass):
         "pnp_keep_failed": True,
         "pnp_fov_x_deg": None,  # horizontal FOV of the plate; None = MoGe-3's estimate
         "pnp_max_corners": 6000,
+        # FOV sweep x0.85..x1.15 scored on held-out points (skipped when
+        # pnp_fov_x_deg pins the FOV); depth gate on the anchor points and
+        # an extra margin around tracked objects (of the long edge).
+        "pnp_fov_sweep": True,
+        "pnp_depth_range_m": (0.2, 60.0),
+        "pnp_mask_grow_frac": 0.005,
         # "auto": LK, then LK guided by the job's flow pass (MegaFlow / RAFT)
         # when LK's camera is not GOOD; "klt" / "flow" force one of them.
         "pnp_tracker": "auto",
@@ -263,6 +269,9 @@ class PyColmapCameraPass(UtilityPass):
                 self._solve, self._sparse_dir = nodal, None
                 return {}
         if (self._solve is None or short) and self.params.get("pnp_fallback", True):
+            # COLMAP's focal from a partial solve beats MoGe-3's single-frame
+            # FOV (often 20-35 % wide on real plates).
+            self._pnp_fov_hint = _fov_x_deg(self._solve) if self._solve is not None else None
             pnp_solve = self._solve_pnp(reader, frame_list, plate_wh, solve_wh, image_dir, mask_dir)
             if pnp_solve is not None:
                 self._solve, self._sparse_dir = pnp_solve, None
@@ -588,7 +597,18 @@ class PyColmapCameraPass(UtilityPass):
             else None
             for _, name in frame_list
         ]
+        # Matte edges (motion blur, hair) poison the solve: keep a margin
+        # around the tracked objects on top of the COLMAP mask dilation.
+        grow = round(float(self.params.get("pnp_mask_grow_frac", 0.005)) * max(sw, sh))
+        if grow > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1))
+            static = [
+                cv2.erode(m.astype(np.uint8), kernel) > 0 if m is not None else None for m in static
+            ]
         usable = ~pnp.near_depth_edges(depth, radius=11)  # = the LK window (21 px)
+        # Sky / far background: the depth error there is huge.
+        z_lo, z_hi = self.params.get("pnp_depth_range_m", (0.2, 60.0))
+        usable &= (depth > float(z_lo)) & (depth < float(z_hi))
         anchor_static = static[anchor]
         if anchor_static is not None:
             usable &= anchor_static
@@ -608,27 +628,54 @@ class PyColmapCameraPass(UtilityPass):
             colors=(rgb[yi, xi] * 255.0 + 0.5).astype(np.uint8),
         )
         held = pnp.holdout_mask(len(uv), int(self.params.get("pnp_holdout_every", 5)))
-        need = float(self.params.get("min_registered_fraction", 0.5)) * len(frame_list)
+        min_frac = float(self.params.get("min_registered_fraction", 0.5))
+        good_frac = float(self.params.get("pnp_good_frac", 0.0011))
+        weak_frac = float(self.params.get("pnp_weak_frac", 0.0027))
         rank = {"GOOD": 2, "WEAK": 1, "FAILED": 0}
-        best: tuple[tuple[float, ...], pnp.PnPSolve, pnp.PnPVerdict | None] | None = None
+
+        def attempt(
+            Kt: np.ndarray, tracks: np.ndarray, sub: list[int] | None = None
+        ) -> tuple[pnp.PnPSolve, pnp.PnPVerdict | None]:
+            tr, anc, n = (tracks, anchor, len(frame_list))
+            if sub is not None:
+                tr, anc, n = tracks[sub], sub.index(anchor), len(sub)
+            trial = pnp.PnPSolve(
+                K=Kt, anchor=anc, points=pnp.back_project(uv, depth, Kt), colors=sol.colors
+            )
+            pnp.solve_poses(trial, tr, held=held)
+            if len(trial.poses) < min_frac * n:
+                return trial, None
+            return trial, pnp.assess(trial, sw, n, good_frac=good_frac, weak_frac=weak_frac)
+
+        def score(v: pnp.PnPVerdict | None) -> tuple[float, ...]:
+            return (-1.0,) if v is None else (rank[v.verdict], len(v.reliable), -v.heldout_px)
+
+        best: tuple[tuple[float, ...], pnp.PnPSolve, pnp.PnPVerdict | None, np.ndarray] | None
+        best = None
         for guide in self._pnp_guides(frame_list, sw):
-            trial = pnp.PnPSolve(K=K, anchor=anchor, points=sol.points, colors=sol.colors)
             tracks = self._track_pnp(gray, anchor, uv, static, guide)
-            pnp.solve_poses(trial, tracks, held=held)
-            v = None
-            if len(trial.poses) >= need:
-                v = pnp.assess(
-                    trial,
-                    sw,
-                    len(frame_list),
-                    good_frac=float(self.params.get("pnp_good_frac", 0.0011)),
-                    weak_frac=float(self.params.get("pnp_weak_frac", 0.0027)),
-                )
-            score = (-1.0,) if v is None else (rank[v.verdict], len(v.reliable), -v.heldout_px)
-            if best is None or score > best[0]:
-                best = (score, trial, v)
+            trial, v = attempt(K, tracks)
+            if best is None or score(v) > best[0]:
+                best = (score(v), trial, v, tracks)
             if v is not None and v.verdict == "GOOD":
                 break
+        assert best is not None
+        if (
+            best[2] is not None
+            and self.params.get("pnp_fov_x_deg") is None
+            and self.params.get("pnp_fov_sweep", True)
+        ):
+            fac = self._fov_sweep(attempt, best[3], K, fov, sw, weak_frac)
+            if fac != 1.0:
+                Kw = K.copy()
+                Kw[0, 0] = Kw[1, 1] = pnp.focal_from_fov(sw, fov * fac)
+                trial, v = attempt(Kw, best[3])
+                if score(v) >= best[0]:
+                    best = (score(v), trial, v, best[3])
+                    self._pnp_fov_source = (
+                        f"FOV {fov * fac:.1f} deg = x{fac:.2f} of {self._pnp_fov_source} "
+                        "(held-out sweep)"
+                    )
         assert best is not None
         sol, verdict = best[1], best[2]
         if verdict is None:
@@ -674,6 +721,53 @@ class PyColmapCameraPass(UtilityPass):
         for warn in q.warnings:
             _log.warning("Camera solve: %s", warn)
         return solve
+
+    def _fov_sweep(
+        self,
+        attempt: Any,
+        tracks: np.ndarray,
+        K: np.ndarray,
+        fov: float,
+        sw: int,
+        weak_frac: float,
+    ) -> float:
+        """FOV factor that fits the tracks better than the estimate, or 1.0.
+
+        MoGe-3's single-frame FOV can be ~20 % off on real plates. Each factor
+        is solved on every 3rd frame; another one wins only if it cuts the
+        held-out error by >= 15 %, is not at the edge of the sweep, solves at
+        least as many frames and is itself within the WEAK limit (on a
+        failed solve the sweep is noise)."""
+        from live_action_aov.passes.camera import pnp
+
+        T = tracks.shape[0]
+        anchor = T // 2
+        sub = sorted(set(range(anchor % 3, T, 3)) | {anchor})
+        factors = (0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15)
+        res: dict[float, tuple[float, int]] = {}
+        for fac in factors:
+            Kf = K.copy()
+            Kf[0, 0] = Kf[1, 1] = pnp.focal_from_fov(sw, fov * fac)
+            trial, v = attempt(Kf, tracks, sub)
+            if v is not None:
+                res[fac] = (v.heldout_px, len(trial.poses))
+        if 1.0 not in res:
+            return 1.0
+        win = min(res, key=lambda k: res[k][0])
+        held, n = res[win]
+        base_held, base_n = res[1.0]
+        ok = (
+            win not in (factors[0], factors[-1], 1.0)
+            and held <= 0.85 * base_held
+            and n >= base_n
+            and held <= weak_frac * sw
+        )
+        _log.info(
+            "Camera solve: PnP FOV sweep (every 3rd frame): %s -> %s",
+            ", ".join(f"x{k:.2f} {h:.2f}px" for k, (h, _n) in sorted(res.items())),
+            f"x{win:.2f}" if ok else "kept the estimate",
+        )
+        return win if ok else 1.0
 
     def _pnp_guides(self, frame_list: list[tuple[int, str]], sw: int) -> list[Any]:
         """Trackers to try, in order: None = plain LK, else a flow guide.
@@ -723,10 +817,12 @@ class PyColmapCameraPass(UtilityPass):
         from live_action_aov.passes.normals.moge3 import MoGe3Pass
 
         fov_param = self.params.get("pnp_fov_x_deg")
+        hint = getattr(self, "_pnp_fov_hint", None)
+        fov_in = fov_param if fov_param is not None else hint
         moge = MoGe3Pass({"emit_normals": False})
         try:
             r = moge.infer(
-                moge.preprocess(img[None]), float(fov_param) if fov_param is not None else None
+                moge.preprocess(img[None]), float(fov_in) if fov_in is not None else None
             )
         finally:
             moge._model = None
@@ -738,7 +834,11 @@ class PyColmapCameraPass(UtilityPass):
             except ImportError:  # pragma: no cover
                 pass
         self._pnp_fov_source = f"FOV {float(r['fov_x']):.1f} deg " + (
-            "from pnp_fov_x_deg" if fov_param is not None else "estimated by MoGe-3"
+            "from pnp_fov_x_deg"
+            if fov_param is not None
+            else "from COLMAP's partial solve"
+            if hint is not None
+            else "estimated by MoGe-3"
         )
         return r["depth"], float(r["fov_x"])
 
@@ -921,6 +1021,14 @@ def run_colmap_subprocess(
 #: SIFT extraction RAM per thread, GB per megapixel of the solve image
 #: (measured: ~0.45 GB at 1920, ~1.3 at 2816, ~1.65 at 3840 px wide).
 _SIFT_GB_PER_MPIX = 0.3
+
+
+def _fov_x_deg(solve: CameraSolve) -> float | None:
+    """Horizontal FOV of a solve's camera, None when it has no usable focal."""
+    intr = solve.intrinsics
+    if intr.fx_px <= 0 or intr.width_px <= 0:
+        return None
+    return float(np.degrees(2.0 * np.arctan(intr.width_px / (2.0 * intr.fx_px))))
 
 
 def sift_threads_for_ram(w: int, h: int, free_gb: float | None, cpus: int) -> int:

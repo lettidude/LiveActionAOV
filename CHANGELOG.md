@@ -24,7 +24,11 @@ uses [semantic versioning](https://semver.org/).
   When the job also runs a flow pass (MegaFlow / RAFT) and the LK camera is not GOOD, PnP retries
   with LK guided by the flow vectors (`pnp_tracker: auto`; `klt` / `flow` force one): the guide
   follows fast motion that LK loses, LK keeps each step locked to the texture (the vectors chained
-  alone drift ~0.2 px/frame), and the better verdict wins.
+  alone drift ~0.2 px/frame), and the better verdict wins. The FOV comes from COLMAP's partial
+  solve when there is one (MoGe-3's single-frame FOV was 20-35 % wide on real plates), then a
+  held-out sweep x0.85..x1.15 (`pnp_fov_sweep`) takes another FOV only when it clearly wins.
+  Anchor points outside 0.2-60 m (`pnp_depth_range_m`) and within an extra margin around tracked
+  objects (`pnp_mask_grow_frac`) are left out.
 
 ### Fixed
 - **A native crash in COLMAP no longer kills the whole run.** pycolmap can segfault (e.g. in SIFT
