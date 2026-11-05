@@ -1021,6 +1021,8 @@ def run_colmap_subprocess(
 #: SIFT extraction RAM per thread, GB per megapixel of the solve image
 #: (measured: ~0.45 GB at 1920, ~1.3 at 2816, ~1.65 at 3840 px wide).
 _SIFT_GB_PER_MPIX = 0.3
+#: Without psutil: a cap that fits a 16-32 GB box at ~2K, not every core.
+_SIFT_THREADS_UNKNOWN_RAM = 8
 
 
 def _fov_x_deg(solve: CameraSolve) -> float | None:
@@ -1032,10 +1034,10 @@ def _fov_x_deg(solve: CameraSolve) -> float | None:
 
 
 def sift_threads_for_ram(w: int, h: int, free_gb: float | None, cpus: int) -> int:
-    """SIFT threads that fit in `free_gb` (keeping 20 % headroom); every
-    core when the free RAM is unknown."""
+    """SIFT threads that fit in `free_gb` (keeping 20 % headroom); at most
+    `_SIFT_THREADS_UNKNOWN_RAM` when the free RAM cannot be read."""
     if free_gb is None:
-        return max(1, cpus)
+        return max(1, min(cpus, _SIFT_THREADS_UNKNOWN_RAM))
     per_thread = 0.1 + _SIFT_GB_PER_MPIX * w * h / 1e6
     return max(1, min(cpus, int(0.8 * free_gb / per_thread)))
 
@@ -1043,7 +1045,7 @@ def sift_threads_for_ram(w: int, h: int, free_gb: float | None, cpus: int) -> in
 def _free_ram_gb() -> float | None:
     try:
         import psutil
-    except ImportError:  # pragma: no cover - psutil ships with the torch stack
+    except ImportError:  # pragma: no cover - psutil is in the camera extra
         return None
     return float(psutil.virtual_memory().available) / 1e9
 

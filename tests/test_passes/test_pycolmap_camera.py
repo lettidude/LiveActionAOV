@@ -615,7 +615,8 @@ def test_colmap_worker_round_trip(tmp_path: Path):
 
 def test_sift_threads_fit_the_free_ram():
     """SIFT holds ~0.3 GB per megapixel per thread: fewer threads when RAM is short."""
-    assert mod.sift_threads_for_ram(1920, 1080, None, 32) == 32  # RAM unknown: all cores
+    assert mod.sift_threads_for_ram(1920, 1080, None, 32) == 8  # RAM unknown: capped
+    assert mod.sift_threads_for_ram(1920, 1080, None, 4) == 4
     assert mod.sift_threads_for_ram(1920, 1080, 200.0, 32) == 32
     few = mod.sift_threads_for_ram(2816, 1584, 10.0, 32)
     assert 1 <= few < 32
