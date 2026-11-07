@@ -210,3 +210,101 @@ def test_plate_size_comes_from_the_full_res_plate(tmp_path: Path) -> None:
     _out, plate_wh, solve_wh = p._export_frames(_Proxied(frames), (1001, 1003), tmp_path)
     assert solve_wh == (W, H)
     assert plate_wh == (4 * W, 4 * H)
+
+
+def _scene_flow(half_res: bool = True) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
+    """The exact flow of `_scene`, at half the solve size (as a proxied flow
+    pass would hand it over): each half shifts by -FX * TX / Z per frame."""
+    s = 2 if half_res else 1
+    fwd, bwd = {}, {}
+    for t in range(N_FR):
+        f = np.zeros((2, H // s, W // s), np.float32)
+        f[0, : H // (2 * s)] = -FX * TX / Z_TOP / s
+        f[0, H // (2 * s) :] = -FX * TX / Z_BOTTOM / s
+        fwd[1001 + t], bwd[1001 + t] = f, -f
+    return fwd, bwd
+
+
+def test_flow_guide_predicts_and_lk_refines_from_it() -> None:
+    fwd, bwd = _scene_flow()
+    frames = [1001 + t for t in range(N_FR)]
+    guide = pnp.flow_guide(fwd, bwd, frames, scale=2.0)
+    uv = np.array([[160.0, 40.0], [160.0, 150.0]], np.float32)
+    ahead = guide(ANCHOR, ANCHOR + 1, uv)
+    assert ahead is not None
+    np.testing.assert_allclose(ahead[:, 0], 160 - FX * TX / np.array([Z_TOP, Z_BOTTOM]), atol=1e-3)
+    back = guide(ANCHOR, ANCHOR - 1, uv)
+    assert back is not None
+    np.testing.assert_allclose(back[:, 0], 160 + FX * TX / np.array([Z_TOP, Z_BOTTOM]), atol=1e-3)
+    frames_img, _ = _scene()
+    tr = pnp.track_klt(frames_img, ANCHOR, uv, [None] * N_FR, guide=guide)
+    for t in range(N_FR):
+        np.testing.assert_allclose(tr[t, 0, 0], 160 - (t - ANCHOR) * FX * TX / Z_TOP, atol=0.3)
+        np.testing.assert_allclose(tr[t, 1, 0], 160 - (t - ANCHOR) * FX * TX / Z_BOTTOM, atol=0.3)
+
+
+def _fallback_with_flow(tmp_path: Path, tracker: str) -> tuple[object, list[bool]]:
+    frames, depth = _scene()
+    frame_list = [(1001 + t, f"frame_{1001 + t:06d}.png") for t in range(N_FR)]
+    for (_, name), g in zip(frame_list, frames, strict=True):
+        cv2.imwrite(str(tmp_path / name), g)
+    fwd, bwd = _scene_flow()
+    p = PyColmapCameraPass({"pnp_max_corners": 800, "pnp_tracker": tracker})
+    p.ingest_artifacts({"forward_flow": fwd, "backward_flow": bwd})
+    p._anchor_depth = lambda img: (depth, 60.0)  # type: ignore[method-assign]
+    p._pnp_fov_source = "FOV 60.0 deg (test)"
+    guided: list[bool] = []
+    orig = pnp.track_klt
+
+    def spy(*a, **k):
+        guided.append(k.get("guide") is not None)
+        return orig(*a, **k)
+
+    pnp.track_klt = spy  # type: ignore[assignment]
+    try:
+        solve = p._solve_pnp(_Reader(frames), frame_list, (W, H), (W, H), tmp_path, None)
+    finally:
+        pnp.track_klt = orig
+    return solve, guided
+
+
+def test_auto_keeps_a_good_lk_camera_and_flow_forces_the_guide(tmp_path: Path) -> None:
+    solve, guided = _fallback_with_flow(tmp_path, "auto")
+    assert guided == [False]  # LK was GOOD: the guided retry is not needed
+    assert solve is not None and solve.quality.verdict == "GOOD"
+    solve, guided = _fallback_with_flow(tmp_path, "flow")
+    assert guided == [True]
+    assert solve is not None and solve.quality.verdict == "GOOD"
+    assert solve.quality.registered_frame_count == N_FR
+    pos = {e.frame: e.translation for e in solve.extrinsics}
+    for t in range(N_FR):
+        assert pos[1001 + t][0] == pytest.approx((t - ANCHOR) * TX, abs=0.01)
+
+
+def test_fov_sweep_picks_a_clearly_better_fov_and_ignores_noise() -> None:
+    """The decision rule: another FOV wins only if it cuts the held-out by
+    >= 15 %, is inside the sweep, solves as many frames and is within WEAK."""
+    from types import SimpleNamespace
+
+    K = _K()
+    true_f = pnp.focal_from_fov(W, 60.0)
+
+    def attempt_for(err_of_f):
+        def attempt(Kt, tracks, sub=None):
+            n = len(sub) if sub is not None else tracks.shape[0]
+            trial = SimpleNamespace(poses=dict.fromkeys(range(n)))
+            return trial, SimpleNamespace(heldout_px=err_of_f(Kt[0, 0]))
+
+        return attempt
+
+    tracks = np.zeros((9, 4, 2))
+    p = PyColmapCameraPass()
+    # Estimate 66 deg, plate 60 deg: error grows with the focal mismatch.
+    sharp = attempt_for(lambda f: 0.05 + abs(f - true_f) / 20)
+    assert p._fov_sweep(sharp, tracks, K, 66.0, W, 0.0027) == pytest.approx(0.9)
+    # A flat error curve (+-5 %): the estimate is kept.
+    flat = attempt_for(lambda f: 0.5 + 0.02 * (f < true_f))
+    assert p._fov_sweep(flat, tracks, K, 66.0, W, 0.0027) == 1.0
+    # The best FOV still above the WEAK limit: noise, kept.
+    bad = attempt_for(lambda f: 5.0 + abs(f - true_f))
+    assert p._fov_sweep(bad, tracks, K, 66.0, W, 0.0027) == 1.0

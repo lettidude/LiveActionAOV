@@ -21,6 +21,14 @@ uses [semantic versioning](https://semver.org/).
   camera label; a FAILED camera says "DO NOT USE" (`pnp_keep_failed: false` drops it instead) and
   the splat pass refuses it. Units are declared as metres (MoGe-3's estimate), with `verdict` and
   `heldout_error_px` in the camera JSON. `pnp_fov_x_deg` overrides MoGe-3's FOV estimate.
+  When the job also runs a flow pass (MegaFlow / RAFT) and the LK camera is not GOOD, PnP retries
+  with LK guided by the flow vectors (`pnp_tracker: auto`; `klt` / `flow` force one): the guide
+  follows fast motion that LK loses, LK keeps each step locked to the texture (the vectors chained
+  alone drift ~0.2 px/frame), and the better verdict wins. The FOV comes from COLMAP's partial
+  solve when there is one (MoGe-3's single-frame FOV was 20-35 % wide on real plates), then a
+  held-out sweep x0.85..x1.15 (`pnp_fov_sweep`) takes another FOV only when it clearly wins.
+  Anchor points outside 0.2-60 m (`pnp_depth_range_m`) and within an extra margin around tracked
+  objects (`pnp_mask_grow_frac`) are left out.
 
 ### Fixed
 - **A native crash in COLMAP no longer kills the whole run.** pycolmap can segfault (e.g. in SIFT
@@ -33,6 +41,14 @@ uses [semantic versioning](https://semver.org/).
 - **Temporary folders with plate frames are always cleaned up.** The camera workdir is removed on a
   failed or crashed solve too, and a workdir kept for debugging (`keep_workdir`, Marigold
   `keep_temp`) is now a warning with its path, since it holds frames exported from the plate.
+- **The camera's RAM spike no longer takes a long shot down.** SIFT extraction holds ~0.3 GB per
+  megapixel per thread, on every core at once. On a big machine that was +40 GB for a few seconds,
+  enough to crash a long 6K shot. The thread count now fits the free RAM (`sift_num_threads: 0` =
+  auto). The default `max_image_size` is 1920: on handheld tests it gives the same cameras as 2816
+  at a third of the RAM. The log states the actual solve size and thread count.
+- **`max_image_size` above the proxy size now applies.** The camera read its frames through the
+  proxy, so it silently solved at min(proxy, `max_image_size`). It now reads the full-res plate
+  when the proxy is smaller.
 
 ## [0.11.1] — 2026-11-02
 
