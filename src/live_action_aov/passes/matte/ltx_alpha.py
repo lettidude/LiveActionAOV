@@ -49,7 +49,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -57,6 +57,9 @@ from live_action_aov.core.pass_base import License
 from live_action_aov.io.channels import CH_MATTE_A, CH_MATTE_B, CH_MATTE_G, CH_MATTE_R
 from live_action_aov.passes.matte.boxmask import stack_box
 from live_action_aov.passes.matte.rvm import RVMRefinerPass
+
+if TYPE_CHECKING:
+    from live_action_aov.passes.matte.vitmatte import ViTMatteRefinerPass
 
 _log = logging.getLogger(__name__)
 
@@ -134,7 +137,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         super().__init__(params)
-        self._fallback: RVMRefinerPass | None = None
+        self._fallback: ViTMatteRefinerPass | None = None
         self._comfy_ok: bool | None = None
         self._models: dict[str, tuple[str, str]] = {}
         self._track_id: int | None = None
@@ -345,7 +348,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
                 _log.warning("LTX alpha: %s - using ViTMatte for these objects.", msg)
         return self._comfy_ok
 
-    def _vitmatte(self) -> RVMRefinerPass:
+    def _vitmatte(self) -> ViTMatteRefinerPass:
         if self._fallback is None:
             from live_action_aov.passes.matte.vitmatte import ViTMatteRefinerPass
 
