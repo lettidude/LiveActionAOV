@@ -20,7 +20,14 @@ def test_other_passes_are_untouched() -> None:
 
 def test_keys_never_collide() -> None:
     # a registered pass called `cryptomatte_pass` next to the built-in `cryptomatte`
-    names = ["cryptomatte", "cryptomatte_pass", "cryptomatte_pass_pass", "my_cryptomatte", "x_pass", "x"]
+    names = [
+        "cryptomatte",
+        "cryptomatte_pass",
+        "cryptomatte_pass_pass",
+        "my_cryptomatte",
+        "x_pass",
+        "x",
+    ]
     keys = [provenance_key(n) for n in names]
     assert len(set(keys)) == len(keys)
     assert not any("cryptomatte/" in f"{k}/" for k in keys)
