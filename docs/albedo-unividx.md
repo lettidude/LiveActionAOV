@@ -26,9 +26,11 @@ intrinsic model:
 UniVidX is Apache code + Apache weights on the Apache-2.0
 Wan2.1-T2V-14B backbone — the whole chain is clean.
 
-The catch: it's a **14B diffusion model**. Impractical on small cards,
-fine on 24–32 GB (Q8 Wan2.1-14B ≈ 15 GB in the field). That's exactly
-why this is staged behind a hardware-validation gate.
+The catch: it's a **14B diffusion model**. Impractical on small cards —
+the UniVidX_ComfyUI maintainer (same upstream model) reports a **24 GB
+FP8 minimum** (peak 18-20 GB FP8, 32-34 GB BF16). An early ~15 GB Q8
+report was optimistic; we treat **24 GB as the honest floor**. That's
+exactly why this is staged behind a hardware-validation gate.
 
 ## Phase 1 — contract + POC (this PR)
 
@@ -39,7 +41,7 @@ Landed:
   `plate ≈ albedo * irradiance` holds for comp.
 - **Pass contract** (`passes/intrinsic/univid_x.py`):
   `UniVidXIntrinsicPass` — Apache-2.0, `VIDEO_CLIP`, `RADIOMETRIC`,
-  declares the six channels + a 16 GB VRAM floor. `_load_model` raises
+  declares the six channels + a 24 GB VRAM floor. `_load_model` raises
   `NotImplementedError` until the backend is validated + vendored. This
   mirrors the repo's MatAnyone2 precedent (contract shipped, backend
   stubbed, withheld from the GUI catalog).
@@ -70,9 +72,15 @@ uv run python scripts/poc_unividx_prep.py \
     --out ./poc_unividx_frames
 ```
 
-Then run UniVidX upstream inference on the prepped frames (the script
-prints the exact commands; **verify them against the current upstream
-README** — flags drift). Report back:
+Then run UniVidX upstream inference on the prepped frames. UniVidX is
+**config-driven** — you edit `configs/univid_intrinsic_inference.yaml`
+(set `mode: R2AIN` for RGB→albedo+irradiance+normal, point
+`inference_rgb_path` at the prepped frames, leave the other modality
+paths `null`) and run `scripts/inference_univid_intrinsic.py --config …`.
+Weights are ~85 GB (Wan2.1-T2V-14B backbone + UniVidX LoRA checkpoint).
+The prep script prints the full step list; **verify every path/key
+against the current upstream README** — the interface drifts. Report
+back:
 
 1. **Quality** — is the albedo genuinely lighting-free? (No baked
    shadows / highlights in the base colour. Look at a face or a wall
@@ -90,19 +98,60 @@ If Phase 2 looks good:
    `video_depth_anything` vendoring pattern). Keep the upstream LICENSE.
 2. Implement `_load_model` + `run_shot` + `_infer_clip` in
    `passes/intrinsic/univid_x.py` (pull weights via `hf_hub_download`
-   from `houyuanchen/UniVidX`; map UniVidX's albedo/irradiance output
-   into our channels; undo the model's sRGB-display on the way out so
-   the sidecar lands in linear).
+   from `houyuanchen/UniVidX` **lazily** — see "Weights are lazy" below;
+   map UniVidX's albedo/irradiance output into our channels; undo the
+   model's sRGB-display on the way out so the sidecar lands in linear).
 3. Add the entry point in `pyproject.toml`:
    `univid_x_intrinsic = "live_action_aov.passes.intrinsic.univid_x:UniVidXIntrinsicPass"`
 4. Add to the GUI catalog (`gui/pass_catalog.py`) under a new
-   **"Intrinsics"** group, gated by `meets_vram_requirement(state, 16)`
+   **"Intrinsics"** group, gated by `meets_vram_requirement(state, 24)`
    (PR #36) so it greys out on cards that can't run it.
 5. Bump the pass `version` 0.0.1 → 0.1.0 and the package version.
 
+### Weights are lazy (hard requirement)
+
+The ~85 GB of weights (Wan2.1-T2V-14B backbone ≈ 69 GB + UniVidX LoRA
+checkpoint ≈ 1.6 GB) must download **on the first run of the pass**, not
+at `install.bat` / `install.sh` time, and only **after the user has
+confirmed** the download. LiveActionAOV installs worldwide on modest
+connections; a multi-tens-of-GB pull bolted onto general install would
+be a killer. Concretely:
+
+- `install.*` and `uv sync` must **not** fetch any UniVidX weights.
+- The first time `_load_model` runs, check the HF cache; if missing,
+  print/emit a clear "UniVidX needs ~85 GB of weights — download now?"
+  warning (size + target path) before calling `hf_hub_download`.
+- In the GUI, surface the size up front so a user on a metered link
+  isn't surprised by an 85 GB background download.
+
 ## Portability note
 
-Per the cross-machine requirement: this pass advertises a 16 GB VRAM
+Per the cross-machine requirement: this pass advertises a 24 GB VRAM
 floor via `vram_estimate_gb_fn`. Once the GUI gate from PR #36 is wired
-to the catalog (Phase 3 step 4), the pass auto-hides on a 4060/3060 and
-stays available on a 3090/4090/5090 — no manual per-machine config.
+to the catalog (Phase 3 step 4), the pass auto-hides on cards below
+24 GB (4060/3060/3070/4070, and the 16 GB 4060 Ti/4080) and stays
+available on a 3090/4090/5090 — no manual per-machine config.
+
+## Why not the ComfyUI node (`dreamrec/UniVidX_ComfyUI`)
+
+There is a ComfyUI custom-node pack wrapping the same upstream model. We
+**reject it as a backend**, deliberately, so this isn't relitigated:
+
+- **License — disqualifying.** The pack is **GPL-3.0**. LiveActionAOV
+  ships commercially (`commercial_tool_resale=True` on this pass), and
+  the whole reason we picked UniVidX over V-RGBX / UniRelight was a clean
+  Apache-2.0 chain. Vendoring or distributing GPL-3.0 code is copyleft —
+  it would force the entire tool to GPL. Non-starter.
+- **No actual saving.** The node wraps the *same* Wan2.1-14B weights and
+  the *same* inference — identical VRAM, runtime, and ~85 GB download. It
+  saves a little glue code, nothing the *user* pays for.
+- **Dependency inversion.** It would make our install story "first stand
+  up a ComfyUI server + install a custom node + match versions," which is
+  strictly worse than our one-click GUI and subordinates us to another
+  app's release cadence.
+
+The only legitimate use is **private, local validation** on your own GPU
+during Phase 2 (mere use, never distributed) — and even then, running the
+upstream Apache repo directly keeps GPL entirely out of the loop, so
+that's preferred. The shipped backend is **always** the vendored
+Apache-2.0 inference (Phase 3).
