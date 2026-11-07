@@ -42,10 +42,10 @@ import importlib
 import json
 import logging
 import math
+import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 from pathlib import Path
 from typing import Any, NoReturn
@@ -60,6 +60,7 @@ from live_action_aov.core.pass_base import (
     TemporalMode,
     UtilityPass,
 )
+from live_action_aov.core.work_dir import make_work_dir
 from live_action_aov.io.camera_schema import (
     BackendInfo,
     CameraSolve,
@@ -105,7 +106,7 @@ class PyColmapCameraPass(UtilityPass):
         SidecarSpec(name="camera_points", format="ply"),
     ]
     # Soft dep: SAM 3 masks exclude moving objects when SAM 3 is in the job.
-    optional_artifacts = ["sam3_hard_masks"]
+    optional_artifacts = ["sam3_hard_masks", "forward_flow", "backward_flow"]
     # The solve itself, for downstream passes (Gaussian splat).
     provides_artifacts = ["camera_solve"]
     # No parallax (locked-off, pure pan) is a property of the shot, not a bug:
@@ -124,8 +125,14 @@ class PyColmapCameraPass(UtilityPass):
         "mapping_attempts": 4,
         "camera_model": "SIMPLE_PINHOLE",
         # Long edge of the images SIFT sees. PF0081 (2048 wide): 2048 ->
-        # 0.86 px / 62 s per 32 frames, 1024 -> 0.6 px@1K / 21 s.
-        "max_image_size": 2048,
+        # 0.86 px / 62 s per 32 frames, 1024 -> 0.6 px@1K / 21 s. Handheld
+        # tests: 1920 gives the same cameras as 2816 at a third of SIFT's RAM.
+        # Above the proxy size the frames are read from the full-res plate.
+        "max_image_size": 1920,
+        # SIFT extraction threads. 0 = as many as fit in free RAM (each
+        # thread holds ~0.25 GB per megapixel; all 32 threads at 2816 px
+        # took +42 GB for ~10 s and could crash a long shot).
+        "sift_num_threads": 0,
         "sift_max_features": 8192,
         # COLMAP default 0.0067 starves dark / low-contrast plates.
         "sift_peak_threshold": 0.002,
@@ -159,6 +166,15 @@ class PyColmapCameraPass(UtilityPass):
         "pnp_keep_failed": True,
         "pnp_fov_x_deg": None,  # horizontal FOV of the plate; None = MoGe-3's estimate
         "pnp_max_corners": 6000,
+        # FOV sweep x0.85..x1.15 scored on held-out points (skipped when
+        # pnp_fov_x_deg pins the FOV); depth gate on the anchor points and
+        # an extra margin around tracked objects (of the long edge).
+        "pnp_fov_sweep": True,
+        "pnp_depth_range_m": (0.2, 60.0),
+        "pnp_mask_grow_frac": 0.005,
+        # "auto": LK, then LK guided by the job's flow pass (MegaFlow / RAFT)
+        # when LK's camera is not GOOD; "klt" / "flow" force one of them.
+        "pnp_tracker": "auto",
         # COLMAP (SIFT, matching, mapping) runs in its own process: a native
         # crash in pycolmap then loses the camera only, not every pass of the
         # run, and the fallbacks still get their turn. 0 = no time limit.
@@ -192,9 +208,23 @@ class PyColmapCameraPass(UtilityPass):
     def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:
         hard = artifacts.get("sam3_hard_masks") or {}
         self._hard_masks = next(iter(hard.values())) if hard else {}
+        # A flow pass in the job (MegaFlow / RAFT): PnP tracks on its vectors.
+        self._fwd_flow = dict(artifacts.get("forward_flow") or {})
+        self._bwd_flow = dict(artifacts.get("backward_flow") or {})
 
     # --- shot entry point ---
     def run_shot(
+        self, reader: Any, frame_range: tuple[int, int]
+    ) -> dict[int, dict[str, np.ndarray]]:
+        try:
+            return self._run_shot(reader, frame_range)
+        except BaseException:
+            # The workdir holds plate frames: gone on any failure, whoever
+            # the caller is (emit_sidecars only runs after a success).
+            self._drop_workdir()
+            raise
+
+    def _run_shot(
         self, reader: Any, frame_range: tuple[int, int]
     ) -> dict[int, dict[str, np.ndarray]]:
         try:
@@ -208,7 +238,7 @@ class PyColmapCameraPass(UtilityPass):
         if model not in _SUPPORTED_MODELS:
             raise ValueError(f"camera_model must be one of {_SUPPORTED_MODELS}, got {model!r}")
 
-        self._workdir = Path(tempfile.mkdtemp(prefix="laaov_colmap_"))
+        self._workdir = make_work_dir("laaov_colmap_")
         image_dir = self._workdir / "images"
         image_dir.mkdir(parents=True)
         frame_list, plate_wh, solve_wh = self._export_frames(reader, frame_range, image_dir)
@@ -239,6 +269,9 @@ class PyColmapCameraPass(UtilityPass):
                 self._solve, self._sparse_dir = nodal, None
                 return {}
         if (self._solve is None or short) and self.params.get("pnp_fallback", True):
+            # COLMAP's focal from a partial solve beats MoGe-3's single-frame
+            # FOV (often 20-35 % wide on real plates).
+            self._pnp_fov_hint = _fov_x_deg(self._solve) if self._solve is not None else None
             pnp_solve = self._solve_pnp(reader, frame_list, plate_wh, solve_wh, image_dir, mask_dir)
             if pnp_solve is not None:
                 self._solve, self._sparse_dir = pnp_solve, None
@@ -337,8 +370,16 @@ class PyColmapCameraPass(UtilityPass):
         )
         out: list[tuple[int, str]] = []
         plate_wh = solve_wh = (0, 0)
+        read = reader.read_frame
+        full_read = getattr(reader, "read_frame_full_res", None)
+        full_wh = getattr(reader, "full_res_resolution", None)
+        if callable(full_read) and callable(full_wh):
+            proxy_long, plate_long = max(reader.resolution()), max(full_wh())
+            if proxy_long < min(max_size, plate_long):
+                # The proxy would cap `max_image_size`: read the plate itself.
+                read = full_read
         for f in range(frame_range[0], frame_range[1] + 1):
-            arr, attrs = reader.read_frame(f)
+            arr, attrs = read(f)
             if f == frame_range[0]:
                 self._lens_mm = lens_focal_mm(attrs)
             arr = np.nan_to_num(np.asarray(arr, dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
@@ -556,7 +597,18 @@ class PyColmapCameraPass(UtilityPass):
             else None
             for _, name in frame_list
         ]
+        # Matte edges (motion blur, hair) poison the solve: keep a margin
+        # around the tracked objects on top of the COLMAP mask dilation.
+        grow = round(float(self.params.get("pnp_mask_grow_frac", 0.005)) * max(sw, sh))
+        if grow > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1))
+            static = [
+                cv2.erode(m.astype(np.uint8), kernel) > 0 if m is not None else None for m in static
+            ]
         usable = ~pnp.near_depth_edges(depth, radius=11)  # = the LK window (21 px)
+        # Sky / far background: the depth error there is huge.
+        z_lo, z_hi = self.params.get("pnp_depth_range_m", (0.2, 60.0))
+        usable &= (depth > float(z_lo)) & (depth < float(z_hi))
         anchor_static = static[anchor]
         if anchor_static is not None:
             usable &= anchor_static
@@ -575,11 +627,58 @@ class PyColmapCameraPass(UtilityPass):
             points=pnp.back_project(uv, depth, K),
             colors=(rgb[yi, xi] * 255.0 + 0.5).astype(np.uint8),
         )
-        tracks = pnp.track_klt(gray, anchor, uv, static)
         held = pnp.holdout_mask(len(uv), int(self.params.get("pnp_holdout_every", 5)))
-        pnp.solve_poses(sol, tracks, held=held)
-        need = float(self.params.get("min_registered_fraction", 0.5)) * len(frame_list)
-        if len(sol.poses) < need:
+        min_frac = float(self.params.get("min_registered_fraction", 0.5))
+        good_frac = float(self.params.get("pnp_good_frac", 0.0011))
+        weak_frac = float(self.params.get("pnp_weak_frac", 0.0027))
+        rank = {"GOOD": 2, "WEAK": 1, "FAILED": 0}
+
+        def attempt(
+            Kt: np.ndarray, tracks: np.ndarray, sub: list[int] | None = None
+        ) -> tuple[pnp.PnPSolve, pnp.PnPVerdict | None]:
+            tr, anc, n = (tracks, anchor, len(frame_list))
+            if sub is not None:
+                tr, anc, n = tracks[sub], sub.index(anchor), len(sub)
+            trial = pnp.PnPSolve(
+                K=Kt, anchor=anc, points=pnp.back_project(uv, depth, Kt), colors=sol.colors
+            )
+            pnp.solve_poses(trial, tr, held=held)
+            if len(trial.poses) < min_frac * n:
+                return trial, None
+            return trial, pnp.assess(trial, sw, n, good_frac=good_frac, weak_frac=weak_frac)
+
+        def score(v: pnp.PnPVerdict | None) -> tuple[float, ...]:
+            return (-1.0,) if v is None else (rank[v.verdict], len(v.reliable), -v.heldout_px)
+
+        best: tuple[tuple[float, ...], pnp.PnPSolve, pnp.PnPVerdict | None, np.ndarray] | None
+        best = None
+        for guide in self._pnp_guides(frame_list, sw):
+            tracks = self._track_pnp(gray, anchor, uv, static, guide)
+            trial, v = attempt(K, tracks)
+            if best is None or score(v) > best[0]:
+                best = (score(v), trial, v, tracks)
+            if v is not None and v.verdict == "GOOD":
+                break
+        assert best is not None
+        if (
+            best[2] is not None
+            and self.params.get("pnp_fov_x_deg") is None
+            and self.params.get("pnp_fov_sweep", True)
+        ):
+            fac = self._fov_sweep(attempt, best[3], K, fov, sw, weak_frac)
+            if fac != 1.0:
+                Kw = K.copy()
+                Kw[0, 0] = Kw[1, 1] = pnp.focal_from_fov(sw, fov * fac)
+                trial, v = attempt(Kw, best[3])
+                if score(v) >= best[0]:
+                    best = (score(v), trial, v, best[3])
+                    self._pnp_fov_source = (
+                        f"FOV {fov * fac:.1f} deg = x{fac:.2f} of {self._pnp_fov_source} "
+                        "(held-out sweep)"
+                    )
+        assert best is not None
+        sol, verdict = best[1], best[2]
+        if verdict is None:
             _log.warning(
                 "Camera solve: depth-anchored PnP FAILED - point tracks lost, only %d/%d frames "
                 "solved (fast motion or blur).",
@@ -587,13 +686,6 @@ class PyColmapCameraPass(UtilityPass):
                 len(frame_list),
             )
             return None
-        verdict = pnp.assess(
-            sol,
-            sw,
-            len(frame_list),
-            good_frac=float(self.params.get("pnp_good_frac", 0.0011)),
-            weak_frac=float(self.params.get("pnp_weak_frac", 0.0027)),
-        )
         if verdict.verdict == "FAILED" and not self.params.get("pnp_keep_failed", True):
             _log.info(
                 "Camera solve: depth-anchored PnP FAILED (held-out %.2f px at solve res).",
@@ -630,16 +722,107 @@ class PyColmapCameraPass(UtilityPass):
             _log.warning("Camera solve: %s", warn)
         return solve
 
+    def _fov_sweep(
+        self,
+        attempt: Any,
+        tracks: np.ndarray,
+        K: np.ndarray,
+        fov: float,
+        sw: int,
+        weak_frac: float,
+    ) -> float:
+        """FOV factor that fits the tracks better than the estimate, or 1.0.
+
+        MoGe-3's single-frame FOV can be ~20 % off on real plates. Each factor
+        is solved on every 3rd frame; another one wins only if it cuts the
+        held-out error by >= 15 %, is not at the edge of the sweep, solves at
+        least as many frames and is itself within the WEAK limit (on a
+        failed solve the sweep is noise)."""
+        from live_action_aov.passes.camera import pnp
+
+        T = tracks.shape[0]
+        anchor = T // 2
+        sub = sorted(set(range(anchor % 3, T, 3)) | {anchor})
+        factors = (0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15)
+        res: dict[float, tuple[float, int]] = {}
+        for fac in factors:
+            Kf = K.copy()
+            Kf[0, 0] = Kf[1, 1] = pnp.focal_from_fov(sw, fov * fac)
+            trial, v = attempt(Kf, tracks, sub)
+            if v is not None:
+                res[fac] = (v.heldout_px, len(trial.poses))
+        if 1.0 not in res:
+            return 1.0
+        win = min(res, key=lambda k: res[k][0])
+        held, n = res[win]
+        base_held, base_n = res[1.0]
+        ok = (
+            win not in (factors[0], factors[-1], 1.0)
+            and held <= 0.85 * base_held
+            and n >= base_n
+            and held <= weak_frac * sw
+        )
+        _log.info(
+            "Camera solve: PnP FOV sweep (every 3rd frame): %s -> %s",
+            ", ".join(f"x{k:.2f} {h:.2f}px" for k, (h, _n) in sorted(res.items())),
+            f"x{win:.2f}" if ok else "kept the estimate",
+        )
+        return win if ok else 1.0
+
+    def _pnp_guides(self, frame_list: list[tuple[int, str]], sw: int) -> list[Any]:
+        """Trackers to try, in order: None = plain LK, else a flow guide.
+
+        `pnp_tracker: auto` tries LK first and, when the job has a flow pass
+        (MegaFlow / RAFT) and LK's camera is not GOOD, LK guided by the flow
+        vectors: it follows fast handheld motion that LK loses, but on slow
+        shots its extra points are noisier, so it never replaces a GOOD LK."""
+        from live_action_aov.passes.camera import pnp
+
+        frames = [f for f, _ in frame_list]
+        mode = str(self.params.get("pnp_tracker", "auto"))
+        fwd = getattr(self, "_fwd_flow", {})
+        bwd = getattr(self, "_bwd_flow", {})
+        if mode == "klt" or not all(f in fwd and f in bwd for f in frames):
+            if mode == "flow":
+                _log.warning("Camera solve: pnp_tracker 'flow' but the job has no flow pass.")
+            return [None]
+        scale = sw / max(int(fwd[frames[0]].shape[-1]), 1)
+        guide = pnp.flow_guide(fwd, bwd, frames, scale=scale)
+        return [guide] if mode == "flow" else [None, guide]
+
+    def _track_pnp(
+        self,
+        gray: list[np.ndarray],
+        anchor: int,
+        uv: np.ndarray,
+        static: list[np.ndarray | None],
+        guide: Any,
+    ) -> np.ndarray:
+        from live_action_aov.passes.camera import pnp
+
+        tracks = pnp.track_klt(gray, anchor, uv, static, guide=guide)
+        alive = np.isfinite(tracks[..., 0]).sum(axis=1)
+        _log.info(
+            "Camera solve: PnP tracks (%s), %d points; alive at the ends %d / %d",
+            "LK guided by the flow pass" if guide is not None else "LK",
+            len(uv),
+            int(alive[0]),
+            int(alive[-1]),
+        )
+        return tracks
+
     def _anchor_depth(self, img: np.ndarray) -> tuple[np.ndarray, float]:
         """MoGe-3 metric depth (H, W, 0 = invalid) of one display-referred
         frame and the horizontal FOV used. Unloaded right after."""
         from live_action_aov.passes.normals.moge3 import MoGe3Pass
 
         fov_param = self.params.get("pnp_fov_x_deg")
+        hint = getattr(self, "_pnp_fov_hint", None)
+        fov_in = fov_param if fov_param is not None else hint
         moge = MoGe3Pass({"emit_normals": False})
         try:
             r = moge.infer(
-                moge.preprocess(img[None]), float(fov_param) if fov_param is not None else None
+                moge.preprocess(img[None]), float(fov_in) if fov_in is not None else None
             )
         finally:
             moge._model = None
@@ -651,7 +834,11 @@ class PyColmapCameraPass(UtilityPass):
             except ImportError:  # pragma: no cover
                 pass
         self._pnp_fov_source = f"FOV {float(r['fov_x']):.1f} deg " + (
-            "from pnp_fov_x_deg" if fov_param is not None else "estimated by MoGe-3"
+            "from pnp_fov_x_deg"
+            if fov_param is not None
+            else "from COLMAP's partial solve"
+            if hint is not None
+            else "estimated by MoGe-3"
         )
         return r["depth"], float(r["fov_x"])
 
@@ -662,6 +849,7 @@ class PyColmapCameraPass(UtilityPass):
 
 _COLMAP_PARAMS = (
     "camera_model",
+    "sift_num_threads",
     "sift_max_features",
     "sift_peak_threshold",
     "matcher",
@@ -691,7 +879,18 @@ def run_colmap(
     ext = pycolmap.FeatureExtractionOptions()
     ext.sift.max_num_features = int(params["sift_max_features"])
     ext.sift.peak_threshold = float(params["sift_peak_threshold"])
-    _log.info("Camera solve: extracting features on %d frames", len(image_names))
+    threads = int(params.get("sift_num_threads", 0) or 0)
+    w, h = _image_size(image_dir / image_names[0])
+    if threads <= 0:
+        threads = sift_threads_for_ram(w, h, _free_ram_gb(), os.cpu_count() or 1)
+    ext.num_threads = threads
+    _log.info(
+        "Camera solve: extracting features on %d frames at %dx%d, %d threads",
+        len(image_names),
+        w,
+        h,
+        threads,
+    )
     pycolmap.extract_features(
         database_path=db,
         image_path=image_dir,
@@ -817,6 +1016,45 @@ def run_colmap_subprocess(
     if "error" in out:
         raise RuntimeError(out["error"])
     return Path(out["model_dir"])
+
+
+#: SIFT extraction RAM per thread, GB per megapixel of the solve image
+#: (measured: ~0.45 GB at 1920, ~1.3 at 2816, ~1.65 at 3840 px wide).
+_SIFT_GB_PER_MPIX = 0.3
+#: Without psutil: a cap that fits a 16-32 GB box at ~2K, not every core.
+_SIFT_THREADS_UNKNOWN_RAM = 8
+
+
+def _fov_x_deg(solve: CameraSolve) -> float | None:
+    """Horizontal FOV of a solve's camera, None when it has no usable focal."""
+    intr = solve.intrinsics
+    if intr.fx_px <= 0 or intr.width_px <= 0:
+        return None
+    return float(np.degrees(2.0 * np.arctan(intr.width_px / (2.0 * intr.fx_px))))
+
+
+def sift_threads_for_ram(w: int, h: int, free_gb: float | None, cpus: int) -> int:
+    """SIFT threads that fit in `free_gb` (keeping 20 % headroom); at most
+    `_SIFT_THREADS_UNKNOWN_RAM` when the free RAM cannot be read."""
+    if free_gb is None:
+        return max(1, min(cpus, _SIFT_THREADS_UNKNOWN_RAM))
+    per_thread = 0.1 + _SIFT_GB_PER_MPIX * w * h / 1e6
+    return max(1, min(cpus, int(0.8 * free_gb / per_thread)))
+
+
+def _free_ram_gb() -> float | None:
+    try:
+        import psutil
+    except ImportError:  # pragma: no cover - psutil is in the camera extra
+        return None
+    return float(psutil.virtual_memory().available) / 1e9
+
+
+def _image_size(path: Path) -> tuple[int, int]:
+    import cv2
+
+    img = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    return (int(img.shape[1]), int(img.shape[0])) if img is not None else (0, 0)
 
 
 def _pick_model(recs: dict[int, Any], out: Path) -> tuple[Any, Path]:
@@ -1006,7 +1244,7 @@ def build_solve_from_reconstruction(
             sequential_overlap=int(params.get("sequential_overlap", 10)),
             camera_model=str(params.get("camera_model", "SIMPLE_PINHOLE")),
             sift_max_features=int(params.get("sift_max_features", 8192)),
-            max_image_size=int(params.get("max_image_size", 2048)),
+            max_image_size=int(params.get("max_image_size", 1920)),
             mapper=str(params.get("mapper", "incremental")),
             masked_labels=list(masked_labels or []),
         ),
@@ -1146,7 +1384,7 @@ def build_solve_from_nodal(
             sequential_overlap=int(params.get("sequential_overlap", 10)),
             camera_model="SIMPLE_PINHOLE",
             sift_max_features=int(params.get("sift_max_features", 8192)),
-            max_image_size=int(params.get("max_image_size", 2048)),
+            max_image_size=int(params.get("max_image_size", 1920)),
             mapper="nodal",
             masked_labels=list(masked_labels or []),
         ),
@@ -1249,7 +1487,7 @@ def build_solve_from_pnp(
             sequential_overlap=int(params.get("sequential_overlap", 10)),
             camera_model="PINHOLE",
             sift_max_features=int(params.get("sift_max_features", 8192)),
-            max_image_size=int(params.get("max_image_size", 2048)),
+            max_image_size=int(params.get("max_image_size", 1920)),
             mapper="depth_pnp",
             masked_labels=list(masked_labels or []),
         ),

@@ -489,7 +489,9 @@ class ViewportPanel(QWidget):
                 override = "birefnet:"
         if override == "auto":
             de = str(getattr(shot, "default_engine", "birefnet") or "birefnet")
-            if de in ("vitmatte", "chromakey", "rvm"):
+            if de == "ltx_whole":  # LTX runs at submit; preview its fallback engine
+                kind, model_id = "vitmatte", ""
+            elif de in ("vitmatte", "chromakey", "rvm"):
                 kind, model_id = de, ""
             else:
                 kind, model_id = "birefnet", str(shot.refiner_model or "")

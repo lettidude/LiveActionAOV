@@ -35,6 +35,7 @@ from live_action_aov.core.output_layout import sidecar_template as layout_sideca
 from live_action_aov.core.pass_base import TemporalMode, UtilityPass
 from live_action_aov.core.registry import get_registry
 from live_action_aov.executors.base import Executor
+from live_action_aov.io.oiio_io import OiioError
 from live_action_aov.io.readers.display_transform_reader import (
     DisplayTransformedReader,
     LinearizedReader,
@@ -50,22 +51,45 @@ METADATA_NAMESPACE = "liveaov"
 _log = logging.getLogger(__name__)
 
 
+def provenance_key(pass_name: str) -> str:
+    """Header key segment for a pass's provenance (`liveaov/<key>/model` ...).
+
+    Nuke's Cryptomatte node scans EVERY metadata key for the substring
+    ``cryptomatte/`` and treats what precedes it as a Cryptomatte layer id;
+    ``liveaov/cryptomatte/commercial`` made Nuke 13.2v6 segfault the moment the
+    node evaluated (bisected by rewriting the header; the four
+    ``liveaov/cryptomatte/*`` keys alone reproduce it, every other key is
+    fine). So no provenance key may contain that substring: the cryptomatte
+    pass is recorded under ``liveaov/cryptomatte_pass/...``.
+
+    The mapping is injective, so two passes never share provenance keys: a
+    name ending in ``cryptomatte`` or in ``_pass`` gets ``_pass`` appended,
+    every other name is kept (``cryptomatte`` -> ``cryptomatte_pass``, a
+    registered ``cryptomatte_pass`` -> ``cryptomatte_pass_pass``).
+    """
+    if pass_name.endswith(("cryptomatte", "_pass")):
+        return pass_name + "_pass"
+    return pass_name
+
+
 def _retry_io(
-    fn: Callable[[], Any], *, what: str, attempts: int = 3, base_delay: float = 0.5
+    fn: Callable[[], Any], *, what: str, attempts: int = 8, base_delay: float = 1.5
 ) -> Any:
     """Run `fn`, retrying transient OS/I/O errors a few times before giving up.
 
     Sidecars often land on a network share (NAS); a brief connection blip
     mid-write would otherwise abort a whole multi-pass shot (minutes of GPU
-    work) over a momentary glitch. Retries only `OSError` (network-path /
-    I/O errors, incl. Windows WinError) — a genuine fault (disk full,
-    permission) still surfaces after the attempts. Linear backoff.
+    work) over a momentary glitch. Retries `OSError` (network-path / I/O
+    errors, incl. Windows WinError) and `OiioError` (OIIO reports a share
+    that dropped mid-write as a failed open/write, not as an OSError) — a
+    genuine fault (disk full, permission) still surfaces after the attempts.
+    Linear backoff, ~40 s in all: longer than an SMB reconnect.
     """
-    last: OSError | None = None
+    last: OSError | OiioError | None = None
     for i in range(attempts):
         try:
             return fn()
-        except OSError as e:
+        except (OSError, OiioError) as e:
             last = e
             if i < attempts - 1:
                 delay = base_delay * (i + 1)
@@ -458,10 +482,11 @@ class LocalExecutor(Executor):
                 for node in ordered:
                     _, cls = resolved_by_name[node.name]
                     lic = cls.declared_license()
-                    attrs[f"{METADATA_NAMESPACE}/{node.name}/model"] = cls.name
-                    attrs[f"{METADATA_NAMESPACE}/{node.name}/version"] = cls.version
-                    attrs[f"{METADATA_NAMESPACE}/{node.name}/license"] = lic.spdx
-                    attrs[f"{METADATA_NAMESPACE}/{node.name}/commercial"] = lic.commercial_use
+                    key = provenance_key(node.name)
+                    attrs[f"{METADATA_NAMESPACE}/{key}/model"] = cls.name
+                    attrs[f"{METADATA_NAMESPACE}/{key}/version"] = cls.version
+                    attrs[f"{METADATA_NAMESPACE}/{key}/license"] = lic.spdx
+                    attrs[f"{METADATA_NAMESPACE}/{key}/commercial"] = lic.commercial_use
                 if matte_refiner_cls is not None:
                     # `matte/commercial` is a downstream QC shortcut: the
                     # deliverable is commercial-safe iff the refiner is

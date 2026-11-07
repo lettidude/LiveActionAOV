@@ -263,7 +263,7 @@ def test_graph_uses_the_gguf_loaders_and_uploads_to_a_remote_comfyui(tmp_path: P
     orig = mod.upload_image
     mod.upload_image = lambda url, path, sub: sent.append(f"{url}|{path.name}|{sub}")  # type: ignore[assignment]
     try:
-        g = p._graph(tmp_path, 512, 288, 9, "x")
+        g = p._graph(tmp_path, 512, 288, 9)
     finally:
         mod.upload_image = orig
     assert g["1"] == {
@@ -274,6 +274,160 @@ def test_graph_uses_the_gguf_loaders_and_uploads_to_a_remote_comfyui(tmp_path: P
     assert g["8"]["class_type"] == "VHS_LoadImages"
     assert sent and sent[0].startswith("http://ai-box:8188/upload/image|f_0000.png|laov_ltx_")
     assert g["8"]["inputs"]["directory"] == sent[0].rsplit("|", 1)[1]
+    # Mattes come back through ComfyUI's temp folder, never its output/.
+    assert g["21"]["class_type"] == "PreviewImage"
     # Same machine: the temp folder is read in place, nothing is uploaded.
     local = LTXAlphaRefinerPass({"comfy_url": "http://127.0.0.1:8188"})
-    assert local._graph(tmp_path, 512, 288, 9, "x")["8"]["class_type"] == "VHS_LoadImagesPath"
+    assert local._graph(tmp_path, 512, 288, 9)["8"]["class_type"] == "VHS_LoadImagesPath"
+
+
+def test_pick_model_finds_the_same_file_in_another_folder() -> None:
+    from live_action_aov.passes.matte.ltx_alpha import _GGUF_UNET
+
+    want = LTXAlphaRefinerPass.DEFAULT_PARAMS["unet"]
+    moved = "ltx25\\" + want
+    info = _info([moved], [], [], [])
+    assert pick_model(info, want, "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET) == (
+        "UNETLoader",
+        moved,
+    )
+
+
+def test_pick_model_takes_another_precision_before_a_gguf() -> None:
+    from live_action_aov.passes.matte.ltx_alpha import _GGUF_UNET
+
+    want = LTXAlphaRefinerPass.DEFAULT_PARAMS["unet"]  # the int8 file, not downloaded here
+    bf16 = "ltx-2.5-22b-distilled-transformer-bf16.safetensors"
+    dev = "ltx-2.5-22b-dev-transformer-bf16.safetensors"  # another model: never picked
+    info = _info([dev, bf16], ["LTX-2.5-Distilled-Q4_K_S.gguf"], [], [])
+    assert pick_model(info, want, "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET) == (
+        "UNETLoader",
+        bf16,
+    )
+    info = _info([dev], [], [], [])
+    assert pick_model(info, want, "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET) is None
+
+
+def test_pick_model_matches_a_gguf_without_22b_in_the_name() -> None:
+    from live_action_aov.passes.matte.ltx_alpha import _GGUF_UNET
+
+    want = LTXAlphaRefinerPass.DEFAULT_PARAMS["unet"]
+    info = _info([], ["LTX-2.5-Distilled-Q4_K_S.gguf", "LTX-2.3-distilled-Q8_0.gguf"], [], [])
+    assert pick_model(info, want, "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET) == (
+        "UnetLoaderGGUF",
+        "LTX-2.5-Distilled-Q4_K_S.gguf",
+    )
+
+
+def test_resolve_finds_lora_and_vaes_in_sub_folders(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json as _json
+
+    from live_action_aov.passes.matte import ltx_alpha as la
+
+    p = LTXAlphaRefinerPass.DEFAULT_PARAMS
+    info = _info(
+        ["ltx-2.5-22b-distilled-transformer-bf16.safetensors"], [], [p["text_encoder"]], []
+    )
+    for n in la._NODES:
+        info.setdefault(n, {"input": {"required": {}}})
+    info["VHS_LoadImagesPath"] = {"input": {"required": {}}}
+    lora = r"ltxv\ltx25\ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors"
+    info["LTXICLoRALoaderModelOnly"] = {"input": {"required": {"lora_name": [[lora]]}}}
+    info["VAELoader"] = {"input": {"required": {"vae_name": [[p["video_vae"], p["audio_vae"]]]}}}
+
+    class _R:
+        def __init__(self, d: dict) -> None:
+            self._b = _json.dumps(d).encode()
+
+        def read(self) -> bytes:
+            return self._b
+
+    monkeypatch.setattr(la.urllib.request, "urlopen", lambda *a, **k: _R(info))
+    ok, msg, models = la._resolve({})
+    assert ok, msg
+    assert models["lora"] == ("LTXICLoRALoaderModelOnly", lora)
+    assert models["unet"] == ("UNETLoader", "ltx-2.5-22b-distilled-transformer-bf16.safetensors")
+
+
+def _two_actors(n: int, h: int = 120, w: int = 240) -> tuple[list[np.ndarray], dict]:
+    """Two white squares side by side (tracks 1 and 2), SAM shrunk by 3 px
+    (a missed shoulder), and a far bright prop nobody tracks."""
+    frames = []
+    hard1, hard2 = np.zeros((n, h, w), np.uint8), np.zeros((n, h, w), np.uint8)
+    for t in range(n):
+        f = np.zeros((h, w, 3), np.float32)
+        f[30:90, 40:80] = 1.0
+        f[30:90, 90:130] = 1.0
+        f[100:115, 200:235] = 1.0  # prop, > far_frac from both
+        frames.append(f)
+        hard1[t, 33:87, 43:77] = 1
+        hard2[t, 33:87, 93:127] = 1
+    art = {
+        "sam3_hard_masks": {
+            0: {
+                1: {"label": "person", "frames": list(range(1, n + 1)), "stack": hard1},
+                2: {"label": "person", "frames": list(range(1, n + 1)), "stack": hard2},
+            }
+        },
+        "sam3_instances": {
+            0: [
+                {
+                    "track_id": 1,
+                    "slot": "r",
+                    "label": "person",
+                    "score": 0.9,
+                    "frames": list(range(1, n + 1)),
+                },
+                {
+                    "track_id": 2,
+                    "slot": "g",
+                    "label": "person",
+                    "score": 0.9,
+                    "frames": list(range(1, n + 1)),
+                },
+            ]
+        },
+    }
+    return frames, art
+
+
+def _run_whole(n: int, **params: object) -> tuple[_FakeComfy, dict]:
+    frames, art = _two_actors(n)
+    _FakeComfy.calls = []
+    p = _FakeComfy(
+        {"mode": "whole_frame", "whole_long_edge": 256, "whole_chunk": 17, "overlap": 8, **params}
+    )
+    p.ingest_artifacts(art)
+    return p, p.run_shot(_Reader(frames), frame_range=(1, n))
+
+
+def test_whole_frame_runs_ltx_once_for_every_object() -> None:
+    p, out = _run_whole(9)
+    assert len(p.calls) == 1  # two objects, one call
+    ww, wh, nf = p.calls[0]
+    assert (ww, wh, nf) == (256, 128, 9)
+    a, b, fg = out[5]["matte.r"], out[5]["matte.g"], out[5]["foreground.a"]
+    assert a[60, 42] > 0.9 and a[60, 60] > 0.9  # SAM missed 40-42: LTX keeps it
+    assert b[60, 92] > 0.9 and b[60, 110] > 0.9
+    assert a[60, 110] < 0.05 and b[60, 60] < 0.05  # each keeps only its own
+    assert a[107, 220] < 0.05 and b[107, 220] < 0.05  # far prop: no owner ...
+    assert fg[107, 220] > 0.9  # ... but in the foreground layer
+    assert fg[10, 10] < 0.05
+
+
+def test_whole_frame_chunks_long_shots_in_8n_plus_1_calls() -> None:
+    p, out = _run_whole(40)
+    assert len(p.calls) > 1
+    assert all((nf - 1) % 8 == 0 for _, _, nf in p.calls)
+    for t in (1, 20, 40):
+        assert out[t]["matte.r"][60, 60] > 0.9
+
+
+def test_ltx_cache_skips_the_second_run(tmp_path: Path) -> None:
+    p1, out1 = _run_whole(9, cache_dir=str(tmp_path))
+    assert len(p1.calls) == 1 and len(list(tmp_path.glob("ltx_*.npy"))) == 1
+    p2, out2 = _run_whole(9, cache_dir=str(tmp_path))
+    assert p2.calls == []  # served from the cache
+    np.testing.assert_allclose(out1[5]["matte.r"], out2[5]["matte.r"], atol=2e-3)
+    p3, _ = _run_whole(9, cache_dir=str(tmp_path), seed=7)
+    assert len(p3.calls) == 1  # another seed is another result
