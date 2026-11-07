@@ -41,9 +41,7 @@ class CameraPassStub(UtilityPass):
     ]
 
     def preprocess(self, frames: np.ndarray) -> Any:  # pragma: no cover — stub
-        raise NotImplementedError(
-            "Camera pass lands in v2a. See docs/dev/design_notes.md §20."
-        )
+        raise NotImplementedError("Camera pass lands in v2a. See docs/dev/design_notes.md §20.")
 
     def infer(self, tensor: Any) -> Any:  # pragma: no cover — stub
         raise NotImplementedError("Camera pass lands in v2a.")
