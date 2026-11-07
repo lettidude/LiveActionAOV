@@ -25,12 +25,13 @@ import logging
 import os
 import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from live_action_aov.core.work_dir import make_work_dir
 
 _log = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ def run_sam31(
     0..1) with SAM 3.1. Masks come back at the frames' resolution."""
     from PIL import Image
 
-    work = Path(tempfile.mkdtemp(prefix="laov_sam31_"))
+    work = make_work_dir("laov_sam31_")
     try:
         fdir, odir = work / "frames", work / "out"
         fdir.mkdir()
