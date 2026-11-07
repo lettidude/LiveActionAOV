@@ -7,13 +7,17 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **GUI: SAM 3.1 detector, whole-frame LTX engine, PnP camera toggle.** Passes tab: a "Detector"
-  choice (SAM 3 built in / SAM 3.1 Object Multiplex; Submit checks the SAM 3.1 environment up front),
-  "LTX Alpha whole frame" under the default engine's Advanced menu (sent with the ComfyUI URL; the
-  Masks-tab preview uses ViTMatte for it), and "Camera: solve from depth when SfM fails". All three
-  are saved in the session and copied by "Apply passes to all shots".
-
 ### Fixed
+- **A native crash in COLMAP no longer kills the whole run.** pycolmap can segfault (e.g. in SIFT
+  extraction on long shots); since every pass runs in one process, that lost the mattes, depth and
+  everything else of the run. COLMAP's feature extraction, matching and mapping now run in a child
+  process (`colmap_subprocess`, on by default; `colmap_timeout_s` optional). A crash is reported as
+  an ordinary camera failure with its exit code, the nodal fallback declines cleanly when COLMAP left
+  no database, and the rest of the run carries on. The child's progress (features, matching,
+  mapping seeds) streams to the log live instead of arriving only when it exits.
+- **Temporary folders with plate frames are always cleaned up.** The camera workdir is removed on a
+  failed or crashed solve too, and a workdir kept for debugging (`keep_workdir`, Marigold
+  `keep_temp`) is now a warning with its path, since it holds frames exported from the plate.
 - **A failed shot stopped an overnight batch.** Shots ticked while a batch runs (Submit is disabled
   meanwhile) were never added to it; when the last submitted shot failed, the GUI treated it as a
   single-shot run and showed a blocking error dialog, and the shots ticked later never ran. The
