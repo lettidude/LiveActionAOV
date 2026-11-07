@@ -6,7 +6,33 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Depth-anchored PnP camera fallback** (`pnp_fallback`, on by default). Fast handheld action often
+  gives COLMAP almost no usable parallax (only a few frames register) while the camera clearly
+  translates, so the rotation-only fallback does not fit either and the run had no camera. Now the
+  camera pass tries a third route: MoGe-3 metric depth of the middle frame gives the 3D points of the
+  static set (SAM 3 objects masked out, corners on depth edges skipped), their corners are tracked
+  through the shot with pyramidal Lucas-Kanade (forward-backward checked, dropped on tracked
+  objects), and each frame is solved with RANSAC EPnP + LM refine. The fit error alone can hide a
+  wrong camera, so every `pnp_holdout_every`-th point is kept out of the solve and the camera is
+  judged on those: **GOOD / WEAK / FAILED** (`pnp_good_frac` / `pnp_weak_frac` of the image width,
+  plus the share of reliable frames), travel measured on reliable frames only, and a NODAL flag when
+  the camera moves less than 2 % of the scene depth. The verdict leads the warnings and the Nuke
+  camera label; a FAILED camera says "DO NOT USE" (`pnp_keep_failed: false` drops it instead) and
+  the splat pass refuses it. Units are declared as metres (MoGe-3's estimate), with `verdict` and
+  `heldout_error_px` in the camera JSON. `pnp_fov_x_deg` overrides MoGe-3's FOV estimate.
+
 ### Fixed
+- **A native crash in COLMAP no longer kills the whole run.** pycolmap can segfault (e.g. in SIFT
+  extraction on long shots); since every pass runs in one process, that lost the mattes, depth and
+  everything else of the run. COLMAP's feature extraction, matching and mapping now run in a child
+  process (`colmap_subprocess`, on by default; `colmap_timeout_s` optional). A crash is reported as
+  an ordinary camera failure with its exit code, the nodal fallback declines cleanly when COLMAP left
+  no database, and the rest of the run carries on. The child's progress (features, matching,
+  mapping seeds) streams to the log live instead of arriving only when it exits.
+- **Temporary folders with plate frames are always cleaned up.** The camera workdir is removed on a
+  failed or crashed solve too, and a workdir kept for debugging (`keep_workdir`, Marigold
+  `keep_temp`) is now a warning with its path, since it holds frames exported from the plate.
 - **Nuke's Cryptomatte node crashed on our sidecars.** The per-pass provenance
   keys `liveaov/cryptomatte/{model,version,license,commercial}` contain the
   substring `cryptomatte/`, which Nuke's Cryptomatte plugin scans every header
