@@ -4,7 +4,7 @@
 
 # LiveActionAOV
 
-**Live-action plates in, Nuke-ready AOVs out.** Point it at an EXR sequence and you get per-object mattes and a Cryptomatte, depth in metres, normals, motion vectors, a solved camera, a clean plate, and a Nuke script with all of it wired up. It runs on your own machine. Nothing leaves it.
+**Live-action plates in, Nuke-ready AOVs out.** Point it at an EXR sequence and you get per-object mattes and a Cryptomatte, depth in metres, normals, motion vectors, a solved camera, a clean plate, and a Nuke script with all of it wired up. It runs on your own machine; the only thing that ever goes over the network is the optional LTX Alpha step, and only if you point it at a ComfyUI on another box.
 
 Built by [Leonardo Paolini](#author), a VFX and 2D compositing supervisor, for the prep work that eats the first days of every shot. In development since April 2026 and in daily use on real shots; some parts are still moving, see [Status](#status).
 
@@ -23,7 +23,7 @@ From one plate folder, one run writes a version folder next to it:
 | **Depth** | `Z` in metres, plus `P` world position | MoGe-3 (default), Depth Anything V2, Video Depth Anything |
 | **Normals** | Camera-space `N`, steady over the shot | MoGe-3 (default) or DSINE |
 | **Motion** | Forward and backward vectors in pixels, Nuke VectorBlur names included | RAFT or MegaFlow |
-| **Camera** | A Nuke `Camera2` with a verdict you can trust (GOOD / WEAK / FAILED), point cloud, COLMAP model | COLMAP, with the masked people kept out of the solve; nodal and depth-anchored fallbacks when parallax is short |
+| **Camera** | A Nuke `Camera2` with its error and coverage in the label, point cloud, COLMAP model | COLMAP, with the masked people kept out of the solve; nodal and depth-anchored fallbacks when parallax is short |
 | **Clean plate** | The set without the people, re-rendered through the solved camera | 3D Gaussian splat trained on the plate |
 | **Nuke script** | `<shot>_v001.comp.nk`: Reads, the camera, the point cloud, a ScanlineRender, every layer shuffled out | written at the end of each run |
 
@@ -119,7 +119,7 @@ The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (
 
 Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motion, with the SAM 3 masks keeping the moving people out of the solve. You get a Nuke `Camera2`, a point cloud and the COLMAP model. Checked in Nuke 16 by reprojecting the solved points: 0.7-1.3 px on 2K to 6.5K test plates.
 
-A camera needs parallax. When COLMAP registers only part of a shot, two fallbacks take over: a rotation-only solve for pans and locked-off shots, and a depth-anchored solve (MoGe-3 depth plus tracked corners) for fast handheld action. Every camera is judged on held-out points it never saw during the solve and labelled **GOOD**, **WEAK** or **FAILED** in the Nuke node, with the error in pixels at a stated resolution. A FAILED camera says "do not use" so it cannot end up in a comp by accident, and the other passes are still written.
+A camera needs parallax. When COLMAP registers only part of a shot, two fallbacks take over: a rotation-only solve for pans and locked-off shots, and a depth-anchored solve (MoGe-3 depth plus tracked corners) for fast handheld action. The depth-anchored camera is judged on held-out points it never saw during the solve and labelled **GOOD**, **WEAK** or **FAILED** in the Nuke node, with the error in pixels at a stated resolution; a FAILED one says "do not use" so it cannot end up in a comp by accident. COLMAP and nodal cameras report their reprojection error and frame coverage in the same label; one independent referee for every camera is the next step. Whatever happens to the camera, the other passes are still written.
 
 ### Clean plate
 
