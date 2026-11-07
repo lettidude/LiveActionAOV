@@ -2,7 +2,7 @@
 
 LiveActionAOV is a layered, plugin-first VFX plate preprocessor. This page is
 a one-page orientation for contributors. Depth lives in the design notes at
-the repo root (`utility_passes_design_notes.md`).
+`docs/dev/design_notes.md`.
 
 ## Layers (high level)
 
@@ -42,10 +42,10 @@ See `docs/developing-plugins.md` for how to write a pass.
 Per-pass licenses are declared on each plugin's `License` object. The CLI
 enforces `--allow-noncommercial` before running any pass with
 `commercial_use=False`. The full model-license matrix lives in
-`utility_passes_design_notes.md` §17.
+`dev/design_notes.md` §17.
 
 ## Design document
 
 The full design record (rationale, tradeoffs, future roadmap v2/v3) is at
-`../utility_passes_design_notes.md`. Consult it when a decision in the code
+`dev/design_notes.md`. Consult it when a decision in the code
 seems arbitrary — rationale is almost always there.

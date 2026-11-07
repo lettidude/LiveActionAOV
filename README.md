@@ -4,270 +4,188 @@
 
 # LiveActionAOV
 
-**Live-action plates in, Nuke-ready AOVs out.** Point it at an EXR sequence and it gives you per-object mattes and Cryptomatte, depth, normals, motion vectors, a solved **camera track**, a **Gaussian-splat clean plate**, and a Nuke comp with all of it already wired. Everything runs locally on your GPU.
+**Live-action plates in, Nuke-ready AOVs out.** Point it at an EXR sequence and you get per-object mattes and a Cryptomatte, depth in metres, normals, motion vectors, a solved camera, a clean plate, and a Nuke script with all of it wired up. It runs on your own machine. Nothing leaves it.
 
-> **Status:** alpha, pre-v1. In development since April 2026, by Leonardo Paolini (VFX / 2D supervisor).
+Built by [Leonardo Paolini](#author), a VFX and 2D compositing supervisor, for the prep work that eats the first days of every shot. In development since April 2026 and in daily use on real shots; some parts are still moving, see [Status](#status).
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=HnosSnK1MKs">
-    <img src="docs/img/youtube-demo.jpg" alt="Watch the LiveActionAOV demo on YouTube" width="760">
-  </a>
-  <br>
-  <a href="https://www.youtube.com/watch?v=HnosSnK1MKs"><b>▶ Watch the demo</b></a> — how it works, end to end
+  <img src="docs/img/aov-contact-sheet.png" alt="One plate, every pass: matte, Cryptomatte, depth, normals, motion, position, camera, clean plate" width="900">
 </p>
 
----
+## What you get
+
+From one plate folder, one run writes a version folder next to it:
+
+| Output | What it is | How |
+|---|---|---|
+| **Mattes** | Soft, roto-grade alpha per object you clicked, with hair and motion blur | SAM 3 tracks the object, ViTMatte refines the edge; **LTX-2.5 Alpha** optional for the hard ones |
+| **Cryptomatte** | Every object as a pickable ID, like a CG render | from the same tracks |
+| **Depth** | `Z` in metres, plus `P` world position | MoGe-3 (default), Depth Anything V2, Video Depth Anything |
+| **Normals** | Camera-space `N`, steady over the shot | MoGe-3 (default) or DSINE |
+| **Motion** | Forward and backward vectors in pixels, Nuke VectorBlur names included | RAFT or MegaFlow |
+| **Camera** | A Nuke `Camera2` with a verdict you can trust (GOOD / WEAK / FAILED), point cloud, COLMAP model | COLMAP, with the masked people kept out of the solve; nodal and depth-anchored fallbacks when parallax is short |
+| **Clean plate** | The set without the people, re-rendered through the solved camera | 3D Gaussian splat trained on the plate |
+| **Nuke script** | `<shot>_v001.comp.nk`: Reads, the camera, the point cloud, a ScanlineRender, every layer shuffled out | written at the end of each run |
+
+Everything lands in one multi-layer EXR per frame (or one sequence per pass, your choice), with the model licences stamped in the header so QC can check what is shippable.
+
+## Requirements
+
+- **Windows 11** (main platform) or Linux. macOS is best-effort, see [compatibility](#compatibility).
+- **NVIDIA GPU**, RTX 20-series or newer. **16 GB** of VRAM runs everything at proxy resolution; **24 GB** runs 4K; **8 GB** is not enough for the matte and flow models. Driver 570 or newer for the 50-series.
+- **RAM**: 32 GB for short shots at 2K. 64 GB or more for long shots at 4K and above.
+- **Disk**: about 15 GB for the install, about 10 GB of model weights for the default set, up to 40 GB with every optional model.
+- **Nuke** 11 or newer to open the result (tested on Nuke 16).
 
 ## Quick start
 
 ```powershell
-# Windows (PowerShell or cmd.exe):
+# Windows (PowerShell or cmd.exe)
 git clone https://github.com/lettidude/LiveActionAOV
 cd LiveActionAOV
 .\install.bat
 ```
 
 ```bash
-# Linux / macOS:
+# Linux / macOS
 git clone https://github.com/lettidude/LiveActionAOV
 cd LiveActionAOV
 ./install.sh
 ```
 
-> **PowerShell users:** the `.\` prefix is required — PowerShell doesn't run scripts from the current directory by default. `cmd.exe` accepts both `install.bat` and `.\install.bat`.
+The installer brings its own Python and `uv` (a fast package manager), checks your NVIDIA driver, and installs the CUDA build of torch. Then:
 
-Then:
 ```bash
-uv run liveaov-gui           # preparation GUI
-uv run liveaov --help        # CLI reference
+uv run liveaov-gui      # the app
+uv run liveaov --help   # the command line
 ```
 
-> **First run downloads model checkpoints from Hugging Face.** Expect
-> **~1.5 GB** for a minimal stack (Depth Anything V2 + DSINE + RAFT +
-> SAM 3 + ViTMatte) up to **~12 GB** for the full video-aware stack
-> (DepthCrafter + NormalCrafter + MatAnyone 2). Cached at
-> `~/.cache/huggingface/hub` (Linux/macOS) or
-> `%USERPROFILE%\.cache\huggingface\hub` (Windows). Subsequent runs are
-> offline-capable for any pass whose weights you've already pulled.
+**One thing to do before the first run:** SAM 3 is a gated model on Hugging Face (Meta's terms, not ours). Accept the terms at [huggingface.co/facebook/sam3](https://huggingface.co/facebook/sam3), create a read token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens), then run `uv run hf auth login` and paste it. Every other model downloads on its own the first time a pass needs it, then runs offline.
 
-> **Studio machines with no internet (TPN)?** Build one portable folder on
-> a machine that is online (`scripts/build_portable.py`), put it on the
-> server, and each artist installs/updates it with `install_local.bat`.
-> See [docs/install.md](docs/install.md#portable-build-for-studios-without-internet-tpn).
+Updating later: `.\update.bat` or `./update.sh`. Studio machines with no internet: build one portable folder on a machine that is online and copy it, see [docs/install.md](docs/install.md#portable-build-for-studios-without-internet-tpn).
 
-### Hugging Face authentication (one-time, required for SAM 3)
+## First shot, in the app
 
-**SAM 3** is **gated** on Hugging Face — Meta's license terms, not ours — so the matte pass needs a one-time HF token. Three steps:
-
-1. **Request access** at https://huggingface.co/facebook/sam3 — click **"Agree and access repository"** at the top of the page. Approval is usually instant.
-2. **Create an HF token** at https://huggingface.co/settings/tokens — click **"Create new token"**, any name is fine, **"Read"** scope is sufficient (no write/admin needed). Copy the token string.
-3. **Authenticate locally**, from the project root:
-
-   ```bash
-   uv run hf auth login
-   ```
-
-   (or `uv run huggingface-cli login` on older `huggingface_hub` versions). Paste the token when prompted. It's cached at `~/.cache/huggingface/token` and SAM 3 will download cleanly on the next run.
-
-Prefer env vars? Set `HF_TOKEN=<your-token>` in your shell instead and skip step 3 — `transformers` and `huggingface_hub` pick it up automatically.
-
-If you skip this, the matte pass fails on first use with `OSError: You are trying to access a gated repo. ... 401 Client Error`. Other models in the catalog (Depth Anything V2, DepthCrafter, NormalCrafter, DSINE, MatAnyone 2, RVM, RAFT) are **not** currently gated.
-
-> **Updating to latest:** from the project root, run `.\update.bat` (Windows) or `./update.sh` (Linux/macOS). Pulls the latest code and re-syncs deps. Idempotent if there's nothing new.
->
-> **What is `uv`?** A fast Python package manager from Astral —
-> drop-in replacement for `pip` + `venv`. The installer scripts grab
-> it for you. See [docs.astral.sh/uv](https://docs.astral.sh/uv/) if
-> you'd rather install it yourself first.
-
----
-
-## What it does
-
-Given a plate like `/shots/sh020/plate/v003/sh020_plt.####.exr`, the tool produces:
-
-- `<out>/sh020/v001/passes/sh020_v001.utility.####.exr` — sidecar with:
-  - `Z` depth channel (in metres with MoGe-3)
-  - `N.x / N.y / N.z` camera-space normals (OpenGL: +Y up, +Z toward camera)
-  - `motion.x / motion.y` forward motion vectors (pixels)
-  - `back.x / back.y` backward motion vectors
-  - `matte.r / g / b / a` top-4 soft hero mattes
-  - `mask.<concept>` semantic hard masks
-  - `P.x / P.y / P.z` world-space position (when depth is present)
-  - `ao.a` ambient occlusion (when depth + normals are present)
-
-Plus `sh020_v001.comp.nk` (everything wired in Nuke), `camera/`, `splat/` and `logs/` in the same version folder; every run gets a new `v###`. Nothing is written inside the plate folder and the original plate is never modified. See [design notes](docs/architecture.md) for architectural details.
-
----
-
-## The passes, visualized
-
-Every pass lands as a channel in one sidecar EXR. Here's a full utility set baked from a single live-action plate — depth, camera-space normals, forward/backward motion, the matte + Cryptomatte object IDs, world position, ambient occlusion:
+1. Drop a plate folder on the shot list. The viewport shows what the models will see.
+2. Tick the passes. The defaults are the commercial-safe ones; anything non-commercial is marked **NC** and asks before it runs.
+3. In the **Masks** tab, click the people and things you want mattes for. A box or 2-6 clicks is enough; preview the mask before you commit.
+4. **Submit local**. Watch the log, or go for a coffee.
+5. Right-click the shot, **Preview output**, and scrub every layer over the plate. Or open the `.comp.nk` in Nuke.
 
 <p align="center">
-  <img src="docs/img/aov-contact-sheet.png" alt="Full AOV set from one plate — depth, normals, motion, matte, Cryptomatte, position, AO" width="900">
+  <img src="docs/img/click-to-mask.png" alt="Masks tab: click an object, preview the SAM 3 mask, build a named per-object list" width="900">
 </p>
 
-Close-ups — **normals** (camera-space surface orientation, drives relight) and a **Cryptomatte** breakdown (every object gets its own ID, pickable in Nuke just like a CG render):
-
-<p align="center">
-  <img src="docs/img/pass-normals.png" alt="Normals pass — camera-space surface normals" width="430">
-  <img src="docs/img/pass-cryptomatte.png" alt="Cryptomatte pass — per-object IDs from live action" width="430">
-</p>
-
-…and a per-object matte composited back over the plate — the kind of fast, named selection the tool makes from a few clicks:
-
-<p align="center">
-  <img src="docs/img/pass-matte-comp.png" alt="Per-object matte composited over the live-action plate" width="760">
-</p>
-
-> Test plate from the [ActionVFX practice footage library](https://www.actionvfx.com/collections/free-vfx/category).
-
----
-
-## Camera track and clean plate
-
-Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motion with the SAM 3 masks keeping moving people out of the solve. You get a Nuke `Camera2`, a point cloud and the COLMAP model in `camera/`. Checked inside Nuke 16 by reprojecting the solved points: **0.73 px** on an ActionVFX plate, 0.8 px on an ALEXA 65 plate, 1.3 px on a Netflix test plate.
-
-Add **Gaussian splat** and the camera plus the plate train a 3D Gaussian splat of the set, with the masked objects left out. Rendered back through the camera it gives a **clean plate** with the people removed, plus a depth pass, wired into the comp.
-
-A camera needs parallax. On a locked-off shot or a pure pan the solve fails cleanly: camera and splat are skipped, every other pass is still written, and the log says why.
-
----
-
-## Check the output without Nuke
-
-Every run gets its own version folder: `v001`, then `v002`, and so on, so nothing is ever overwritten. By default it sits next to the plate, in the plate's own folder tree (the plate folder itself stays clean); or pick one root for every shot in the Output tab (CLI `--out`):
+## Where it lands
 
 ```
-plates/PF0052_v001/                 the plate
-plates/PF0052_v001_utility/v001/    default (or <root>/<shot>/v001/)
-    <shot>_v001.comp.nk      open this in Nuke
-    passes/                  the utility EXRs (+ Cryptomatte)
-    camera/                  Nuke camera, point cloud, COLMAP model
-    splat/                   clean plate + splat
+plates/sh020_v003/                   your plate, untouched
+plates/sh020_v003_utility/v001/      one folder per run, never overwritten
+    sh020_v001.comp.nk               open this in Nuke
+    passes/                          the utility EXRs (+ a lossless Cryptomatte sidecar)
+    camera/                          Camera2 .nk, .json, point cloud, COLMAP model
+    splat/                           clean plate + the splat
     logs/
 ```
 
-Right-click a shot and choose **Preview output** to scrub any version, layer by layer, with each mask over the plate and the camera and splat numbers underneath.
+Or pick one root for the whole session in the Output tab (`--out` on the command line). Proxy resolution and delivery format (lossless 32-bit, or DWAB half-float at a fraction of the size) live in the same tab.
 
----
+## The passes, closer
 
-## Interactive roto — click to a soft-edged Cryptomatte
+### Mattes: click to a soft-edged Cryptomatte
 
-Click an element in the viewport (or drag a box around it); the SAM 3 tracker propagates it across the whole shot into a named **Cryptomatte ID**. The refiner (ViTMatte by default, BiRefNet under Advanced) turns the hard mask into a roto-grade **soft alpha** — hair, motion blur, fine edges — written to the `matte.*` channels. Preview the mask on the seed frame before committing, refine a click at a time. All local, commercial-clean, scene-referred.
-
-<p align="center">
-  <img src="docs/img/click-to-mask.png" alt="LiveActionAOV Masks tab — click-to-mask: live SAM 3 mask preview with include/exclude points and a per-object list" width="900">
-</p>
-
-The Masks tab: seed objects with a box or a few clicks, preview the SAM 3 mask on the spot, and build a named per-object list — each becomes a Cryptomatte ID at submit. The refiner gives those masks soft, roto-grade edges:
+Click an element in the viewport, or drag a box around it. SAM 3 tracks it through the shot into a named Cryptomatte ID. The refiner (ViTMatte by default, BiRefNet under Advanced) turns the hard mask into a soft alpha with hair, motion blur and fine edges, written to `matte.*`. Green and blue screen keying is one click away in the same menu.
 
 <p align="center">
-  <img src="docs/img/birefnet-roto.gif" alt="BiRefNet soft matte over a live-action plate — hair and motion-blur edge detail" width="720">
+  <img src="docs/img/birefnet-roto.gif" alt="Soft matte over a live-action plate: hair and motion-blur edge detail" width="720">
 </p>
 
-> Soft alpha from the BiRefNet refiner composited over the plate — note the hair and motion-blur edge detail that SAM 3's hard masks can't give on their own. Tip: fewer clicks work better — a box or 2–6 points beats dozens.
+**LTX Alpha** is the engine for the hard objects. Pick it per object in the Masks tab: SAM 3 finds the object, the tool crops a rectangle around it with its surroundings, and **LTX-2.5 with the alpha-gen IC-LoRA** generates the matte in chunks of 49 frames, cross-faded back together. It keeps what trimap matting loses: semi-transparent motion blur, strands of hair, splashes. The result is held to the object with ViTMatte's guided trimap, so whatever else LTX saw in the crop stays out.
 
-### LTX Alpha — generative mattes for hair and motion blur
+LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup is in the works). Set its address in **Models > ComfyUI for LTX Alpha** and press **Test**. It checks the server, the nodes and the model files, and finds GGUF builds for smaller cards. If ComfyUI is not running, that object falls back to ViTMatte and the run carries on. About 3-5 minutes per object for 150 frames at 2K on an RTX 5090.
 
-For the hard objects, pick **LTX Alpha** as that object's engine in the Masks tab. SAM 3 tracks the object, the tool crops a rectangle around it (with its surroundings, so the model sees context), and **LTX-2.5 + the alpha-gen IC-LoRA** generates the matte in chunks of 49 frames that are cross-faded back together and put back at plate scale. It keeps what trimap matting loses: semi-transparent motion blur, strands of hair, splashes. The result is held to the object with ViTMatte's guided trimap, so whatever else LTX sees in the crop (a car door, the person next to it) stays out.
+### Geometry: depth in metres, normals, position
 
-It runs in **your own ComfyUI** (weights are not bundled): set its address in **Models → ComfyUI for LTX Alpha** and press **Test** — it checks the server, the nodes and the model files. If ComfyUI is not running, that object falls back to ViTMatte and the run carries on. About 3–5 minutes per object for 150 frames at 2K on an RTX 5090. LTX-2 is under the LTX-2 Community License: free for organisations under USD 10M annual revenue.
+**MoGe-3** (Microsoft, MIT) is the default for normals and the best choice for depth. One pass gives depth in metres, camera-space normals and a `P` world-position pass you can drop into PositionToPoints or a relight. No halo around people, real structure in hair and faces, and normals 3-8x steadier frame to frame than DSINE's.
 
-### MoGe-3 — metric geometry: depth in metres, normals, position
-
-**MoGe-3** (Microsoft, MIT) is the default normals engine and a Depth option. In one pass it gives depth **in metres**, camera-space normals and, through the position post, a `P` pass you can drop into PositionToPoints or a relight. Its geometry is sharp: no halo around people, real structure in hair and faces. Its normals are 3–8x steadier frame to frame than DSINE's.
-
-The tool fixes what a per-frame model gets wrong over a shot. It uses **one FOV per shot**: from the camera track when the shot has one, otherwise the median of MoGe's own estimate. It also **stabilises the metric scale** (frame-to-frame jitter 2.6% → 0.7% on a 150-frame test), and it **crops letterbox bars** before the model sees them. Sky is flagged in `depth.confidence`. Pick it in the Depth slot, the Normals slot or both: it only writes the slots it was picked for. About 0.7–1.4 s per frame end to end at 1K–HD, **2.6 GB VRAM** at any resolution.
-
----
-
-## The GUI
-
-Drop a plate folder onto the shot list, pick the passes you want, hit **Submit local**. Each model surfaces its license badge inline so you know up-front which combinations are commercial-safe and which require non-commercial confirmation.
+The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (from the camera track when there is one), a stabilised metric scale, letterbox bars cropped before the model sees them, sky flagged in `depth.confidence`. About 1 s per frame at 2K, 2.6 GB of VRAM at any resolution.
 
 <p align="center">
-  <img src="docs/img/gui-passes-tab.jpg" alt="LiveActionAOV GUI — Passes tab" width="900">
+  <img src="docs/img/pass-normals.png" alt="Normals pass: camera-space surface normals" width="430">
+  <img src="docs/img/pass-cryptomatte.png" alt="Cryptomatte pass: per-object IDs from live action" width="430">
 </p>
 
-One engine menu: **Auto** (ViTMatte) is the default, green/blue screen keying is one click away, everything else sits under Advanced. Any object in the Masks tab can use its own engine, and its preview updates as soon as you change it.
+### Camera track
 
-A batch of shots with the Output tab open: output next to each plate or one root for the session, the next version folder shown before you submit, proxy resolution and delivery format. The centre viewport shows the "what the model sees" Transformed view.
+Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motion, with the SAM 3 masks keeping the moving people out of the solve. You get a Nuke `Camera2`, a point cloud and the COLMAP model. Checked in Nuke 16 by reprojecting the solved points: 0.7-1.3 px on 2K to 6.5K test plates.
+
+A camera needs parallax. When COLMAP registers only part of a shot, two fallbacks take over: a rotation-only solve for pans and locked-off shots, and a depth-anchored solve (MoGe-3 depth plus tracked corners) for fast handheld action. Every camera is judged on held-out points it never saw during the solve and labelled **GOOD**, **WEAK** or **FAILED** in the Nuke node, with the error in pixels at a stated resolution. A FAILED camera says "do not use" so it cannot end up in a comp by accident, and the other passes are still written.
+
+### Clean plate
+
+Add **Gaussian splat** and the camera plus the plate train a 3D Gaussian splat of the set, with the masked objects left out. Rendered back through the solved camera it gives a clean plate with the people removed, plus a depth pass, wired into the comp. It needs a GOOD or WEAK camera and some parallax; read [docs/gaussian_splat.md](docs/gaussian_splat.md) before trusting one on a shot.
 
 <p align="center">
-  <img src="docs/img/gui-loaded-shot.jpg" alt="LiveActionAOV GUI — loaded shot, Output tab" width="900">
+  <img src="docs/img/clean-plate-before-after.png" alt="Plate on the left, the Gaussian-splat clean plate on the right: the hand is gone, the set stays" width="900">
 </p>
 
-> Test plate above is from the [ActionVFX practice footage library](https://www.actionvfx.com/collections/free-vfx/category) — used here under their license, which permits incorporation into derivative work like this tool demo.
+> Left: the plate. Right: the clean plate from the same run, nothing painted. The hand was masked with one click; the gun stayed because it never moved.
 
----
+## The app
 
-## Nuke plugin — UtilityRelight
+<p align="center">
+  <img src="docs/img/gui-passes-tab.jpg" alt="LiveActionAOV: Passes tab" width="900">
+</p>
 
-A companion Nuke node ships in this repo at
-[`src/live_action_aov/plugins/nuke/UtilityRelight/`](src/live_action_aov/plugins/nuke/UtilityRelight/).
-It consumes a sidecar EXR + a beauty plate and gives Nuke comp artists
-live 3D light placement on the subject — six layered light contributions
-(key, spec, rim, bounce, glow, fog) computed on the GPU via BlinkScript.
+Three panels: shots on the left, the plate in the middle (what the models see, a compare view, or the raw plate), passes, masks, colour and output on the right. Every model shows its licence inline. One engine menu per object, batches run unattended, a failed shot does not stop the queue, and a long shot that crashes a model loses that pass only.
 
-**Install (3 steps):** copy `utility_relight.py` + `UtilityRelightKernel.blink` into `~/.nuke/`, register in `~/.nuke/menu.py`, restart Nuke. Full instructions and quick-test recipe in the [user guide](docs/user-guide.md#nuke-plugin--utilityrelight).
+Prefer scripts? `liveaov run-shot <plate> -p matte,depth,normals,flow_megaflow,camera_pycolmap` does the same from a terminal or a farm.
 
-Tested on Nuke 16.0.
+## Nuke plugin: UtilityRelight
 
----
+A companion Nuke node in [`src/live_action_aov/plugins/nuke/UtilityRelight/`](src/live_action_aov/plugins/nuke/UtilityRelight/). It reads a sidecar EXR plus the plate and gives a comp artist live 3D light placement on the subject, six layered contributions (key, spec, rim, bounce, glow, fog) on the GPU via BlinkScript. Install: copy two files into `~/.nuke/`, register in `menu.py`, restart. Details in the [user guide](docs/user-guide.md#nuke-plugin--utilityrelight).
+
+## Status
+
+Version 0.12, used daily on real production shots at 2K to 6K. What is solid: mattes, Cryptomatte, depth, normals, motion, the Nuke script, the camera on shots with parallax. What is still moving: the camera on fast handheld action, the clean plate on shots with little parallax, long shots (300+ frames at 4K) on machines under 64 GB of RAM, and the LTX setup. The [CHANGELOG](CHANGELOG.md) says what changed in each release; [issues](https://github.com/lettidude/LiveActionAOV/issues) are the place for bugs.
+
+An early demo video (June 2026, the interface has changed since) is on [YouTube](https://www.youtube.com/watch?v=HnosSnK1MKs).
 
 ## Documentation
 
-- [User guide](docs/user-guide.md)
-- [Developing plugins](docs/developing-plugins.md)
-- [Architecture](docs/architecture.md)
-- [Install reference](docs/install.md) — alternate GPU configurations (Pascal/Volta, Apple Silicon, ROCm), troubleshooting, slim install with per-pass extras
-
----
+- [User guide](docs/user-guide.md): the command line, the app, the output folders, opening a run in Nuke
+- [Install reference](docs/install.md): other GPUs, Apple Silicon, troubleshooting, the portable build for studios
+- [Cryptomatte](docs/cryptomatte.md) and [Gaussian splat](docs/gaussian_splat.md): how they work and their limits
+- [Architecture](docs/architecture.md) and [developing plugins](docs/developing-plugins.md): for people adding a pass
 
 ## Compatibility
 
 | Platform | GPU | Status |
 |---|---|---|
-| Windows 11 | NVIDIA RTX 20 / 30 / 40 / 50 series | ✅ **Main platform** (developed and tested on an RTX 5090; proxy mode for smaller cards) |
-| Linux (Ubuntu 22.04+) | NVIDIA RTX 20 / 30 / 40 / 50 series | ⚠️ Expected to work via `install.sh` (CUDA + uv path identical to Windows) but **not regularly tested**. Bug reports welcome. |
-| macOS (Apple Silicon) | M1 / M2 / M3 / M4 (MPS) | ⚠️ **Best-effort.** Some passes work via MPS; fp16 models (DepthCrafter, NormalCrafter, MatAnyone2) are CUDA-only. The GUI refuses Submit and explains when a pass isn't available. |
-| Any platform | AMD GPU (ROCm) | ❌ Untested — wheels exist, none of our passes have been validated against them. |
-| Any platform | CPU-only | ❌ Not a supported configuration — fp16 kernels don't exist on CPU. |
+| Windows 11 | NVIDIA RTX 20 / 30 / 40 / 50 series | **Main platform.** Developed on an RTX 5090, used in production on 3090s and a 4060 (proxy mode). |
+| Linux (Ubuntu 22.04+) | NVIDIA RTX 20 / 30 / 40 / 50 series | Expected to work via `install.sh` (same CUDA and `uv` path), not regularly tested. Bug reports welcome. |
+| macOS (Apple Silicon) | M1 to M4 (MPS) | Best-effort. Some passes run on MPS, the fp16-only models do not. The app says which before you submit. |
+| Any | AMD (ROCm) | Untested. |
+| Any | CPU only | Not supported. |
 
-See [docs/install.md](docs/install.md#alternate-gpu-configurations) for manual overrides on older NVIDIA hardware (Pascal / Volta cu121 wheel) and Apple Silicon notes.
-
----
-
-## Author
-
-**Leonardo Paolini** — VFX supervisor and 2D compositing supervisor, building ML tools for comp.
-
-- Email: [LeonardoVFX@gmail.com](mailto:LeonardoVFX@gmail.com)
-- GitHub: [@lettidude](https://github.com/lettidude)
-- LinkedIn: [leonardopaolinivfx](https://www.linkedin.com/in/leonardopaolinivfx/)
-- IMDb: [Leonardo Paolini](https://www.imdb.com/name/nm5886055/)
-- YouTube: [@LeonardoVFX](https://www.youtube.com/channel/UCZDR5tThQwo9OVVu-NmODbA) — pipeline & VFX-tooling videos
-
-Developed with [Claude](https://claude.com/) (Anthropic).
-
----
-
-## Support
-
-- **Bug reports / feature requests:** [open an issue](https://github.com/lettidude/LiveActionAOV/issues).
-- **Direct contact:** [LeonardoVFX@gmail.com](mailto:LeonardoVFX@gmail.com) — studio pipelines, commercial licenses, integration.
-
----
+Older NVIDIA cards (Pascal, Volta) and manual overrides: [docs/install.md](docs/install.md#alternate-gpu-configurations).
 
 ## License
 
-LiveActionAOV is developed by Leonardo Paolini, public since April 2026. From 30 October 2026 (the main branch and v0.10.0 onward) it is released under the [Business Source License 1.1](LICENSE):
+LiveActionAOV is released under the [Business Source License 1.1](LICENSE):
 
-- **Free** for individuals and freelancers, studios under 10 people, and any non-commercial use (education, research, personal projects).
-- **Studios of 10 or more people** need a one-off commercial license per major version: see [COMMERCIAL.md](COMMERCIAL.md).
-- Each version becomes **Apache-2.0** four years after its release.
-- Code published before 30 October 2026 stays under the MIT License.
+- **Free** for individuals and freelancers working on their own, for studios with fewer than 10 people, and for any non-commercial use (education, research, personal projects).
+- **Studios of 10 or more people** need a one-off commercial licence per major version: see [COMMERCIAL.md](COMMERCIAL.md). It is cheap on purpose.
+- Each version becomes **Apache-2.0** four years after its release. Code published before 30 October 2026 stays MIT.
+- Not covered: reselling it, or offering it as a hosted service.
 
-The AI models LiveActionAOV downloads and the vendored code under `src/live_action_aov/vendored/` keep their own licenses — see the license matrix in [architecture notes](docs/architecture.md#license-matrix). Every sidecar EXR carries a `liveActionAOV/<pass>/license` metadata stamp plus a top-level `liveActionAOV/matte/commercial` flag so downstream QC can audit what's shippable.
+The AI models it downloads keep their own licences (SAM 3, MoGe-3, MegaFlow and the other defaults allow commercial use; LTX-2.5 is free for organisations under USD 10M of revenue; the models marked NC are not for client work). Every sidecar EXR carries a `liveActionAOV/<pass>/license` stamp and a `liveActionAOV/matte/commercial` flag so downstream QC can audit what is shippable. Full matrix in [architecture.md](docs/architecture.md#license-matrix).
+
+## Author
+
+**Leonardo Paolini**, VFX supervisor and 2D compositing supervisor. Framestore, MPC and others in London, now in Tenerife, building tools for comp.
+
+- Email: [LeonardoVFX@gmail.com](mailto:LeonardoVFX@gmail.com) (studio pipelines, commercial licences, integration)
+- GitHub: [@lettidude](https://github.com/lettidude) | LinkedIn: [leonardopaolinivfx](https://www.linkedin.com/in/leonardopaolinivfx/) | IMDb: [Leonardo Paolini](https://www.imdb.com/name/nm5886055/) | YouTube: [@LeonardoVFX](https://www.youtube.com/channel/UCZDR5tThQwo9OVVu-NmODbA)
+
+Developed with [Claude](https://claude.com/) (Anthropic). Test plates from the [ActionVFX practice footage library](https://www.actionvfx.com/collections/free-vfx/category), used under their licence.

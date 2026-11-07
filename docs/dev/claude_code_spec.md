@@ -1,7 +1,7 @@
 # Utility Passes — Claude Code Implementation Specification (v1)
 
 **Status**: ready for implementation
-**Companion**: `utility_passes_design_notes.md` — the design record (the "why"). This spec is the "what and how." When in doubt about a design decision, consult the design record.
+**Companion**: `design_notes.md` — the design record (the "why"). This spec is the "what and how." When in doubt about a design decision, consult the design record.
 **Target hardware**: Linux/Windows workstation with NVIDIA GPU (Titan-class, ~24GB VRAM for dev). macOS Apple Silicon supported via MPS but slow.
 **Target release**: public GitHub, MIT-licensed core.
 
@@ -11,7 +11,7 @@
 
 - This is the **implementation brief**. Build phases 0–6 sequentially.
 - Each phase has concrete deliverables and an **exit criterion**. Do not advance until the exit criterion is met.
-- Design rationale is in `utility_passes_design_notes.md` (1480 lines). This spec references sections as `design §N.M`. When a decision seems arbitrary, it almost always has rationale in the design doc.
+- Design rationale is in `design_notes.md` (1480 lines). This spec references sections as `design §N.M`. When a decision seems arbitrary, it almost always has rationale in the design doc.
 - Scaffolding files (pyproject.toml, install scripts, CI) are included **inline** in Section 5. Create them verbatim.
 - **Non-goals for v1 are explicit** (§1.3). Do not drift into scope creep — v2+ features are architecturally accommodated but not implemented.
 
@@ -1634,7 +1634,7 @@ Mark tests requiring GPU with `@pytest.mark.gpu`. CI runs `pytest -m "not gpu"`.
 
 ### 11.1 Design document
 
-`utility_passes_design_notes.md` — 1480 lines. The "why" behind every decision here. Consult when:
+`design_notes.md` — 1480 lines. The "why" behind every decision here. Consult when:
 
 - A design decision in this spec seems arbitrary (rationale is almost certainly there)
 - A future addon comes up (Tier 1/2/3 triage is explicit)
@@ -1676,4 +1676,4 @@ From the design discussions — specific things to get right:
 *Spec version: 1.0*
 *Target: v1 release*
 *Estimated duration: 8 weeks for a focused developer / Claude Code agent*
-*Companion document: `utility_passes_design_notes.md` v4.0*
+*Companion document: `design_notes.md` v4.0*

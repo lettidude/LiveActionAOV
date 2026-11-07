@@ -1,6 +1,6 @@
 # User Guide
 
-*This guide is a stub for Phase 0. It will be expanded in Phase 6.*
+*Short on purpose: the README covers the first run; this page is the reference for the command line, the output folders and Nuke.*
 
 ## Installation
 
@@ -16,8 +16,7 @@ liveaov run-shot <folder> --out <root> --passes noop   # smoke test
 liveaov inspect <sidecar.exr>                 # structural QC of a sidecar
 ```
 
-More commands land in Phase 4 (`discover`, `analyze`, `run`, `preflight`,
-`models`, etc.).
+`liveaov run-shot --help` lists every option (passes, backends, output root, proxy, colourspace).
 
 ### `liveaov inspect` — sidecar QC at the terminal
 
