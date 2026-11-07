@@ -15,13 +15,9 @@ commercial licence.
 
 ## Price
 
-| Studio size | Per major version, one-off |
-|---|---|
-| 10 - 50 people | EUR 400 |
-| over 50 people | EUR 1,000 |
-
-Prices exclude VAT. Early-adopter studios that send feedback and allow us to
-name them get 50% off.
+One-off, per major version, priced on the size of the studio: write to the
+address below with a rough headcount and you get a quote back. Early-adopter
+studios that send feedback and allow us to name them get a discount.
 
 ## Support and integration
 
