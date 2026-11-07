@@ -277,3 +277,71 @@ def test_graph_uses_the_gguf_loaders_and_uploads_to_a_remote_comfyui(tmp_path: P
     # Same machine: the temp folder is read in place, nothing is uploaded.
     local = LTXAlphaRefinerPass({"comfy_url": "http://127.0.0.1:8188"})
     assert local._graph(tmp_path, 512, 288, 9, "x")["8"]["class_type"] == "VHS_LoadImagesPath"
+
+
+def test_pick_model_finds_the_same_file_in_another_folder() -> None:
+    from live_action_aov.passes.matte.ltx_alpha import _GGUF_UNET
+
+    want = LTXAlphaRefinerPass.DEFAULT_PARAMS["unet"]
+    moved = "ltx25\\" + want
+    info = _info([moved], [], [], [])
+    assert pick_model(info, want, "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET) == (
+        "UNETLoader",
+        moved,
+    )
+
+
+def test_pick_model_takes_another_precision_before_a_gguf() -> None:
+    from live_action_aov.passes.matte.ltx_alpha import _GGUF_UNET
+
+    want = LTXAlphaRefinerPass.DEFAULT_PARAMS["unet"]  # the int8 file, not downloaded here
+    bf16 = "ltx-2.5-22b-distilled-transformer-bf16.safetensors"
+    dev = "ltx-2.5-22b-dev-transformer-bf16.safetensors"  # another model: never picked
+    info = _info([dev, bf16], ["LTX-2.5-Distilled-Q4_K_S.gguf"], [], [])
+    assert pick_model(info, want, "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET) == (
+        "UNETLoader",
+        bf16,
+    )
+    info = _info([dev], [], [], [])
+    assert pick_model(info, want, "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET) is None
+
+
+def test_pick_model_matches_a_gguf_without_22b_in_the_name() -> None:
+    from live_action_aov.passes.matte.ltx_alpha import _GGUF_UNET
+
+    want = LTXAlphaRefinerPass.DEFAULT_PARAMS["unet"]
+    info = _info([], ["LTX-2.5-Distilled-Q4_K_S.gguf", "LTX-2.3-distilled-Q8_0.gguf"], [], [])
+    assert pick_model(info, want, "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET) == (
+        "UnetLoaderGGUF",
+        "LTX-2.5-Distilled-Q4_K_S.gguf",
+    )
+
+
+def test_resolve_finds_lora_and_vaes_in_sub_folders(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json as _json
+
+    from live_action_aov.passes.matte import ltx_alpha as la
+
+    p = LTXAlphaRefinerPass.DEFAULT_PARAMS
+    info = _info(
+        ["ltx-2.5-22b-distilled-transformer-bf16.safetensors"], [], [p["text_encoder"]], []
+    )
+    for n in la._NODES:
+        info.setdefault(n, {"input": {"required": {}}})
+    info["VHS_LoadImagesPath"] = {"input": {"required": {}}}
+    lora = r"ltxv\ltx25\ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors"
+    info["LTXICLoRALoaderModelOnly"] = {"input": {"required": {"lora_name": [[lora]]}}}
+    info["VAELoader"] = {"input": {"required": {"vae_name": [[p["video_vae"], p["audio_vae"]]]}}}
+
+    class _R:
+        def __init__(self, d: dict) -> None:
+            self._b = _json.dumps(d).encode()
+
+        def read(self) -> bytes:
+            return self._b
+
+    monkeypatch.setattr(la.urllib.request, "urlopen", lambda *a, **k: _R(info))
+    ok, msg, models = la._resolve({})
+    assert ok, msg
+    assert models["lora"] == ("LTXICLoRALoaderModelOnly", lora)
+    assert models["unet"] == ("UNETLoader", "ltx-2.5-22b-distilled-transformer-bf16.safetensors")
