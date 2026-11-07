@@ -18,6 +18,12 @@ uses [semantic versioning](https://semver.org/).
 - **Temporary folders with plate frames are always cleaned up.** The camera workdir is removed on a
   failed or crashed solve too, and a workdir kept for debugging (`keep_workdir`, Marigold
   `keep_temp`) is now a warning with its path, since it holds frames exported from the plate.
+- **A failed shot stopped an overnight batch.** Shots ticked while a batch runs (Submit is disabled
+  meanwhile) were never added to it; when the last submitted shot failed, the GUI treated it as a
+  single-shot run and showed a blocking error dialog, and the shots ticked later never ran. The
+  batch now picks up shots ticked during the run when its queue drains (same output-root check;
+  non-commercial models still need a Submit to confirm them), and failure dialogs no longer block
+  the queue.
 
 ## [0.11.1] — 2026-11-02
 
