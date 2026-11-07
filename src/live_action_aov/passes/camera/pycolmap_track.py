@@ -39,10 +39,14 @@ Honest limits:
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import math
 import shutil
+import subprocess
+import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -141,6 +145,25 @@ class PyColmapCameraPass(UtilityPass):
         # Image motion below this fraction of the long edge cannot measure
         # the focal: use the lens metadata (ARRI FocalLength), else a guess.
         "nodal_min_motion": 0.03,
+        # Neither fits (fast handheld action: COLMAP registers a handful of
+        # frames, the camera translates): depth-anchored PnP
+        # (passes/camera/pnp.py) - MoGe-3 depth of the middle frame + its
+        # corners tracked through the shot. Judged on held-out points
+        # (every `pnp_holdout_every`-th one never enters the solve): GOOD /
+        # WEAK limits are fractions of the image width. A FAILED camera is
+        # still written when `pnp_keep_failed`, labelled "do not use".
+        "pnp_fallback": True,
+        "pnp_holdout_every": 5,
+        "pnp_good_frac": 0.0011,
+        "pnp_weak_frac": 0.0027,
+        "pnp_keep_failed": True,
+        "pnp_fov_x_deg": None,  # horizontal FOV of the plate; None = MoGe-3's estimate
+        "pnp_max_corners": 6000,
+        # COLMAP (SIFT, matching, mapping) runs in its own process: a native
+        # crash in pycolmap then loses the camera only, not every pass of the
+        # run, and the fallbacks still get their turn. 0 = no time limit.
+        "colmap_subprocess": True,
+        "colmap_timeout_s": 0,
         "keep_workdir": False,
     }
 
@@ -154,6 +177,7 @@ class PyColmapCameraPass(UtilityPass):
         self._sparse_dir: Path | None = None
         self._masked_labels: list[str] = []
         self._lens_mm: float | None = None
+        self._pnp_fov_source = ""
 
     # --- per-frame hooks unused (VIDEO_CLIP) ---
     def preprocess(self, frames: np.ndarray) -> Any:  # pragma: no cover
@@ -213,6 +237,11 @@ class PyColmapCameraPass(UtilityPass):
             nodal = self._solve_nodal(self._workdir / "database.db", frame_list, plate_wh, solve_wh)
             if nodal is not None:
                 self._solve, self._sparse_dir = nodal, None
+                return {}
+        if (self._solve is None or short) and self.params.get("pnp_fallback", True):
+            pnp_solve = self._solve_pnp(reader, frame_list, plate_wh, solve_wh, image_dir, mask_dir)
+            if pnp_solve is not None:
+                self._solve, self._sparse_dir = pnp_solve, None
                 return {}
         if self._solve is None:
             raise failure or RuntimeError("Camera track: no reconstruction.")
@@ -276,17 +305,23 @@ class PyColmapCameraPass(UtilityPass):
             shutil.rmtree(model_dir, ignore_errors=True)
             shutil.copytree(self._sparse_dir, model_dir)
             paths["camera_colmap"] = model_dir
-        if self._workdir is not None:
-            if self.params.get("keep_workdir"):
-                _log.info("COLMAP workdir kept at: %s", self._workdir)
-            else:
-                shutil.rmtree(self._workdir, ignore_errors=True)
+        self._drop_workdir()
         return paths
 
     def unload(self) -> None:
-        # Safety net when emit_sidecars never ran (failed shot).
-        if self._workdir is not None and not self.params.get("keep_workdir"):
+        # Safety net when emit_sidecars never ran (failed shot, COLMAP crash).
+        self._drop_workdir()
+
+    def _drop_workdir(self) -> None:
+        if self._workdir is None:
+            return
+        if self.params.get("keep_workdir"):
+            # It holds frames exported from the plate: outside the project
+            # tree, so say where it is.
+            _log.warning("COLMAP workdir kept (contains plate frames): %s", self._workdir)
+        else:
             shutil.rmtree(self._workdir, ignore_errors=True)
+        self._workdir = None
 
     # --- internals ---
     def _export_frames(
@@ -324,6 +359,11 @@ class PyColmapCameraPass(UtilityPass):
             name = f"frame_{f:06d}.png"
             cv2.imwrite(str(image_dir / name), g8)
             out.append((f, name))
+        # Behind a proxy the frames are smaller than the plate: px reported
+        # "at plate res" (errors, intrinsics) must use the plate's own size.
+        full = getattr(reader, "full_res_resolution", None)
+        if callable(full):
+            plate_wh = tuple(full())
         return out, plate_wh, solve_wh
 
     def _export_masks(
@@ -377,67 +417,23 @@ class PyColmapCameraPass(UtilityPass):
         mask_dir: Path | None,
         frame_list: list[tuple[int, str]],
     ) -> Any:
-        pycolmap: Any = importlib.import_module("pycolmap")  # no usable type stubs
-
-        db = workdir / "database.db"
-        reader_opts = pycolmap.ImageReaderOptions()
-        reader_opts.camera_model = str(self.params["camera_model"]).upper()
-        if mask_dir is not None:
-            reader_opts.mask_path = str(mask_dir)
-        ext = pycolmap.FeatureExtractionOptions()
-        ext.sift.max_num_features = int(self.params["sift_max_features"])
-        ext.sift.peak_threshold = float(self.params["sift_peak_threshold"])
-        pycolmap.extract_features(
-            database_path=db,
-            image_path=image_dir,
-            image_names=[n for _, n in frame_list],
-            camera_mode=pycolmap.CameraMode.SINGLE,
-            reader_options=reader_opts,
-            extraction_options=ext,
-        )
-        if self.params["matcher"] == "exhaustive":
-            pycolmap.match_exhaustive(db)
-        else:
-            pairing = pycolmap.SequentialPairingOptions()
-            pairing.overlap = int(self.params["sequential_overlap"])
-            pycolmap.match_sequential(db, pairing_options=pairing)
-        sparse = workdir / "sparse"
-        sparse.mkdir(exist_ok=True)
-        if self.params.get("mapper") == "global":
-            recs = pycolmap.global_mapping(
-                database_path=db, image_path=image_dir, output_path=sparse
-            )
-            rec, self._sparse_dir = self._pick_model(recs, sparse)
+        """COLMAP reconstruction (pycolmap `Reconstruction`); sets
+        `_sparse_dir`. In a child process unless `colmap_subprocess` is off."""
+        names = [n for _, n in frame_list]
+        if not self.params.get("colmap_subprocess", True):
+            rec, self._sparse_dir = run_colmap(workdir, image_dir, mask_dir, names, self.params)
             return rec
-        need = float(self.params.get("min_registered_fraction", 0.5)) * len(frame_list)
-        attempts = max(1, int(self.params.get("mapping_attempts", 1)))
-        best: tuple[Any, Path] | None = None
-        for seed in range(attempts):
-            out = sparse / f"seed{seed}"
-            out.mkdir(exist_ok=True)
-            opts = pycolmap.IncrementalPipelineOptions()
-            opts.random_seed = seed
-            recs = pycolmap.incremental_mapping(
-                database_path=db, image_path=image_dir, output_path=out, options=opts
-            )
-            if recs:
-                rec, model_dir = self._pick_model(recs, out)
-                if best is None or rec.num_reg_images() > best[0].num_reg_images():
-                    best = (rec, model_dir)
-                if rec.num_reg_images() >= need:
-                    break
-            got = best[0].num_reg_images() if best else 0
-            if seed + 1 < attempts:
-                _log.info(
-                    "Camera solve: mapping seed %d covered %d/%d frames, retrying",
-                    seed,
-                    got,
-                    len(frame_list),
-                )
-        if best is None:
-            self._no_reconstruction()
-        self._sparse_dir = best[1]
-        return best[0]
+        model_dir = run_colmap_subprocess(
+            workdir,
+            image_dir,
+            mask_dir,
+            names,
+            self.params,
+            timeout_s=float(self.params.get("colmap_timeout_s", 0) or 0),
+        )
+        pycolmap: Any = importlib.import_module("pycolmap")
+        self._sparse_dir = model_dir
+        return pycolmap.Reconstruction(str(model_dir))
 
     def _solve_nodal(
         self,
@@ -450,7 +446,13 @@ class PyColmapCameraPass(UtilityPass):
         it does not fit (the camera really translates, or too few matches)."""
         from live_action_aov.passes.camera import nodal
 
-        pairs = read_verified_pairs(db_path, frame_list)
+        if not db_path.is_file():  # COLMAP crashed before writing its database
+            return None
+        try:
+            pairs = read_verified_pairs(db_path, frame_list)
+        except RuntimeError as e:  # a database left half-written by a crash
+            _log.info("Camera solve: nodal fallback cannot read COLMAP's matches (%s).", e)
+            return None
         if not pairs:
             return None
         w, h = solve_wh
@@ -521,23 +523,319 @@ class PyColmapCameraPass(UtilityPass):
             _log.warning("Camera solve: %s", warn)
         return solve
 
-    def _pick_model(self, recs: dict[int, Any], out: Path) -> tuple[Any, Path]:
-        """Largest of the mapper's models and its folder."""
-        if not recs:
-            self._no_reconstruction()
-        key, rec = max(recs.items(), key=lambda kv: kv[1].num_reg_images())
-        model_dir = out / str(key)
-        if not model_dir.exists():  # some pycolmap builds write only the best model
-            model_dir.mkdir(parents=True, exist_ok=True)
-            rec.write(str(model_dir))
-        return rec, model_dir
+    def _solve_pnp(
+        self,
+        reader: Any,
+        frame_list: list[tuple[int, str]],
+        plate_wh: tuple[int, int],
+        solve_wh: tuple[int, int],
+        image_dir: Path,
+        mask_dir: Path | None,
+    ) -> CameraSolve | None:
+        """Depth-anchored PnP (passes/camera/pnp.py), or None when it does
+        not fit or MoGe-3 is not installed."""
+        import cv2
 
-    @staticmethod
-    def _no_reconstruction() -> NoReturn:
-        raise RuntimeError(
-            "Camera track: no reconstruction. Likely causes: no parallax "
-            "(locked-off / pure pan), heavy motion blur, or a textureless plate."
+        from live_action_aov.passes.camera import pnp
+
+        sw, sh = solve_wh
+        anchor = len(frame_list) // 2
+        try:
+            img = np.asarray(reader.read_frame(frame_list[anchor][0])[0], dtype=np.float32)[..., :3]
+            depth, fov = self._anchor_depth(img)
+        except (ImportError, RuntimeError) as e:
+            _log.info("Camera solve: PnP fallback unavailable (%s).", e)
+            return None
+        depth = cv2.resize(depth, (sw, sh), interpolation=cv2.INTER_NEAREST)
+        f = pnp.focal_from_fov(sw, fov)
+        K = np.array([[f, 0.0, sw / 2.0], [0.0, f, sh / 2.0], [0.0, 0.0, 1.0]])
+        gray = [cv2.imread(str(image_dir / name), cv2.IMREAD_GRAYSCALE) for _, name in frame_list]
+        static: list[np.ndarray | None] = [
+            cv2.imread(str(mask_dir / f"{name}.png"), cv2.IMREAD_GRAYSCALE) > 0
+            if mask_dir is not None and (mask_dir / f"{name}.png").is_file()
+            else None
+            for _, name in frame_list
+        ]
+        usable = ~pnp.near_depth_edges(depth, radius=11)  # = the LK window (21 px)
+        anchor_static = static[anchor]
+        if anchor_static is not None:
+            usable &= anchor_static
+        uv = pnp.anchor_corners(
+            gray[anchor], usable, int(self.params.get("pnp_max_corners", 6000)), max(4, sw // 400)
         )
+        if len(uv) < 50:
+            _log.info("Camera solve: PnP fallback found only %d static corners.", len(uv))
+            return None
+        rgb = cv2.resize(np.clip(img, 0.0, 1.0), (sw, sh), interpolation=cv2.INTER_AREA)
+        xi = np.clip(np.round(uv[:, 0]).astype(int), 0, sw - 1)
+        yi = np.clip(np.round(uv[:, 1]).astype(int), 0, sh - 1)
+        sol = pnp.PnPSolve(
+            K=K,
+            anchor=anchor,
+            points=pnp.back_project(uv, depth, K),
+            colors=(rgb[yi, xi] * 255.0 + 0.5).astype(np.uint8),
+        )
+        tracks = pnp.track_klt(gray, anchor, uv, static)
+        held = pnp.holdout_mask(len(uv), int(self.params.get("pnp_holdout_every", 5)))
+        pnp.solve_poses(sol, tracks, held=held)
+        need = float(self.params.get("min_registered_fraction", 0.5)) * len(frame_list)
+        if len(sol.poses) < need:
+            _log.warning(
+                "Camera solve: depth-anchored PnP FAILED - point tracks lost, only %d/%d frames "
+                "solved (fast motion or blur).",
+                len(sol.poses),
+                len(frame_list),
+            )
+            return None
+        verdict = pnp.assess(
+            sol,
+            sw,
+            len(frame_list),
+            good_frac=float(self.params.get("pnp_good_frac", 0.0011)),
+            weak_frac=float(self.params.get("pnp_weak_frac", 0.0027)),
+        )
+        if verdict.verdict == "FAILED" and not self.params.get("pnp_keep_failed", True):
+            _log.info(
+                "Camera solve: depth-anchored PnP FAILED (held-out %.2f px at solve res).",
+                verdict.heldout_px,
+            )
+            return None
+        if verdict.verdict != "FAILED":
+            # Unreliable frames would make the camera jump: leave them out
+            # (Nuke interpolates over the gap).
+            keep = set(verdict.reliable)
+            sol.poses = {k: v for k, v in sol.poses.items() if k in keep}
+        solve = build_solve_from_pnp(
+            sol,
+            frame_list=frame_list,
+            plate_wh=plate_wh,
+            solve_wh=solve_wh,
+            params=self.params,
+            masked_labels=self._masked_labels,
+            fov_note=self._pnp_fov_source,
+            verdict=verdict,
+        )
+        q = solve.quality
+        _log.info(
+            "Camera solve (depth-anchored PnP): %d/%d frames, %.3f px (plate res), focal %.1f px "
+            "(%s); masked: %s",
+            q.registered_frame_count,
+            q.total_frame_count,
+            q.aggregate_reprojection_error_px,
+            solve.intrinsics.fx_px,
+            self._pnp_fov_source,
+            ", ".join(self._masked_labels) or "none",
+        )
+        for warn in q.warnings:
+            _log.warning("Camera solve: %s", warn)
+        return solve
+
+    def _anchor_depth(self, img: np.ndarray) -> tuple[np.ndarray, float]:
+        """MoGe-3 metric depth (H, W, 0 = invalid) of one display-referred
+        frame and the horizontal FOV used. Unloaded right after."""
+        from live_action_aov.passes.normals.moge3 import MoGe3Pass
+
+        fov_param = self.params.get("pnp_fov_x_deg")
+        moge = MoGe3Pass({"emit_normals": False})
+        try:
+            r = moge.infer(
+                moge.preprocess(img[None]), float(fov_param) if fov_param is not None else None
+            )
+        finally:
+            moge._model = None
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:  # pragma: no cover
+                pass
+        self._pnp_fov_source = f"FOV {float(r['fov_x']):.1f} deg " + (
+            "from pnp_fov_x_deg" if fov_param is not None else "estimated by MoGe-3"
+        )
+        return r["depth"], float(r["fov_x"])
+
+
+# ---------------------------------------------------------------------------
+# COLMAP pipeline (in this process, or in a child via colmap_worker)
+# ---------------------------------------------------------------------------
+
+_COLMAP_PARAMS = (
+    "camera_model",
+    "sift_max_features",
+    "sift_peak_threshold",
+    "matcher",
+    "sequential_overlap",
+    "mapper",
+    "min_registered_fraction",
+    "mapping_attempts",
+)
+
+
+def run_colmap(
+    workdir: Path,
+    image_dir: Path,
+    mask_dir: Path | None,
+    image_names: list[str],
+    params: dict[str, Any],
+) -> tuple[Any, Path]:
+    """SIFT -> matching -> mapping; (largest reconstruction, its folder).
+    Raises RuntimeError when nothing reconstructs."""
+    pycolmap: Any = importlib.import_module("pycolmap")  # no usable type stubs
+
+    db = workdir / "database.db"
+    reader_opts = pycolmap.ImageReaderOptions()
+    reader_opts.camera_model = str(params["camera_model"]).upper()
+    if mask_dir is not None:
+        reader_opts.mask_path = str(mask_dir)
+    ext = pycolmap.FeatureExtractionOptions()
+    ext.sift.max_num_features = int(params["sift_max_features"])
+    ext.sift.peak_threshold = float(params["sift_peak_threshold"])
+    _log.info("Camera solve: extracting features on %d frames", len(image_names))
+    pycolmap.extract_features(
+        database_path=db,
+        image_path=image_dir,
+        image_names=list(image_names),
+        camera_mode=pycolmap.CameraMode.SINGLE,
+        reader_options=reader_opts,
+        extraction_options=ext,
+    )
+    _log.info("Camera solve: matching (%s)", params["matcher"])
+    if params["matcher"] == "exhaustive":
+        pycolmap.match_exhaustive(db)
+    else:
+        pairing = pycolmap.SequentialPairingOptions()
+        pairing.overlap = int(params["sequential_overlap"])
+        pycolmap.match_sequential(db, pairing_options=pairing)
+    sparse = workdir / "sparse"
+    sparse.mkdir(exist_ok=True)
+    _log.info("Camera solve: mapping")
+    if params.get("mapper") == "global":
+        recs = pycolmap.global_mapping(database_path=db, image_path=image_dir, output_path=sparse)
+        return _pick_model(recs, sparse)
+    need = float(params.get("min_registered_fraction", 0.5)) * len(image_names)
+    attempts = max(1, int(params.get("mapping_attempts", 1)))
+    best: tuple[Any, Path] | None = None
+    for seed in range(attempts):
+        out = sparse / f"seed{seed}"
+        out.mkdir(exist_ok=True)
+        opts = pycolmap.IncrementalPipelineOptions()
+        opts.random_seed = seed
+        recs = pycolmap.incremental_mapping(
+            database_path=db, image_path=image_dir, output_path=out, options=opts
+        )
+        if recs:
+            rec, model_dir = _pick_model(recs, out)
+            if best is None or rec.num_reg_images() > best[0].num_reg_images():
+                best = (rec, model_dir)
+            if rec.num_reg_images() >= need:
+                break
+        got = best[0].num_reg_images() if best else 0
+        if seed + 1 < attempts:
+            _log.info(
+                "Camera solve: mapping seed %d covered %d/%d frames, retrying",
+                seed,
+                got,
+                len(image_names),
+            )
+    if best is None:
+        _no_reconstruction()
+    return best
+
+
+def run_colmap_subprocess(
+    workdir: Path,
+    image_dir: Path,
+    mask_dir: Path | None,
+    image_names: list[str],
+    params: dict[str, Any],
+    timeout_s: float = 0.0,
+) -> Path:
+    """`run_colmap` in a child Python (`colmap_worker`): a native crash
+    (pycolmap can segfault in SIFT extraction on long shots) becomes a
+    RuntimeError here instead of killing the whole run. Returns the model
+    folder."""
+    job = workdir / "colmap_job.json"
+    result = workdir / "colmap_result.json"
+    result.unlink(missing_ok=True)
+    job.write_text(
+        json.dumps(
+            {
+                "workdir": str(workdir),
+                "image_dir": str(image_dir),
+                "mask_dir": str(mask_dir) if mask_dir is not None else None,
+                "image_names": list(image_names),
+                "params": {k: params[k] for k in _COLMAP_PARAMS if k in params},
+                "result": str(result),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cmd = [sys.executable, "-m", "live_action_aov.passes.camera.colmap_worker", str(job)]
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        creationflags=flags,
+    )
+    # Line by line, so a 30-minute SIFT run shows its progress live.
+    killed = threading.Event()
+
+    def _kill() -> None:
+        killed.set()
+        proc.kill()
+
+    timer = threading.Timer(timeout_s, _kill) if timeout_s else None
+    if timer is not None:
+        timer.start()
+    tail: list[str] = []
+    try:
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            if line.startswith("Camera solve:"):
+                _log.info("%s", line)
+            elif line:
+                tail = [*tail[-2:], line]
+        code = proc.wait()
+    finally:
+        if timer is not None:
+            timer.cancel()
+    if killed.is_set() and not result.is_file():
+        raise RuntimeError(f"Camera track: COLMAP did not finish in {timeout_s:.0f} s.")
+    if code != 0 or not result.is_file():
+        # Windows reports an access violation as 0xC0000005, POSIX as -signal.
+        shown = f"signal {-code}" if code < 0 else f"0x{code:08X}" if code > 255 else str(code)
+        raise RuntimeError(
+            f"Camera track: COLMAP crashed (exit code {shown}); the other passes are not "
+            f"affected. {' | '.join(tail)}".strip()
+        )
+    out = json.loads(result.read_text(encoding="utf-8"))
+    if "error" in out:
+        raise RuntimeError(out["error"])
+    return Path(out["model_dir"])
+
+
+def _pick_model(recs: dict[int, Any], out: Path) -> tuple[Any, Path]:
+    """Largest of the mapper's models and its folder."""
+    if not recs:
+        _no_reconstruction()
+    key, rec = max(recs.items(), key=lambda kv: kv[1].num_reg_images())
+    model_dir = out / str(key)
+    if not model_dir.exists():  # some pycolmap builds write only the best model
+        model_dir.mkdir(parents=True, exist_ok=True)
+        rec.write(str(model_dir))
+    return rec, model_dir
+
+
+def _no_reconstruction() -> NoReturn:
+    raise RuntimeError(
+        "Camera track: no reconstruction. Likely causes: no parallax "
+        "(locked-off / pure pan), heavy motion blur, or a textureless plate."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -750,12 +1048,12 @@ def read_verified_pairs(
         for pid, g in zip(pair_ids, geoms, strict=False):
             a, b = int(pid) // 2147483647, int(pid) % 2147483647  # COLMAP pair id
             m = np.asarray(g.inlier_matches)
-            if len(m) < min_inliers or ids.get(a) is None or ids.get(b) is None:
+            i, j = ids.get(a), ids.get(b)
+            if len(m) < min_inliers or i is None or j is None:
                 continue
             for iid in (a, b):
                 if iid not in kp:
                     kp[iid] = np.asarray(db.read_keypoints(iid))[:, :2].astype(np.float64)
-            i, j = ids[a], ids[b]
             xi, xj = kp[a][m[:, 0]], kp[b][m[:, 1]]
             out.append((i, j, xi, xj) if i < j else (j, i, xj, xi))
         return out
@@ -853,6 +1151,112 @@ def build_solve_from_nodal(
             masked_labels=list(masked_labels or []),
         ),
         conventions=Conventions(),
+        intrinsics=intr,
+        extrinsics=extrinsics,
+        unregistered_frames=sorted(fr for fr, _ in frame_list if fr not in registered),
+        points=points,
+        quality=quality,
+    )
+
+
+def build_solve_from_pnp(
+    sol: Any,
+    *,
+    frame_list: list[tuple[int, str]],
+    plate_wh: tuple[int, int],
+    solve_wh: tuple[int, int],
+    params: dict[str, Any],
+    masked_labels: list[str] | None = None,
+    fov_note: str = "",
+    max_points: int = 30000,
+    verdict: Any = None,
+) -> CameraSolve:
+    """`pnp.PnPSolve` -> `CameraSolve`: world = the anchor camera (OpenCV),
+    flipped to Y-up like every other solve; metres from MoGe-3. `verdict`
+    (`pnp.PnPVerdict`) leads the warnings, hence the Nuke camera label."""
+    sw, _sh = solve_wh
+    pw, ph = plate_wh if plate_wh[0] > 0 else solve_wh
+    scale = pw / max(sw, 1)
+    f = float(sol.K[0, 0]) * scale
+    hap = float(params.get("haperture_mm", 24.892))
+    intr = Intrinsics(
+        fx_px=f,
+        fy_px=f,
+        cx_px=pw / 2.0,
+        cy_px=ph / 2.0,
+        width_px=pw,
+        height_px=ph,
+        haperture_mm_hint=hap,
+        vaperture_mm_hint=hap * ph / max(pw, 1),
+        focal_mm_hint=f * hap / max(pw, 1),
+        distortion_model="pinhole",
+        distortion_params=[],
+        source="moge3_depth_pnp",
+    )
+    extrinsics: list[Extrinsic] = []
+    per_err: dict[int, float] = {}
+    per_count: dict[int, int] = {}
+    for k, (R_cw, t_cw) in sorted(sol.poses.items()):
+        frame = frame_list[k][0]
+        R_gl, t_gl = opencv_to_opengl_world_from_camera(R_cw, t_cw)
+        extrinsics.append(
+            Extrinsic(
+                frame=frame,
+                translation=(float(t_gl[0]), float(t_gl[1]), float(t_gl[2])),
+                rotation_euler_zxy_deg=rotation_matrix_to_euler_zxy_deg(R_gl),
+                rotation_matrix=tuple(tuple(float(v) for v in row) for row in R_gl),  # type: ignore[arg-type]
+            )
+        )
+        per_err[frame] = float(sol.frame_error_px.get(k, 0.0)) * scale
+        per_count[frame] = int(sol.frame_inliers.get(k, 0))
+    step = max(1, len(sol.points) // max_points)
+    points = [
+        ScenePoint(
+            xyz=world_point_to_gl((float(p[0]), float(p[1]), float(p[2]))),
+            color_rgb=(int(c[0]), int(c[1]), int(c[2])),
+            reprojection_error_px=0.0,
+            track_length=1,
+        )
+        for p, c in zip(sol.points[::step], sol.colors[::step], strict=True)
+    ]
+    registered = {e.frame for e in extrinsics}
+    quality = _quality(per_err, per_count, len(registered), len(frame_list), intr, extrinsics)
+    quality.warnings.insert(
+        0,
+        "Depth-anchored PnP camera (SfM found too little parallax): 3D from MoGe-3 depth of "
+        f"frame {frame_list[sol.anchor][0]}, {fov_note or 'FOV estimated by MoGe-3'}; "
+        "scale in metres is MoGe-3's estimate.",
+    )
+    if verdict is not None:
+        held_plate = float(verdict.heldout_px) * scale
+        line = (
+            f"{verdict.verdict} CANDIDATE - {'NODAL' if verdict.nodal else 'translated'}: "
+            f"held-out error {held_plate:.1f} px (plate res), {len(verdict.reliable)}/"
+            f"{len(frame_list)} reliable frames, travel {verdict.travel_m:.2f} m = "
+            f"{100 * verdict.parallax:.1f} % of the {verdict.depth_m:.1f} m median depth"
+        )
+        if verdict.verdict == "FAILED":
+            line += " - DO NOT USE"
+        quality.warnings.insert(0, line)
+        quality.verdict = verdict.verdict
+        quality.heldout_error_px = held_plate
+    return CameraSolve(
+        shot=ShotRef(),
+        backend=BackendInfo(
+            name="pycolmap",
+            version=_pycolmap_version(),
+            matcher=str(params.get("matcher", "sequential")),
+            sequential_overlap=int(params.get("sequential_overlap", 10)),
+            camera_model="PINHOLE",
+            sift_max_features=int(params.get("sift_max_features", 8192)),
+            max_image_size=int(params.get("max_image_size", 2048)),
+            mapper="depth_pnp",
+            masked_labels=list(masked_labels or []),
+        ),
+        conventions=Conventions(
+            units="metres",
+            unit_note="Metric scale from MoGe-3 depth of one frame: an estimate, not a survey.",
+        ),
         intrinsics=intr,
         extrinsics=extrinsics,
         unregistered_frames=sorted(fr for fr, _ in frame_list if fr not in registered),
