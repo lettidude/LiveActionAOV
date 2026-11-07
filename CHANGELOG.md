@@ -7,6 +7,50 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Depth-anchored PnP camera fallback** (`pnp_fallback`, on by default). Fast handheld action often
+  gives COLMAP almost no usable parallax (only a few frames register) while the camera clearly
+  translates, so the rotation-only fallback does not fit either and the run had no camera. Now the
+  camera pass tries a third route: MoGe-3 metric depth of the middle frame gives the 3D points of the
+  static set (SAM 3 objects masked out, corners on depth edges skipped), their corners are tracked
+  through the shot with pyramidal Lucas-Kanade (forward-backward checked, dropped on tracked
+  objects), and each frame is solved with RANSAC EPnP + LM refine. The fit error alone can hide a
+  wrong camera, so every `pnp_holdout_every`-th point is kept out of the solve and the camera is
+  judged on those: **GOOD / WEAK / FAILED** (`pnp_good_frac` / `pnp_weak_frac` of the image width,
+  plus the share of reliable frames), travel measured on reliable frames only, and a NODAL flag when
+  the camera moves less than 2 % of the scene depth. The verdict leads the warnings and the Nuke
+  camera label; a FAILED camera says "DO NOT USE" (`pnp_keep_failed: false` drops it instead) and
+  the splat pass refuses it. Units are declared as metres (MoGe-3's estimate), with `verdict` and
+  `heldout_error_px` in the camera JSON. `pnp_fov_x_deg` overrides MoGe-3's FOV estimate.
+- **Temp folder setting** (`--work-root`, `LAOV_WORK_ROOT`, GUI File > Temp folder). Frames that
+  passes export from the plate (camera solve, LTX crops, Marigold) go there instead of the system
+  temp folder, e.g. a project folder on a local disk under content-security rules. Keep it local:
+  the camera's database does not work reliably on a network share.
+- **LTX Alpha whole-frame mode** (`mode: whole_frame`). LTX-2.5 alpha-gen runs ONCE over the full
+  frame (97-frame 8n+1 chunks, cross-faded) instead of once per object on a SAM-gated crop, and each
+  object gets the foreground nearest to it (distance transforms, 2 px feathered seam where two objects
+  touch). No SAM gate cuts LTX's outline, so an edge SAM missed (a shoulder, motion blur) stays in the
+  matte, and N objects cost one LTX run instead of N. Foreground farther than `far_frac` (6 % of the
+  width) from every object
+  belongs to nobody and is written to a new `foreground.a` layer (props, blood, untracked extras).
+- **LTX call cache** (`cache_dir`). Each LTX call's raw result is saved as `.npy`, keyed by a hash of
+  the frames sent, the working size, the seed and the model files, so a rerun never repeats the
+  diffusion. Works in both modes.
+- **SAM 3.1 detector for the matte pass** (`detector: sam3.1`). Meta's SAM 3.1 Object Multiplex tracks
+  every instance of a concept jointly in one session, so it keeps identities apart where SAM 3 can
+  swap two similar objects or lose a part in motion blur. It needs Python 3.12 and
+  Meta's `sam3` package, so it runs as a subprocess in its own environment (`sam31_python` param or
+  `LAOV_SAM31_PYTHON`; setup in docs/install.md). The worker carries the two Windows fixes for
+  sam3 f1647e8 (no FLASH SDPA kernel on Windows torch; `offload_state_to_cpu` passed to an
+  `init_state` that does not take it) without editing Meta's code. Exclusivity, seams, depth layer
+  order and hero ranking stay LiveActionAOV's own. False hits are dropped by a peak-coverage floor
+  (`sam31_min_peak_coverage` 0.5 %, `sam31_min_frames` 3). Clicks still use SAM 3's tracker; SAM 3
+  is not loaded at all when there are none.
+- **GUI: SAM 3.1 detector, whole-frame LTX engine, PnP camera toggle.** Passes tab: a "Detector"
+  choice (SAM 3 built in / SAM 3.1 Object Multiplex; Submit checks the SAM 3.1 environment up front),
+  "LTX Alpha whole frame" under the default engine's Advanced menu (sent with the ComfyUI URL; the
+  Masks-tab preview uses ViTMatte for it), and "Camera: solve from depth when SfM fails". All three
+  are saved in the session and copied by "Apply passes to all shots".
+
 ### Fixed
 - **A native crash in COLMAP no longer kills the whole run.** pycolmap can segfault (e.g. in SIFT
   extraction on long shots); since every pass runs in one process, that lost the mattes, depth and
@@ -18,6 +62,25 @@ uses [semantic versioning](https://semver.org/).
 - **Temporary folders with plate frames are always cleaned up.** The camera workdir is removed on a
   failed or crashed solve too, and a workdir kept for debugging (`keep_workdir`, Marigold
   `keep_temp`) is now a warning with its path, since it holds frames exported from the plate.
+- **Nuke's Cryptomatte node crashed on our sidecars.** The per-pass provenance
+  keys `liveaov/cryptomatte/{model,version,license,commercial}` contain the
+  substring `cryptomatte/`, which Nuke's Cryptomatte plugin scans every header
+  key for (it takes the text before it as a layer id): Nuke 13.2v6 segfaulted
+  the moment the node evaluated, GUI and `-t` alike. Bisected on a production
+  plate: those four keys alone reproduce it, the pixel data, compression and
+  the spec `cryptomatte/<id>/*` keys are fine. The cryptomatte pass is now
+  recorded under `liveaov/cryptomatte_pass/...`; no provenance key may contain
+  `cryptomatte/` (`executors.local.provenance_key`, with a test). Existing
+  files are fixed by dropping those four header keys (no pixel change).
+- **LTX Alpha found nothing on a ComfyUI with its own folder layout.** The pass looked for exact
+  file names (`LTX-2.5\ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors`, the int8 transformer, a GGUF
+  with "22b" in the name), so a server that keeps the LoRA in `ltxv\ltx25\`, has the bf16 distilled
+  transformer instead of the int8 one, or a community GGUF named `LTX-2.5-Distilled-Q4_K_S.gguf`, got
+  "missing" and every object fell back to ViTMatte. `pick_model` now tries: the exact name, the same
+  file in another folder, another precision of the same model (int8 > fp8 > bf16), then the best GGUF
+  whose name holds every token (`ltx-2.5` + `distilled`). LoRA and VAEs are found by file name in any
+  folder, and the graph uses the names the server reported. Tested against a real ComfyUI that failed
+  before with the default settings.
 - **A failed shot stopped an overnight batch.** Shots ticked while a batch runs (Submit is disabled
   meanwhile) were never added to it; when the last submitted shot failed, the GUI treated it as a
   single-shot run and showed a blocking error dialog, and the shots ticked later never ran. The
