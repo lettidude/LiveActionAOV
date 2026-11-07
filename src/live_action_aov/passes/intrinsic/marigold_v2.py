@@ -46,7 +46,6 @@ import logging
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +58,7 @@ from live_action_aov.core.pass_base import (
     TemporalMode,
     UtilityPass,
 )
+from live_action_aov.core.work_dir import make_work_dir
 from live_action_aov.io.channels import (
     CH_ALBEDO_B,
     CH_ALBEDO_G,
@@ -181,7 +181,7 @@ class _MarigoldV2BridgeBase(UtilityPass):
         self._load_model()
         first, last = frame_range
         long_edge = int(self.params["inference_long_edge"])
-        work = Path(tempfile.mkdtemp(prefix=f"laaov_{self.name}_"))
+        work = make_work_dir(f"laaov_{self.name}_")
         in_dir, out_dir = work / "in", work / "out"
         in_dir.mkdir()
         try:

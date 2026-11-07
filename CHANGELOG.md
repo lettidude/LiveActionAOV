@@ -22,6 +22,11 @@ uses [semantic versioning](https://semver.org/).
   the splat pass refuses it. Units are declared as metres (MoGe-3's estimate), with `verdict` and
   `heldout_error_px` in the camera JSON. `pnp_fov_x_deg` overrides MoGe-3's FOV estimate.
 
+- **Temp folder setting** (`--work-root`, `LAOV_WORK_ROOT`, GUI File > Temp folder). Frames that
+  passes export from the plate (camera solve, LTX crops, Marigold) go there instead of the system
+  temp folder, e.g. a project folder on a local disk under content-security rules. Keep it local:
+  the camera's database does not work reliably on a network share.
+
 ### Fixed
 - **A native crash in COLMAP no longer kills the whole run.** pycolmap can segfault (e.g. in SIFT
   extraction on long shots); since every pass runs in one process, that lost the mattes, depth and
@@ -33,6 +38,12 @@ uses [semantic versioning](https://semver.org/).
 - **Temporary folders with plate frames are always cleaned up.** The camera workdir is removed on a
   failed or crashed solve too, and a workdir kept for debugging (`keep_workdir`, Marigold
   `keep_temp`) is now a warning with its path, since it holds frames exported from the plate.
+- **A network-share blip no longer aborts the job.** The sidecar write retry only caught
+  `OSError`, but OIIO reports a vanished share as its own error, so the retry never ran. It now
+  covers both and waits ~40 s in all (longer than an SMB reconnect).
+- **LTX Alpha no longer leaves mattes in ComfyUI's `output/`.** They come back through ComfyUI's
+  temp folder, which ComfyUI wipes when it starts and exits. With a remote ComfyUI, the uploaded
+  crops stay in its `input/` (ComfyUI has no delete endpoint): a warning says so.
 
 ## [0.11.1] — 2026-11-02
 

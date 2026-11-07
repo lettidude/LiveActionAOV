@@ -42,7 +42,6 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -54,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from live_action_aov.core.pass_base import License
+from live_action_aov.core.work_dir import make_work_dir
 from live_action_aov.io.channels import CH_MATTE_A, CH_MATTE_B, CH_MATTE_G, CH_MATTE_R
 from live_action_aov.passes.matte.boxmask import stack_box
 from live_action_aov.passes.matte.rvm import RVMRefinerPass
@@ -200,7 +200,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         # Per PIXEL: two chunks' boxes differ, so a pixel outside one box
         # must not be averaged with that chunk's zero.
         wsum = np.zeros((T, H, W), np.float32)
-        work = Path(tempfile.mkdtemp(prefix="laov_ltx_"))
+        work = make_work_dir("laov_ltx_")
         try:
             spans = chunk_spans(b - a, chunk, overlap)
             for ci, (s0, nf) in enumerate(spans):
@@ -372,11 +372,18 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
                 "inputs": {"directory": str(folder), **common},
             }
         sub = f"laov_ltx_{uuid.uuid4().hex[:10]}"
+        if not getattr(self, "_upload_warned", False):
+            # ComfyUI has no delete endpoint: the crops stay on that machine.
+            _log.warning(
+                "LTX alpha: plate crops uploaded to the remote ComfyUI's input/laov_ltx_* "
+                "folders; ComfyUI cannot delete them remotely - clear them on that machine."
+            )
+            self._upload_warned = True
         for f in sorted(folder.glob("*.png")):
             upload_image(self._url("/upload/image"), f, sub)
         return {"class_type": "VHS_LoadImages", "inputs": {"directory": sub, **common}}
 
-    def _graph(self, folder: Path, ww: int, wh: int, nf: int, prefix: str) -> dict[str, Any]:
+    def _graph(self, folder: Path, ww: int, wh: int, nf: int) -> dict[str, Any]:
         p = self.params
         unet_node, unet = self._models.get("unet", ("UNETLoader", str(p["unet"])))
         te_node, te = self._models.get("text_encoder", ("CLIPLoader", str(p["text_encoder"])))
@@ -470,19 +477,18 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
                     "temporal_overlap": 8,
                 },
             },
-            "21": {
-                "class_type": "SaveImage",
-                "inputs": {"images": ["20", 0], "filename_prefix": prefix},
-            },
+            # PreviewImage, not SaveImage: the mattes land in ComfyUI's temp
+            # folder (wiped when ComfyUI starts and exits), not in its
+            # output/ where client-derived frames would pile up.
+            "21": {"class_type": "PreviewImage", "inputs": {"images": ["20", 0]}},
         }
 
     def _run_ltx(self, folder: Path, ww: int, wh: int, nf: int) -> np.ndarray:
         """One LTX call: the PNG crops in `folder` -> (nf, wh, ww) alpha."""
         import cv2
 
-        prefix = f"laov_ltx_alpha/{uuid.uuid4().hex[:10]}"
         body = json.dumps(
-            {"prompt": self._graph(folder, ww, wh, nf, prefix), "client_id": "liveactionaov"}
+            {"prompt": self._graph(folder, ww, wh, nf), "client_id": "liveactionaov"}
         ).encode()
         req = urllib.request.Request(
             self._url("/prompt"), data=body, headers={"Content-Type": "application/json"}
