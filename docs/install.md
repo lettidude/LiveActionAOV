@@ -242,11 +242,43 @@ Prefer environment variables over the cached file? Set
 | Model | Pass | HF page |
 |---|---|---|
 | SAM 3 | matte | https://huggingface.co/facebook/sam3 |
+| SAM 3.1 (optional) | matte | huggingface.co/facebook/sam3.1 |
 
 Other models in the catalog (Depth Anything V2, DepthCrafter, NormalCrafter,
 DSINE, MatAnyone 2, RVM, RAFT) are not currently gated. If a publisher
 adds gating to one of them later, the same three-step flow applies — just
 swap the URL in step 1.
+
+### SAM 3.1 (optional detector)
+
+The matte pass can use Meta's **SAM 3.1 Object Multiplex** instead of SAM 3
+(`detector: sam3.1`). It tracks every instance of a concept jointly and keeps
+identities apart where SAM 3 can swap two similar objects. It needs
+Python 3.12 and Meta's own `sam3` package, so it lives in a separate
+environment; LiveActionAOV runs it as a subprocess.
+
+1. Request access to `facebook/sam3.1` on Hugging Face (same flow as above).
+2. Create the environment (PowerShell, one line at a time; any folder):
+
+   ```powershell
+   uv venv sam31_env --python 3.12
+   uv pip install --python sam31_env\Scripts\python.exe torch torchvision --torch-backend=cu128
+   gh repo clone facebookresearch/sam3 sam3_repo
+   uv pip install --python sam31_env\Scripts\python.exe -e sam3_repo huggingface_hub einops
+   ```
+
+   Tested with sam3 at commit `f1647e8`, torch 2.11 + cu128, on Windows
+   (RTX 5090). The two Windows issues of that commit (no FLASH attention
+   kernel, an unknown `offload_state_to_cpu` argument) are worked around by
+   LiveActionAOV's worker, not by editing Meta's code.
+3. Point LiveActionAOV at its interpreter: the `sam31_python` param, or
+
+   ```powershell
+   setx LAOV_SAM31_PYTHON "C:\path\to\sam31_env\Scripts\python.exe"
+   ```
+
+The checkpoint (`sam3.1_multiplex.pt`, ~3.5 GB) downloads to the Hugging Face
+cache on the first run.
 
 ## Alternate GPU configurations
 
