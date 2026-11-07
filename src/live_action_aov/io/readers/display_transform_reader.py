@@ -163,6 +163,11 @@ class DisplayTransformedReader(ImageSequenceReader):
         raw, attrs = self._base.read_frame(frame)
         return self._process(raw, attrs, frame)
 
+    def full_res_resolution(self) -> tuple[int, int]:
+        """The ORIGINAL plate's size when the base is a proxy."""
+        full = getattr(self._base, "full_res_reader", None)
+        return full().resolution() if full is not None else self.resolution()
+
     def read_frame_full_res(self, frame: int) -> tuple[np.ndarray, dict[str, Any]]:
         """`read_frame` on the ORIGINAL plate when the base is a proxy (same
         clip-wide transform). Plain `read_frame` without a proxy."""

@@ -7,16 +7,17 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **SAM 3.1 detector for the matte pass** (`detector: sam3.1`). Meta's SAM 3.1 Object Multiplex tracks
-  every instance of a concept jointly in one session, so it keeps identities apart where SAM 3 can
-  swap two similar objects or lose a part in motion blur. It needs Python 3.12 and
-  Meta's `sam3` package, so it runs as a subprocess in its own environment (`sam31_python` param or
-  `LAOV_SAM31_PYTHON`; setup in docs/install.md). The worker carries the two Windows fixes for
-  sam3 f1647e8 (no FLASH SDPA kernel on Windows torch; `offload_state_to_cpu` passed to an
-  `init_state` that does not take it) without editing Meta's code. Exclusivity, seams, depth layer
-  order and hero ranking stay LiveActionAOV's own. False hits are dropped by a peak-coverage floor
-  (`sam31_min_peak_coverage` 0.5 %, `sam31_min_frames` 3). Clicks still use SAM 3's tracker; SAM 3
-  is not loaded at all when there are none.
+### Fixed
+- **A native crash in COLMAP no longer kills the whole run.** pycolmap can segfault (e.g. in SIFT
+  extraction on long shots); since every pass runs in one process, that lost the mattes, depth and
+  everything else of the run. COLMAP's feature extraction, matching and mapping now run in a child
+  process (`colmap_subprocess`, on by default; `colmap_timeout_s` optional). A crash is reported as
+  an ordinary camera failure with its exit code, the nodal fallback declines cleanly when COLMAP left
+  no database, and the rest of the run carries on. The child's progress (features, matching,
+  mapping seeds) streams to the log live instead of arriving only when it exits.
+- **Temporary folders with plate frames are always cleaned up.** The camera workdir is removed on a
+  failed or crashed solve too, and a workdir kept for debugging (`keep_workdir`, Marigold
+  `keep_temp`) is now a warning with its path, since it holds frames exported from the plate.
 
 ## [0.11.1] — 2026-11-02
 

@@ -18,6 +18,7 @@ image features. Instead:
 
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,19 @@ from live_action_aov.passes.camera.pycolmap_track import (
     rotation_matrix_to_euler_zxy_deg,
     world_point_to_gl,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_moge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover COLMAP and the nodal fallback: the depth-anchored
+    PnP fallback (tests/test_passes/test_camera_pnp.py) behaves as it does
+    without MoGe-3 installed, instead of loading the real model."""
+
+    def unavailable(self: Any, img: np.ndarray) -> tuple[np.ndarray, float]:
+        raise RuntimeError("MoGe-3 not used in these tests")
+
+    monkeypatch.setattr(PyColmapCameraPass, "_anchor_depth", unavailable)
+
 
 # ---------------------------------------------------------------------------
 # Coordinate conversion helpers
@@ -494,15 +508,102 @@ def test_mapping_retries_another_seed_when_it_covers_too_little(
     )
     monkeypatch.setattr(mod.importlib, "import_module", lambda name: fake)
     frames = [(1000 + i, f"f{i}.png") for i in range(100)]
-    p = PyColmapCameraPass()
-    rec = p._solve_colmap(tmp_path, tmp_path, None, frames)
+    names = [n for _, n in frames]
+    rec, model_dir = mod.run_colmap(tmp_path, tmp_path, None, names, PyColmapCameraPass().params)
     assert rec.num_reg_images() == 100 and seeds == [0, 1]
-    assert p._sparse_dir == tmp_path / "sparse" / "seed1" / "0"
+    assert model_dir == tmp_path / "sparse" / "seed1" / "0"
 
     seeds.clear()
     covered.clear()  # never enough: every attempt runs, the best one is kept
     covered[2] = 20
-    rec = PyColmapCameraPass({"mapping_attempts": 3})._solve_colmap(
-        tmp_path, tmp_path, None, frames
+    rec, _ = mod.run_colmap(
+        tmp_path, tmp_path, None, names, PyColmapCameraPass({"mapping_attempts": 3}).params
     )
     assert seeds == [0, 1, 2] and rec.num_reg_images() == 20
+
+
+class _FakeChild:
+    """Stands in for the COLMAP child: prints `lines`, exits with `code`."""
+
+    def __init__(self, cmd, lines: list[str], code: int):
+        assert cmd[1:3] == ["-m", "live_action_aov.passes.camera.colmap_worker"]
+        self.stdout = iter(f"{line}\n" for line in lines)
+        self.code = code
+
+    def wait(self) -> int:
+        return self.code
+
+    def kill(self) -> None:
+        pass
+
+
+def test_a_colmap_crash_is_a_camera_failure_not_a_run_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """pycolmap can segfault natively. In the child process that is an
+    exit code, reported as an ordinary camera failure."""
+    lines = ["Camera solve: extracting features on 1 frames", "SIFT extraction"]
+    monkeypatch.setattr(
+        mod.subprocess, "Popen", lambda cmd, **kw: _FakeChild(cmd, lines, 0xC0000005)
+    )
+    with (
+        caplog.at_level(logging.INFO, logger=mod._log.name),
+        pytest.raises(
+            RuntimeError, match=r"COLMAP crashed \(exit code 0xC0000005\).*SIFT extraction"
+        ),
+    ):
+        mod.run_colmap_subprocess(tmp_path, tmp_path, None, ["a.png"], {})
+    # The child's progress lines reach the log.
+    assert "extracting features on 1 frames" in caplog.text
+    # The nodal fallback then finds no database and declines instead of failing.
+    assert PyColmapCameraPass()._solve_nodal(tmp_path / "database.db", [], (8, 8), (8, 8)) is None
+
+
+def test_the_workdir_goes_when_the_camera_fails(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    """It holds plate frames: a failed shot removes it too, a kept one is
+    a warning with its path."""
+    p = PyColmapCameraPass()
+    p._workdir = tmp_path / "w"
+    p._workdir.mkdir()
+    p.unload()
+    assert not (tmp_path / "w").exists()
+    kept = PyColmapCameraPass({"keep_workdir": True})
+    kept._workdir = tmp_path / "k"
+    kept._workdir.mkdir()
+    with caplog.at_level(logging.WARNING, logger=mod._log.name):
+        kept.unload()
+    assert (tmp_path / "k").exists()
+    assert "contains plate frames" in caplog.text
+
+
+def test_colmap_timeout(tmp_path: Path):
+    """A child that outlives `colmap_timeout_s` is killed and reported."""
+    script = tmp_path / "slow.py"
+    script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    real = mod.subprocess.Popen
+
+    def slow(cmd, **kw):
+        return real([cmd[0], str(script)], **kw)
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(mod.subprocess, "Popen", slow)
+    try:
+        with pytest.raises(RuntimeError, match="did not finish in 1 s"):
+            mod.run_colmap_subprocess(tmp_path, tmp_path, None, ["a.png"], {}, timeout_s=1.0)
+    finally:
+        mp.undo()
+
+
+def test_colmap_worker_round_trip(tmp_path: Path):
+    """The real child process: noise images reconstruct nothing, which comes
+    back as the usual 'no reconstruction' error."""
+    pytest.importorskip("pycolmap")
+    import cv2
+
+    rng = np.random.default_rng(0)
+    names = []
+    for i in range(3):
+        names.append(f"f{i}.png")
+        cv2.imwrite(str(tmp_path / names[-1]), (rng.random((64, 96)) * 255).astype(np.uint8))
+    with pytest.raises(RuntimeError, match="no reconstruction"):
+        mod.run_colmap_subprocess(tmp_path, tmp_path, None, names, PyColmapCameraPass().params)

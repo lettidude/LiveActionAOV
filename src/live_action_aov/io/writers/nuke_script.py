@@ -74,6 +74,13 @@ def render_nuke_camera_script(solve: CameraSolve, *, node_name: str | None = Non
         f"{solve.quality.aggregate_reprojection_error_px:.3f} px over "
         f"{solve.quality.registered_frame_count}/{solve.quality.total_frame_count} frames."
     )
+    if solve.quality.verdict:
+        # The verdict leads the label, so nobody uses a FAILED camera by accident.
+        head = next(
+            (w for w in solve.quality.warnings if w.startswith(solve.quality.verdict)),
+            solve.quality.verdict,
+        )
+        note = f"{head}\\n{note}"
     if solve.intrinsics.distortion_params:
         note += (
             f"\\nLens k1={solve.intrinsics.distortion_params[0]:.4f} solved but NOT "
