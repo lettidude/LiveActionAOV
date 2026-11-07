@@ -263,7 +263,7 @@ def test_graph_uses_the_gguf_loaders_and_uploads_to_a_remote_comfyui(tmp_path: P
     orig = mod.upload_image
     mod.upload_image = lambda url, path, sub: sent.append(f"{url}|{path.name}|{sub}")  # type: ignore[assignment]
     try:
-        g = p._graph(tmp_path, 512, 288, 9, "x")
+        g = p._graph(tmp_path, 512, 288, 9)
     finally:
         mod.upload_image = orig
     assert g["1"] == {
@@ -274,9 +274,11 @@ def test_graph_uses_the_gguf_loaders_and_uploads_to_a_remote_comfyui(tmp_path: P
     assert g["8"]["class_type"] == "VHS_LoadImages"
     assert sent and sent[0].startswith("http://ai-box:8188/upload/image|f_0000.png|laov_ltx_")
     assert g["8"]["inputs"]["directory"] == sent[0].rsplit("|", 1)[1]
+    # Mattes come back through ComfyUI's temp folder, never its output/.
+    assert g["21"]["class_type"] == "PreviewImage"
     # Same machine: the temp folder is read in place, nothing is uploaded.
     local = LTXAlphaRefinerPass({"comfy_url": "http://127.0.0.1:8188"})
-    assert local._graph(tmp_path, 512, 288, 9, "x")["8"]["class_type"] == "VHS_LoadImagesPath"
+    assert local._graph(tmp_path, 512, 288, 9)["8"]["class_type"] == "VHS_LoadImagesPath"
 
 
 def test_pick_model_finds_the_same_file_in_another_folder() -> None:

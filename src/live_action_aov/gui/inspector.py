@@ -446,7 +446,9 @@ class InspectorPanel(QWidget):
         # Detector: SAM 3 (built in) or SAM 3.1 Object Multiplex.
         self._detector_combo = QComboBox()
         self._detector_combo.addItem("SAM 3 (built in)", "sam3")
-        self._detector_combo.addItem("SAM 3.1 Object Multiplex - many objects, fast motion", "sam3.1")
+        self._detector_combo.addItem(
+            "SAM 3.1 Object Multiplex - many objects, fast motion", "sam3.1"
+        )
         self._detector_combo.setToolTip(
             "SAM 3.1 tracks every instance of a concept together and keeps identities "
             "where SAM 3 can swap two similar objects or lose a part in motion blur. "

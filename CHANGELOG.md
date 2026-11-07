@@ -18,12 +18,21 @@ uses [semantic versioning](https://semver.org/).
 - **Temporary folders with plate frames are always cleaned up.** The camera workdir is removed on a
   failed or crashed solve too, and a workdir kept for debugging (`keep_workdir`, Marigold
   `keep_temp`) is now a warning with its path, since it holds frames exported from the plate.
+<<<<<<< HEAD
 - **A failed shot stopped an overnight batch.** Shots ticked while a batch runs (Submit is disabled
   meanwhile) were never added to it; when the last submitted shot failed, the GUI treated it as a
   single-shot run and showed a blocking error dialog, and the shots ticked later never ran. The
   batch now picks up shots ticked during the run when its queue drains (same output-root check;
   non-commercial models still need a Submit to confirm them), and failure dialogs no longer block
   the queue.
+=======
+- **A network-share blip no longer aborts the job.** The sidecar write retry only caught
+  `OSError`, but OIIO reports a vanished share as its own error, so the retry never ran. It now
+  covers both and waits ~40 s in all (longer than an SMB reconnect).
+- **LTX Alpha no longer leaves mattes in ComfyUI's `output/`.** They come back through ComfyUI's
+  temp folder, which ComfyUI wipes when it starts and exits. With a remote ComfyUI, the uploaded
+  crops stay in its `input/` (ComfyUI has no delete endpoint): a warning says so.
+>>>>>>> origin/fix/temp-files-and-share-retry
 
 ## [0.11.1] — 2026-11-02
 

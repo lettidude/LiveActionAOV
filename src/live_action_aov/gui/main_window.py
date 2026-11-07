@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from live_action_aov.core.output_layout import latest_version_dir
+from live_action_aov.core.work_dir import set_work_root, work_root
 from live_action_aov.gui.cuda_check import CudaState, cuda_state
 from live_action_aov.gui.inspector import InspectorPanel
 from live_action_aov.gui.log_panel import LogPanel
@@ -187,6 +188,8 @@ class MainWindow(QMainWindow):
         central_layout.addLayout(bottom_row)
         central_layout.addWidget(self._log_panel)
         self.setCentralWidget(central)
+        # Temp folder for plate-derived frames: app-level, remembered.
+        set_work_root(str(QSettings("LiveActionAOV", "LiveActionAOV").value("work_root", "") or ""))
         self._build_menus()
 
         status = QStatusBar()
@@ -243,6 +246,16 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        temp_action = QAction("&Temp folder…", self)
+        temp_action.setToolTip(
+            "Where passes write temporary frames exported from the plate. "
+            "Default: the system temp folder. Pick a LOCAL disk (not a network share)."
+        )
+        temp_action.triggered.connect(self._on_temp_folder)
+        file_menu.addAction(temp_action)
+
+        file_menu.addSeparator()
+
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
@@ -285,6 +298,35 @@ class MainWindow(QMainWindow):
         about = QAction("&About", self)
         about.triggered.connect(self._show_about)
         help_menu.addAction(about)
+
+    def _on_temp_folder(self) -> None:
+        current = work_root()
+        box = QMessageBox(self)
+        box.setWindowTitle("Temp folder")
+        box.setText(
+            "Temporary frames exported from the plate (camera solve, LTX crops, "
+            f"Marigold) go to:\n\n{current or 'the system temp folder (default)'}\n\n"
+            "They are deleted after each pass. Use a local disk: the camera's "
+            "database does not work reliably on a network share."
+        )
+        pick = box.addButton("Choose folder…", QMessageBox.ButtonRole.AcceptRole)
+        reset = box.addButton("Use system temp", QMessageBox.ButtonRole.ResetRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is pick:
+            folder = QFileDialog.getExistingDirectory(
+                self, "Temp folder", str(current or Path.home())
+            )
+            if not folder:
+                return
+            value = folder
+        elif box.clickedButton() is reset:
+            value = ""
+        else:
+            return
+        set_work_root(value)
+        QSettings("LiveActionAOV", "LiveActionAOV").setValue("work_root", value)
+        self.statusBar().showMessage(f"Temp folder: {value or 'system temp'}", 5000)
 
     def _on_comfy_settings(self) -> None:
         from live_action_aov.gui.comfy_dialog import ComfyDialog

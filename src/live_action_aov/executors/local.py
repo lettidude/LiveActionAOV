@@ -35,6 +35,7 @@ from live_action_aov.core.output_layout import sidecar_template as layout_sideca
 from live_action_aov.core.pass_base import TemporalMode, UtilityPass
 from live_action_aov.core.registry import get_registry
 from live_action_aov.executors.base import Executor
+from live_action_aov.io.oiio_io import OiioError
 from live_action_aov.io.readers.display_transform_reader import (
     DisplayTransformedReader,
     LinearizedReader,
@@ -72,21 +73,23 @@ def provenance_key(pass_name: str) -> str:
 
 
 def _retry_io(
-    fn: Callable[[], Any], *, what: str, attempts: int = 3, base_delay: float = 0.5
+    fn: Callable[[], Any], *, what: str, attempts: int = 8, base_delay: float = 1.5
 ) -> Any:
     """Run `fn`, retrying transient OS/I/O errors a few times before giving up.
 
     Sidecars often land on a network share (NAS); a brief connection blip
     mid-write would otherwise abort a whole multi-pass shot (minutes of GPU
-    work) over a momentary glitch. Retries only `OSError` (network-path /
-    I/O errors, incl. Windows WinError) — a genuine fault (disk full,
-    permission) still surfaces after the attempts. Linear backoff.
+    work) over a momentary glitch. Retries `OSError` (network-path / I/O
+    errors, incl. Windows WinError) and `OiioError` (OIIO reports a share
+    that dropped mid-write as a failed open/write, not as an OSError) — a
+    genuine fault (disk full, permission) still surfaces after the attempts.
+    Linear backoff, ~40 s in all: longer than an SMB reconnect.
     """
-    last: OSError | None = None
+    last: OSError | OiioError | None = None
     for i in range(attempts):
         try:
             return fn()
-        except OSError as e:
+        except (OSError, OiioError) as e:
             last = e
             if i < attempts - 1:
                 delay = base_delay * (i + 1)
