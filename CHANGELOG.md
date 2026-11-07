@@ -19,6 +19,7 @@ uses [semantic versioning](https://semver.org/).
   failed or crashed solve too, and a workdir kept for debugging (`keep_workdir`, Marigold
   `keep_temp`) is now a warning with its path, since it holds frames exported from the plate.
 <<<<<<< HEAD
+<<<<<<< HEAD
 - **A failed shot stopped an overnight batch.** Shots ticked while a batch runs (Submit is disabled
   meanwhile) were never added to it; when the last submitted shot failed, the GUI treated it as a
   single-shot run and showed a blocking error dialog, and the shots ticked later never ran. The
@@ -33,6 +34,16 @@ uses [semantic versioning](https://semver.org/).
   temp folder, which ComfyUI wipes when it starts and exits. With a remote ComfyUI, the uploaded
   crops stay in its `input/` (ComfyUI has no delete endpoint): a warning says so.
 >>>>>>> origin/fix/temp-files-and-share-retry
+=======
+- **The camera's RAM spike no longer takes a long shot down.** SIFT extraction holds ~0.3 GB per
+  megapixel per thread, on every core at once. On a big machine that was +40 GB for a few seconds,
+  enough to crash a long 6K shot. The thread count now fits the free RAM (`sift_num_threads: 0` =
+  auto). The default `max_image_size` is 1920: on handheld tests it gives the same cameras as 2816
+  at a third of the RAM. The log states the actual solve size and thread count.
+- **`max_image_size` above the proxy size now applies.** The camera read its frames through the
+  proxy, so it silently solved at min(proxy, `max_image_size`). It now reads the full-res plate
+  when the proxy is smaller.
+>>>>>>> origin/feat/camera-ram-guard
 
 ## [0.11.1] — 2026-11-02
 
