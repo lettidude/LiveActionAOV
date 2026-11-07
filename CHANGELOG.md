@@ -7,16 +7,17 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **LTX Alpha whole-frame mode** (`mode: whole_frame`). LTX-2.5 alpha-gen runs ONCE over the full
-  frame (97-frame 8n+1 chunks, cross-faded) instead of once per object on a SAM-gated crop, and each
-  object gets the foreground nearest to it (distance transforms, 2 px feathered seam where two objects
-  touch). No SAM gate cuts LTX's outline, so an edge SAM missed (a shoulder, motion blur) stays in the
-  matte, and N objects cost one LTX run instead of N. Foreground farther than `far_frac` (6 % of the
-  width) from every object
-  belongs to nobody and is written to a new `foreground.a` layer (props, blood, untracked extras).
-- **LTX call cache** (`cache_dir`). Each LTX call's raw result is saved as `.npy`, keyed by a hash of
-  the frames sent, the working size, the seed and the model files, so a rerun never repeats the
-  diffusion. Works in both modes.
+### Fixed
+- **A native crash in COLMAP no longer kills the whole run.** pycolmap can segfault (e.g. in SIFT
+  extraction on long shots); since every pass runs in one process, that lost the mattes, depth and
+  everything else of the run. COLMAP's feature extraction, matching and mapping now run in a child
+  process (`colmap_subprocess`, on by default; `colmap_timeout_s` optional). A crash is reported as
+  an ordinary camera failure with its exit code, the nodal fallback declines cleanly when COLMAP left
+  no database, and the rest of the run carries on. The child's progress (features, matching,
+  mapping seeds) streams to the log live instead of arriving only when it exits.
+- **Temporary folders with plate frames are always cleaned up.** The camera workdir is removed on a
+  failed or crashed solve too, and a workdir kept for debugging (`keep_workdir`, Marigold
+  `keep_temp`) is now a warning with its path, since it holds frames exported from the plate.
 
 ## [0.11.1] — 2026-11-02
 

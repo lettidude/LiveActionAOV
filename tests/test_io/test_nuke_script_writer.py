@@ -128,3 +128,12 @@ def test_node_name_sanitised_for_nuke():
     solve.shot.name = "PF0081-03_Clip-3"
     out = render_nuke_camera_script(solve)
     assert "name LiveActionAOV_Camera_PF0081_03_Clip_3\n" in out
+
+
+def test_verdict_leads_the_label():
+    solve = _solve_two_frames()
+    solve.quality.verdict = "FAILED"
+    solve.quality.warnings = ["FAILED CANDIDATE - translated: held-out error 40.0 px - DO NOT USE"]
+    out = render_nuke_camera_script(solve)
+    label = out.split(' label "', 1)[1]
+    assert label.startswith("FAILED CANDIDATE") and "DO NOT USE" in label.split("\n")[0]

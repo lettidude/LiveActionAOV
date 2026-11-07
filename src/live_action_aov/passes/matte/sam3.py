@@ -1148,7 +1148,7 @@ class SAM3MattePass(UtilityPass):
                 # "Touching" = overlap with the track grown by ~1.5% of the
                 # long edge: a limb detected alone is adjacent, not inside.
                 merge_into = None
-                best = float(self.params.get("redetect_merge_coverage", 0.1))
+                best_cov = float(self.params.get("redetect_merge_coverage", 0.1))
                 max_ratio = float(self.params.get("redetect_merge_max_ratio", 0.6))
                 for inst in self._instances:
                     im = inst.masks.get(f)
@@ -1161,9 +1161,9 @@ class SAM3MattePass(UtilityPass):
                         continue
                     wy0, wx0, wy1, wx1 = union_box([im, mb], r + 1, (H, W)) or (0, 0, H, W)
                     grown = cv2.dilate(im.window(wy0, wx0, wy1, wx1), touch_kernel) > 0
-                    cov = float((mb.window(wy0, wx0, wy1, wx1).astype(bool) & grown).sum()) / area
-                    if cov >= best:
-                        best, merge_into = cov, inst.track_id
+                    share = float((mb.window(wy0, wx0, wy1, wx1).astype(bool) & grown).sum()) / area
+                    if share >= best_cov:
+                        best_cov, merge_into = share, inst.track_id
                 new.append(
                     {
                         "obj_id": next_id,
