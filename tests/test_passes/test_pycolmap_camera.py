@@ -37,6 +37,19 @@ from live_action_aov.passes.camera.pycolmap_track import (
     world_point_to_gl,
 )
 
+
+@pytest.fixture(autouse=True)
+def _no_moge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover COLMAP and the nodal fallback: the depth-anchored
+    PnP fallback (tests/test_passes/test_camera_pnp.py) behaves as it does
+    without MoGe-3 installed, instead of loading the real model."""
+
+    def unavailable(self: Any, img: np.ndarray) -> tuple[np.ndarray, float]:
+        raise RuntimeError("MoGe-3 not used in these tests")
+
+    monkeypatch.setattr(PyColmapCameraPass, "_anchor_depth", unavailable)
+
+
 # ---------------------------------------------------------------------------
 # Coordinate conversion helpers
 # ---------------------------------------------------------------------------
