@@ -189,7 +189,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         self, reader: Any, frame_range: tuple[int, int]
     ) -> dict[int, dict[str, np.ndarray]]:
         self._first = int(frame_range[0])
-        self._fg_work, self._owner, self._owner_ids = None, None, []
+        self._reset_whole_frame()
         try:
             out = super().run_shot(reader, frame_range)
         finally:
@@ -318,6 +318,9 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
     # Whole-frame mode
     # ------------------------------------------------------------------
 
+    def _reset_whole_frame(self) -> None:
+        self._fg_work, self._owner, self._owner_ids = None, None, []
+
     def _whole_frame_share(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
         """This track's share of the whole-frame LTX foreground."""
         import cv2
@@ -340,7 +343,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
                 ]
             )
             return up * sam_gate(hard_stack, float(self.params["gate_frac"]))
-        k = self._owner_ids.index(int(self._track_id))  # type: ignore[arg-type]
+        k = self._owner_ids.index(int(self._track_id))
         seam = float(self.params["seam_px"])
         out = np.zeros((T, H, W), np.float32)
         for t in range(T):
@@ -426,6 +429,8 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
             tr = self._hard_masks[t]
             st = tr.get("stack")
             per: dict[int, np.ndarray] = {}
+            if st is None:
+                continue
             for k, f in enumerate(tr.get("frames") or []):
                 li = int(f) - self._first
                 if 0 <= li < T and np.asarray(st[k]).any():
