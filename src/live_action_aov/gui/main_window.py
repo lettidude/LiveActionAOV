@@ -109,6 +109,10 @@ class MainWindow(QMainWindow):
         # _on_submit_finished. The currently-running shot is the head
         # of the deque.
         self._queue: list[ShotState] = []
+        # Every shot this batch has taken (id()): a shot ticked WHILE the
+        # batch runs is picked up when the queue drains (Submit is disabled
+        # meanwhile, so it used to be silently ignored).
+        self._batch_seen: set[int] = set()
         # Set when the user clicks Cancel — the next pop in
         # _start_next_in_queue() honours this and short-circuits the
         # remaining batch instead of starting the next shot.
@@ -478,6 +482,16 @@ class MainWindow(QMainWindow):
                 self._cuda.advisory,
             )
             return
+        # SAM 3.1 runs in its own environment: check it now, not after
+        # the first shot's depth pass.
+        if any(s.detector == "sam3.1" and "sam3_matte_on" in s.enabled_models for s in queue):
+            from live_action_aov.passes.matte.sam31_bridge import find_python
+
+            try:
+                find_python({})
+            except RuntimeError as e:
+                QMessageBox.warning(self, "SAM 3.1 not set up", str(e))
+                return
         # Validate every shot up-front so we fail loud before any
         # expensive work starts.
         for shot in queue:
@@ -505,6 +519,7 @@ class MainWindow(QMainWindow):
             shot.last_error = ""
             self._registry.notify_updated(shot)
         self._queue = queue
+        self._batch_seen = {id(s) for s in queue}
         self._batch_cancelled = False
         self._submit_btn.setEnabled(False)
         # Cancel button activates while the batch runs. Hidden again
@@ -525,6 +540,8 @@ class MainWindow(QMainWindow):
                 shot.status = "queued"
                 self._registry.notify_updated(shot)
             self._queue.clear()
+        if not self._queue and not self._batch_cancelled:
+            self._queue = self._pick_up_late_shots()
         if not self._queue:
             # Done with the whole batch (or batch was cancelled).
             self._progress.setVisible(False)
@@ -554,6 +571,42 @@ class MainWindow(QMainWindow):
             f"({len(shot.enabled_models)} model{'s' if len(shot.enabled_models) != 1 else ''}) ====="
         )
         self._submit_worker.submit(shot)
+
+    def _pick_up_late_shots(self) -> list[ShotState]:
+        """Shots ticked while the batch ran, validated like a Submit click
+        (no dialogs: nobody may be watching an overnight batch)."""
+        late = late_queued_shots(self._registry.shots(), self._batch_seen)
+        out: list[ShotState] = []
+        for shot in late:
+            self._batch_seen.add(id(shot))
+            if shot.output_mode == "root" and shot.output_external_root is None:
+                self._log_panel.append_error(
+                    f"'{shot.name}' was ticked during the batch but has no output root - skipped."
+                )
+                continue
+            if _collect_nc_entries([shot]):
+                self._log_panel.append_error(
+                    f"'{shot.name}' was ticked during the batch and uses non-commercial models - "
+                    "skipped; press Submit to confirm them."
+                )
+                continue
+            shot.status = "queued"
+            shot.last_error = ""
+            self._registry.notify_updated(shot)
+            out.append(shot)
+        if out:
+            self._log_panel.append_lifecycle(
+                f"===== Picked up {len(out)} shot(s) ticked during the batch ====="
+            )
+        return out
+
+    def _show_error(self, title: str, text: str) -> None:
+        """A failure dialog that does NOT block: the queue keeps running
+        behind it (a modal one stopped an overnight batch)."""
+        box = QMessageBox(QMessageBox.Icon.Critical, title, text, parent=self)
+        box.setModal(False)
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.show()
 
     def _on_cancel_clicked(self) -> None:
         # First click flips both the worker's CancelToken AND a
@@ -616,12 +669,11 @@ class MainWindow(QMainWindow):
             # In a batch, a failure on one shot shouldn't nuke the
             # whole queue — warn the user and keep going. For a single
             # shot, surface the error as a blocking dialog.
-            if len(self._queue) <= 1:
-                QMessageBox.critical(
-                    self,
-                    f"Submit failed — {target.name}",
-                    result.error or "unknown error",
-                )
+            more = len(self._queue) > 1 or bool(
+                late_queued_shots(self._registry.shots(), self._batch_seen)
+            )
+            if not more:
+                self._show_error(f"Submit failed — {target.name}", result.error or "unknown error")
             else:
                 self.statusBar().showMessage(f"'{target.name}' failed — continuing batch", 8_000)
         self._registry.notify_updated(target)
@@ -647,6 +699,15 @@ class MainWindow(QMainWindow):
         cur = self._registry.current()
         if cur is not None:
             self._shot_list.preview_output(cur)
+
+
+def late_queued_shots(shots: list[ShotState], seen: set[int]) -> list[ShotState]:
+    """Ticked shots with passes that this batch has not taken yet."""
+    return [
+        s
+        for s in shots
+        if s.queued and s.enabled_passes and id(s) not in seen and s.status != "running"
+    ]
 
 
 def _latest_run(shot: ShotState) -> Path | None:
