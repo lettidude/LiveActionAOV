@@ -446,9 +446,13 @@ def test_declared_contract():
         "camera_nk",
         "camera_points",
     }
-    # SAM 3 is a SOFT dependency: the camera runs with or without it.
+    # SAM 3 and a flow pass are SOFT dependencies: the camera runs with or without them.
     assert PyColmapCameraPass.requires_artifacts == []
-    assert PyColmapCameraPass.optional_artifacts == ["sam3_hard_masks"]
+    assert PyColmapCameraPass.optional_artifacts == [
+        "sam3_hard_masks",
+        "forward_flow",
+        "backward_flow",
+    ]
     assert mod._SUPPORTED_MODELS == ("SIMPLE_PINHOLE", "PINHOLE", "SIMPLE_RADIAL")
 
 
@@ -607,3 +611,50 @@ def test_colmap_worker_round_trip(tmp_path: Path):
         cv2.imwrite(str(tmp_path / names[-1]), (rng.random((64, 96)) * 255).astype(np.uint8))
     with pytest.raises(RuntimeError, match="no reconstruction"):
         mod.run_colmap_subprocess(tmp_path, tmp_path, None, names, PyColmapCameraPass().params)
+
+
+def test_sift_threads_fit_the_free_ram():
+    """SIFT holds ~0.3 GB per megapixel per thread: fewer threads when RAM is short."""
+    assert mod.sift_threads_for_ram(1920, 1080, None, 32) == 8  # RAM unknown: capped
+    assert mod.sift_threads_for_ram(1920, 1080, None, 4) == 4
+    assert mod.sift_threads_for_ram(1920, 1080, 200.0, 32) == 32
+    few = mod.sift_threads_for_ram(2816, 1584, 10.0, 32)
+    assert 1 <= few < 32
+    assert mod.sift_threads_for_ram(2816, 1584, 0.1, 32) == 1  # never zero
+
+
+def test_frames_come_from_the_plate_when_the_proxy_is_smaller(tmp_path: Path):
+    """max_image_size above the proxy size: SIFT reads the full-res plate."""
+    small, big = np.zeros((20, 40, 3), np.float32), np.zeros((80, 160, 3), np.float32)
+
+    class _Proxied:
+        def resolution(self):
+            return (40, 20)
+
+        def full_res_resolution(self):
+            return (160, 80)
+
+        def read_frame(self, f):
+            return small, {}
+
+        def read_frame_full_res(self, f):
+            return big, {}
+
+    p = PyColmapCameraPass({"max_image_size": 100})
+    _out, plate_wh, solve_wh = p._export_frames(_Proxied(), (1, 3), tmp_path)
+    assert plate_wh == (160, 80) and solve_wh == (100, 50)
+    # At or under the proxy size, the proxy frames are enough.
+    p = PyColmapCameraPass({"max_image_size": 40})
+    _out, _plate, solve_wh = p._export_frames(_Proxied(), (1, 3), tmp_path)
+    assert solve_wh == (40, 20)
+
+
+def test_fov_from_a_partial_colmap_solve():
+    from live_action_aov.io.camera_schema import Intrinsics
+
+    def solve_with(fx: float) -> CameraSolve:
+        intr = Intrinsics(fx_px=fx, fy_px=fx, cx_px=960, cy_px=540, width_px=1920, height_px=1080)
+        return CameraSolve(backend={"name": "t", "version": "0"}, intrinsics=intr)
+
+    assert mod._fov_x_deg(solve_with(960.0)) == pytest.approx(90.0)
+    assert mod._fov_x_deg(solve_with(0.0)) is None

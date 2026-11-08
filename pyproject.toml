@@ -125,7 +125,7 @@ moge3 = [
 matanyone2 = []
 # Camera track — classical SfM via pycolmap (BSD-3-Clause). PyPI wheels for
 # Windows/Linux/macOS, no C++ build, no CUDA toolkit; SIFT runs on CPU.
-camera = ["pycolmap>=4.2", "opencv-python-headless>=4.7"]
+camera = ["pycolmap>=4.2", "opencv-python-headless>=4.7", "psutil>=5.9"]
 # Gaussian splat pass: gsplat itself is NOT here (no PyPI wheel with CUDA
 # kernels for torch 2.11 / cu128) - it comes from wheels/*.whl, installed
 # --no-deps by install/update scripts (docs/gaussian_splat.md). These are

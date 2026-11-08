@@ -32,6 +32,7 @@ from live_action_aov.core.job import Job, PassConfig, Shot
 from live_action_aov.core.output_layout import next_version_dir, plate_sibling_dir
 from live_action_aov.core.pass_base import License
 from live_action_aov.core.registry import get_registry
+from live_action_aov.core.work_dir import set_work_root
 from live_action_aov.io.readers.oiio_exr import OIIOExrReader
 
 app = typer.Typer(
@@ -79,8 +80,18 @@ def main_callback(
             "`liveaov prefetch` once online first.",
         ),
     ] = False,
+    work_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--work-root",
+            help="Folder for temporary frames exported from the plate (default: the "
+            "system temp folder; sets LAOV_WORK_ROOT). Use a local disk, not a share.",
+        ),
+    ] = None,
 ) -> None:
     """Top-level options."""
+    if work_root is not None:
+        set_work_root(work_root)
     if offline:
         # Set before any pass imports huggingface_hub (loads are lazy). A
         # blip / outage can no longer abort a run whose weights are cached.

@@ -603,6 +603,7 @@ all = [
     { name = "kornia" },
     { name = "ninja" },
     { name = "opencv-python-headless" },
+    { name = "psutil" },
     { name = "pycolmap" },
     { name = "rich" },
     { name = "scipy" },
@@ -617,6 +618,7 @@ birefnet = [
 ]
 camera = [
     { name = "opencv-python-headless" },
+    { name = "psutil" },
     { name = "pycolmap" },
 ]
 depthcrafter = [
@@ -708,6 +710,7 @@ requires-dist = [
     { name = "opencv-python-headless", marker = "extra == 'video-depth-anything'", specifier = ">=4.7" },
     { name = "platformdirs", specifier = ">=4.2" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7" },
+    { name = "psutil", marker = "extra == 'camera'", specifier = ">=5.9" },
     { name = "pycolmap", marker = "extra == 'camera'", specifier = ">=4.2" },
     { name = "pydantic", specifier = ">=2.5" },
     { name = "pyside6", specifier = ">=6.6" },

@@ -36,6 +36,11 @@ class EngineChoice:
 RUN_ENGINES: tuple[EngineChoice, ...] = (
     EngineChoice(("vitmatte", ""), "Auto (recommended) - ViTMatte + BiRefNet guide"),
     EngineChoice(("chromakey", ""), "Green / blue screen - Chroma key"),
+    # One LTX run on the whole frame, split between the objects by nearest
+    # one: fast action, motion blur, edges SAM misses (your ComfyUI).
+    EngineChoice(
+        ("ltx_whole", ""), "LTX Alpha whole frame - action, motion blur (your ComfyUI)", True
+    ),
     EngineChoice(("birefnet", ""), "BiRefNet Portrait - people, hair", advanced=True),
     EngineChoice(
         ("birefnet", "ZhengPeng7/BiRefNet-matting"), "BiRefNet Matting - general soft", True

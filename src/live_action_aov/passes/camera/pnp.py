@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -133,10 +134,14 @@ def track_klt(
     fb_max_px: float = 1.0,
     win: int = 21,
     levels: int = 4,
+    guide: Callable[[int, int, np.ndarray], np.ndarray | None] | None = None,
 ) -> np.ndarray:
     """Track `uv` (N, 2) from frame `anchor` through `gray` (uint8 frames)
     both ways. Returns (T, N, 2), NaN once a point is lost (it never comes
-    back: a re-found point could be another one)."""
+    back: a re-found point could be another one).
+
+    `guide(a, b, pts)` (see `flow_guide`) predicts each step, forward and
+    backward; LK then refines from the prediction on a shallow pyramid."""
     cv2: Any = importlib.import_module("cv2")  # its stubs reject the None arguments
 
     T, N = len(gray), len(uv)
@@ -148,6 +153,7 @@ def track_klt(
         "maxLevel": levels,
         "criteria": (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
     }
+    guided = {**lk, "maxLevel": 1, "flags": cv2.OPTFLOW_USE_INITIAL_FLOW}
     for step in (1, -1):
         alive = np.ones(N, bool)
         prev = uv.copy()
@@ -155,8 +161,16 @@ def track_klt(
         while 0 <= t < T and alive.any():
             idx = np.nonzero(alive)[0]
             p0 = prev[idx].reshape(-1, 1, 2)
-            p1, st1, _ = cv2.calcOpticalFlowPyrLK(gray[t - step], gray[t], p0, None, **lk)
-            pb, st2, _ = cv2.calcOpticalFlowPyrLK(gray[t], gray[t - step], p1, None, **lk)
+            g1 = guide(t - step, t, prev[idx]) if guide is not None else None
+            if g1 is None:
+                p1, st1, _ = cv2.calcOpticalFlowPyrLK(gray[t - step], gray[t], p0, None, **lk)
+                pb, st2, _ = cv2.calcOpticalFlowPyrLK(gray[t], gray[t - step], p1, None, **lk)
+            else:
+                p1 = g1.astype(np.float32).reshape(-1, 1, 2)
+                p1, st1, _ = cv2.calcOpticalFlowPyrLK(gray[t - step], gray[t], p0, p1, **guided)
+                gb = guide(t, t - step, p1.reshape(-1, 2)) if guide is not None else None
+                pb = (gb if gb is not None else prev[idx]).astype(np.float32).reshape(-1, 1, 2)
+                pb, st2, _ = cv2.calcOpticalFlowPyrLK(gray[t], gray[t - step], p1, pb, **guided)
             p1, pb = p1.reshape(-1, 2), pb.reshape(-1, 2)
             ok = (st1[:, 0] == 1) & (st2[:, 0] == 1)
             ok &= np.linalg.norm(pb - prev[idx], axis=1) <= fb_max_px
@@ -171,6 +185,44 @@ def track_klt(
             out[t, idx[ok]] = p1[ok]
             t += step
     return out
+
+
+def flow_guide(
+    fwd: dict[int, np.ndarray],
+    bwd: dict[int, np.ndarray],
+    frames: list[int],
+    scale: float = 1.0,
+) -> Callable[[int, int, np.ndarray], np.ndarray | None]:
+    """Predict where points at frame index `a` are at index `b` (= a +- 1)
+    from a flow pass's vectors: `fwd[f]` / `bwd[f]` are (2, h, w) flow from
+    frame f to f+1 / f-1 in flow px, `scale` = solve px per flow px.
+
+    Only a guess for `track_klt`: chaining the vectors alone drifts (a
+    0.2 px/frame bias is 15 px after 60 frames), while LK started from the
+    guess stays locked to the texture and still follows motion far beyond
+    its own search window."""
+
+    def guide(a: int, b: int, pts: np.ndarray) -> np.ndarray | None:
+        field = (fwd if b > a else bwd).get(frames[a])
+        if field is None:
+            return None
+        return pts + _sample_flow(field, pts / scale) * scale
+
+    return guide
+
+
+def _sample_flow(flow: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Bilinear (N, 2) sample of a (2, h, w) flow field at `pts` (x, y)."""
+    cv2: Any = importlib.import_module("cv2")
+    mx = pts[:, 0].astype(np.float32).reshape(-1, 1)
+    my = pts[:, 1].astype(np.float32).reshape(-1, 1)
+    u = cv2.remap(
+        flow[0].astype(np.float32), mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
+    )
+    v = cv2.remap(
+        flow[1].astype(np.float32), mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
+    )
+    return np.concatenate([u, v], axis=1)
 
 
 def solve_poses(

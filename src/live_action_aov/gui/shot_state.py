@@ -126,14 +126,25 @@ class ShotState:
     # zoomed tiles of the frame. Injected as the sam3_matte `small_objects`.
     small_objects: str = "auto"
 
+    # Detector + tracker for the concepts: "sam3" (built in) or "sam3.1"
+    # (Meta's SAM 3.1 Object Multiplex in its own Python 3.12 environment,
+    # LAOV_SAM31_PYTHON). Injected as the sam3_matte `detector`.
+    detector: str = "sam3"
+
+    # Camera track: when COLMAP and the rotation-only fallback both fail,
+    # solve from MoGe-3 depth of the middle frame (depth-anchored PnP).
+    # Injected as the camera_pycolmap `pnp_fallback`.
+    camera_pnp_fallback: bool = True
+
     # Which soft-edge refiner weights to use, per shot — drives BOTH the
     # Masks-tab preview and the submit. Empty = the pass default (portrait).
     # HF model id string (e.g. "ZhengPeng7/BiRefNet-matting").
     refiner_model: str = ""
 
     # The RUN's default engine for objects without a per-object pin:
-    # "birefnet" | "vitmatte" | "chromakey" | "rvm". BiRefNet weight
-    # variants ride on refiner_model.
+    # "birefnet" | "vitmatte" | "chromakey" | "rvm" | "ltx_whole" (LTX Alpha
+    # once on the whole frame, split by object). BiRefNet weight variants
+    # ride on refiner_model.
     default_engine: str = "vitmatte"
 
     # Masks-tab PREVIEW override: which refiner engine the seed-frame
