@@ -46,7 +46,7 @@ from typing import Any
 
 import numpy as np
 
-from live_action_aov.core.output_layout import SPLAT_DIR, run_stem, sub_dir
+from live_action_aov.core.output_layout import SPLAT_DIR, file_name, sub_dir
 from live_action_aov.core.pass_base import (
     ChannelSpec,
     License,
@@ -80,6 +80,7 @@ class GsplatSplatPass(UtilityPass):
     )
     pass_type = PassType.SCENE_3D
     temporal_mode = TemporalMode.VIDEO_CLIP
+    needs_full_frame = True
     # Train and output in scene-linear: the clean plate must comp straight
     # back over the plate.
     input_colorspace = "scene_linear"
@@ -389,12 +390,11 @@ class GsplatSplatPass(UtilityPass):
         if self._splats is None:
             return {}
         out_dir = sub_dir(shot, SPLAT_DIR)
-        stem = run_stem(shot)
-        path = out_dir / f"{stem}.splat.ply"
+        path = out_dir / file_name(shot, "splat", "ply")
         write_3dgs_ply(self._splats, path)
         import json
 
-        (out_dir / f"{stem}.splat.json").write_text(
+        (out_dir / file_name(shot, "splat", "json")).write_text(
             json.dumps(self.report, indent=2), encoding="utf-8"
         )
         return {"splat": path}

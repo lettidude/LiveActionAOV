@@ -94,6 +94,8 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
         "small_objects": s.small_objects,
         "detector": s.detector,
         "camera_pnp_fallback": bool(s.camera_pnp_fallback),
+        "work_range": None if s.work_range is None else [int(v) for v in s.work_range],
+        "crop": None if s.crop is None else [int(v) for v in s.crop],
         "refiner_model": s.refiner_model,
         "default_engine": s.default_engine,
         "preview_refiner": s.preview_refiner,
@@ -116,6 +118,7 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
         "delivery_compression": s.delivery_compression,
         "delivery_dtype": s.delivery_dtype,
         "delivery_layout": s.delivery_layout,
+        "naming": s.naming,
         "queued": bool(s.queued),
     }
 
@@ -166,6 +169,10 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         small_objects=str(d.get("small_objects", "auto")),
         detector=str(d.get("detector", "sam3")),
         camera_pnp_fallback=bool(d.get("camera_pnp_fallback", True)),
+        work_range=(
+            None if not d.get("work_range") else (int(d["work_range"][0]), int(d["work_range"][1]))
+        ),
+        crop=(None if not d.get("crop") else tuple(int(v) for v in d["crop"])),  # type: ignore[arg-type]
         refiner_model=str(d.get("refiner_model", "")),
         default_engine=str(d.get("default_engine", "birefnet")),
         preview_refiner=str(d.get("preview_refiner", "auto")),
@@ -178,6 +185,7 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         delivery_compression=str(d.get("delivery_compression", "zip")),
         delivery_dtype=str(d.get("delivery_dtype", "float32")),
         delivery_layout=str(d.get("delivery_layout", "multilayer")),
+        naming=str(d.get("naming", "")),
         queued=bool(d.get("queued", True)),
     )
 

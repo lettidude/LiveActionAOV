@@ -30,12 +30,13 @@ from live_action_aov.core.cancel import CancelledError, CancelToken
 from live_action_aov.core.dag import PassNode, topological_sort
 from live_action_aov.core.job import Job, PassConfig, PostConfig, Shot
 from live_action_aov.core.logging_setup import RunLoggingSession
-from live_action_aov.core.output_layout import LOGS_DIR, run_stem
+from live_action_aov.core.output_layout import LOGS_DIR, file_name, frame_template
 from live_action_aov.core.output_layout import sidecar_template as layout_sidecar_template
 from live_action_aov.core.pass_base import TemporalMode, UtilityPass
 from live_action_aov.core.registry import get_registry
 from live_action_aov.executors.base import Executor
 from live_action_aov.io.oiio_io import OiioError
+from live_action_aov.io.readers.crop import wrap_if_crop
 from live_action_aov.io.readers.display_transform_reader import (
     DisplayTransformedReader,
     LinearizedReader,
@@ -187,7 +188,17 @@ class LocalExecutor(Executor):
         ordered = topological_sort(nodes)
         resolved_by_name = {pc.name: (pc, cls) for (pc, cls) in resolved}
 
+        if shot.crop is not None:
+            whole = [pc.name for pc, cls in resolved if getattr(cls, "needs_full_frame", False)]
+            if whole:
+                raise ValueError(
+                    f"{', '.join(whole)}: a camera solve / clean plate needs the whole frame. "
+                    "Clear the crop or untick these passes."
+                )
+
         raw_reader: Any = OIIOExrReader(shot.folder, shot.sequence_pattern)
+        # Crop first (plate pixels), then proxy: a proxy scales the crop.
+        raw_reader = wrap_if_crop(raw_reader, shot.crop)
         # Proxy resolution for fast iterations. Wraps the raw reader
         # with a resize-on-read shim before the display transform sees
         # anything, so exposure analysis runs on the downsampled clip
@@ -431,7 +442,16 @@ class LocalExecutor(Executor):
             # right before writing. Professional VFX tools treat proxy
             # as invisible to downstream comp — sidecars at proxy res
             # force a Nuke Resize + quality loss that's avoidable here.
-            plate_w, plate_h = shot.resolution
+            # With a crop the "plate" the passes saw is the crop; the EXR
+            # places it back inside the full plate (data vs display window).
+            plate_w, plate_h = (
+                (shot.crop[2], shot.crop[3]) if shot.crop is not None else shot.resolution
+            )
+            window: dict[str, Any] = (
+                {"origin": (shot.crop[0], shot.crop[1]), "full_size": tuple(shot.resolution)}
+                if shot.crop is not None
+                else {}
+            )
             needs_upscale = False
             if shot.proxy_long_edge is not None:
                 # Check the first channel's shape against plate res.
@@ -467,16 +487,29 @@ class LocalExecutor(Executor):
                 if needs_upscale:
                     channels = _upscale_channels_to_plate(channels, plate_h, plate_w)
                 out_path = sidecar_dir / sidecar_template.format(frame=frame_idx)
+                # (path, channels, path of the lossless Cryptomatte sibling)
+                targets: list[tuple[Path, dict[str, Any], Path]]
                 if per_pass:
                     groups: dict[str, dict[str, Any]] = {}
                     for ch_name, arr in channels.items():
                         groups.setdefault(pass_group(ch_name), {})[ch_name] = arr
                     targets = [
-                        (out_path.parent / g / _per_pass_name(out_path.name, g), chs)
+                        (
+                            sidecar_dir / frame_template(shot, g, sub=g).format(frame=frame_idx),
+                            chs,
+                            sidecar_dir
+                            / frame_template(shot, "crypto", sub=g).format(frame=frame_idx),
+                        )
                         for g, chs in groups.items()
                     ]
                 else:
-                    targets = [(out_path, channels)]
+                    targets = [
+                        (
+                            out_path,
+                            channels,
+                            sidecar_dir / frame_template(shot, "crypto").format(frame=frame_idx),
+                        )
+                    ]
                 attrs = dict(attrs_base)
                 attrs[f"{METADATA_NAMESPACE}/frame"] = frame_idx
                 for node in ordered:
@@ -502,7 +535,7 @@ class LocalExecutor(Executor):
                     attrs[f"{METADATA_NAMESPACE}/matte/detector"] = matte_detector_cls.name
                 # Retry the write: sidecars usually land on a NAS, and a
                 # momentary share blip shouldn't throw away a multi-pass shot.
-                for t_path, t_channels in targets:
+                for t_path, t_channels, t_crypto in targets:
                     t_path.parent.mkdir(parents=True, exist_ok=True)
                     _retry_io(
                         partial(
@@ -511,6 +544,8 @@ class LocalExecutor(Executor):
                             t_channels,
                             attrs=attrs,
                             pixel_aspect=shot.pixel_aspect,
+                            crypto_path=t_crypto,
+                            **window,
                         ),
                         what=f"sidecar write {t_path.name}",
                     )
@@ -685,14 +720,6 @@ def _node_for(pc: PassConfig, cls: type[UtilityPass]) -> PassNode:
     )
 
 
-def _per_pass_name(multilayer_name: str, group: str) -> str:
-    """`shot.utility.1001.exr` -> `shot.<group>.1001.exr` (per-pass layout)."""
-    if ".utility." in multilayer_name:
-        return multilayer_name.replace(".utility.", f".{group}.", 1)
-    stem, dot, ext = multilayer_name.rpartition(".")
-    return f"{stem}.{group}.{ext}" if dot else f"{multilayer_name}.{group}"
-
-
 def _hash_pattern(template: str) -> str:
     """`shot.utility.{frame:04d}.exr` -> `shot.utility.####.exr`."""
     import re
@@ -714,8 +741,6 @@ def _write_comp_script(
     if not written_channels and "camera_nk" not in shot.sidecars:
         return None
     pattern = _hash_pattern(sidecar_template)
-    pdir, _, pname = pattern.rpartition("/")
-    pdir = f"{pdir}/" if pdir else ""
     crypto = [c for c in written_channels if c.lower().startswith("crypto")]
     reads: list[CompRead] = []
     crypto_rel: str | None = None
@@ -727,17 +752,21 @@ def _write_comp_script(
             groups.setdefault(pass_group(ch), []).append(ch)
         for g, chs in groups.items():
             reads.append(
-                CompRead(group=g, rel_pattern=f"{pdir}{g}/{_per_pass_name(pname, g)}", channels=chs)
+                CompRead(
+                    group=g, rel_pattern=_hash_pattern(frame_template(shot, g, sub=g)), channels=chs
+                )
             )
         if crypto:
-            base = f"{pdir}cryptomatte/{_per_pass_name(pname, 'cryptomatte')}"
-            crypto_rel = base.replace(".exr", ".crypto.exr") if crypto_split else base
+            cg = pass_group(crypto[0])
+            crypto_rel = _hash_pattern(
+                frame_template(shot, "crypto" if crypto_split else cg, sub=cg)
+            )
     else:
         main = [c for c in written_channels if c not in crypto]
         if main:
             reads.append(CompRead(group="all passes", rel_pattern=pattern, channels=main))
         if crypto:
-            crypto_rel = pattern.replace(".exr", ".crypto.exr") if crypto_split else pattern
+            crypto_rel = _hash_pattern(frame_template(shot, "crypto")) if crypto_split else pattern
     plate = (Path(shot.folder) / shot.sequence_pattern).as_posix()
     cam = shot.sidecars.get("camera_nk")
     pts = shot.sidecars.get("camera_points_obj")
@@ -747,7 +776,7 @@ def _write_comp_script(
             pts_rel = Path(pts).relative_to(sidecar_dir).as_posix()
         except ValueError:
             pts_rel = None
-    out = Path(sidecar_dir) / f"{run_stem(shot)}.comp.nk"
+    out = Path(sidecar_dir) / file_name(shot, "comp", "nk")
     return write_comp_script(
         out,
         shot_name=shot.name,

@@ -119,6 +119,10 @@ class UtilityPass(ABC):
     vram_estimate_gb_fn: Callable[[int, int], float] = staticmethod(lambda w, h: 0.0)
     model_native_resolution: tuple[int, int] | None = None
     supports_tiling: bool = False
+    # True for passes that only make sense on the whole plate (a camera
+    # solve, the Gaussian splat): the executor refuses them when the shot
+    # has a crop, instead of solving from a quarter of the image.
+    needs_full_frame: bool = False
 
     # --- Temporal behavior ---
     temporal_mode: TemporalMode = TemporalMode.PER_FRAME

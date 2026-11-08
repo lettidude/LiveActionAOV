@@ -356,6 +356,32 @@ def run_shot(
             "trusts whatever the plate's metadata says.",
         ),
     ] = None,
+    first: Annotated[
+        int | None,
+        typer.Option("--first", help="First frame to process (default: the plate's first)."),
+    ] = None,
+    last: Annotated[
+        int | None,
+        typer.Option("--last", help="Last frame to process (default: the plate's last)."),
+    ] = None,
+    crop: Annotated[
+        str | None,
+        typer.Option(
+            "--crop",
+            help="Process one box of the plate only: `x,y,w,h` in plate pixels, origin "
+            "top-left. The EXRs keep the full plate as display window with the crop as "
+            "data window, so Nuke places them. Camera and splat need the whole frame.",
+        ),
+    ] = None,
+    naming: Annotated[
+        str | None,
+        typer.Option(
+            "--naming",
+            help="File naming template, e.g. `{shot}_{pass}_{version}.{frame}.{ext}`. "
+            "Tokens: shot, plate, version, pass, frame, ext. Default "
+            "`{shot}_{version}.{pass}.{frame}.{ext}`.",
+        ),
+    ] = None,
 ) -> None:
     """Run passes on the EXR sequence in `folder` and write sidecar EXRs."""
     raw_names = [p.strip() for p in passes.split(",") if p.strip()]
@@ -385,20 +411,45 @@ def run_shot(
 
     # Discover the sequence - find one EXR, derive a `####` pattern.
     pattern, frame_range, resolution, pixel_aspect = _sniff_sequence(folder)
-    shot = Shot(
-        name=folder.name,
-        folder=folder,
-        apply_display_transform=display_transform,
-        colorspace=colorspace or "auto",
-        sequence_pattern=pattern,
-        frame_range=frame_range,
-        resolution=resolution,
-        pixel_aspect=pixel_aspect,
-        passes_enabled=pass_names,
-        output_dir=next_version_dir(
-            out / folder.name if out is not None else plate_sibling_dir(folder)
-        ),
-    )
+    plate_first, plate_last = frame_range
+    work_first = plate_first if first is None else int(first)
+    work_last = plate_last if last is None else int(last)
+    if not (plate_first <= work_first <= work_last <= plate_last):
+        console.print(
+            f"[red]--first/--last {work_first}..{work_last} is outside the plate "
+            f"{plate_first}..{plate_last}.[/red]"
+        )
+        raise typer.Exit(code=2)
+    crop_box: tuple[int, int, int, int] | None = None
+    if crop:
+        try:
+            parts = [int(p) for p in crop.replace(" ", "").split(",")]
+            if len(parts) != 4:
+                raise ValueError
+            crop_box = (parts[0], parts[1], parts[2], parts[3])
+        except ValueError:
+            console.print("[red]--crop wants four integers: x,y,w,h (plate pixels).[/red]")
+            raise typer.Exit(code=2) from None
+    try:
+        shot = Shot(
+            name=folder.name,
+            folder=folder,
+            apply_display_transform=display_transform,
+            colorspace=colorspace or "auto",
+            sequence_pattern=pattern,
+            frame_range=(work_first, work_last),
+            resolution=resolution,
+            pixel_aspect=pixel_aspect,
+            passes_enabled=pass_names,
+            output_dir=next_version_dir(
+                out / folder.name if out is not None else plate_sibling_dir(folder)
+            ),
+            naming=naming or "",
+            crop=crop_box,
+        )
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from None
     moge3 = _moge3_outputs(raw_names, depth_backend=depth_backend, normals_backend=normals_backend)
     job = Job(
         shot=shot,

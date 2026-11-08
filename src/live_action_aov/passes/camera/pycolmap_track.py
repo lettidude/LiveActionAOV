@@ -52,7 +52,7 @@ from typing import Any, NoReturn
 
 import numpy as np
 
-from live_action_aov.core.output_layout import CAMERA_DIR, run_stem, sub_dir
+from live_action_aov.core.output_layout import CAMERA_DIR, file_name, run_stem, sub_dir
 from live_action_aov.core.pass_base import (
     License,
     PassType,
@@ -96,6 +96,7 @@ class PyColmapCameraPass(UtilityPass):
     )
     pass_type = PassType.CAMERA
     temporal_mode = TemporalMode.VIDEO_CLIP
+    needs_full_frame = True
     # SIFT wants display-referred contrast; scene-linear would crush shadows.
     input_colorspace = "srgb_display"
 
@@ -319,10 +320,10 @@ class PyColmapCameraPass(UtilityPass):
         )
         out_dir = sub_dir(shot, CAMERA_DIR)
         stem = run_stem(shot)
-        json_path = out_dir / f"{stem}.camera.json"
-        nk_path = out_dir / f"{stem}.camera.nk"
-        ply_path = out_dir / f"{stem}.points.ply"
-        obj_path = out_dir / f"{stem}.points.obj"
+        json_path = out_dir / file_name(shot, "camera", "json")
+        nk_path = out_dir / file_name(shot, "camera", "nk")
+        ply_path = out_dir / file_name(shot, "points", "ply")
+        obj_path = out_dir / file_name(shot, "points", "obj")
         json_path.write_text(self._solve.model_dump_json(indent=2), encoding="utf-8")
         nk_path.write_text(render_nuke_camera_script(self._solve), encoding="utf-8")
         write_points_ply(self._solve, ply_path)

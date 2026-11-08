@@ -6,6 +6,24 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Part of a shot only.** Per shot, a **frame range** (in / out inside the plate) and a **crop**
+  box drawn in the viewer (Output tab → *Draw crop in viewer*; CLI `--first/--last`, `--crop x,y,w,h`).
+  Passes run on the box as if it were the plate (a proxy scales the crop); the EXRs carry the box
+  as data window inside the plate's display window, so Nuke places them, and the output preview
+  pads them back over the plate. Click prompts move into crop coordinates. The camera track and
+  the Gaussian splat need the whole frame (`needs_full_frame`) and refuse a crop with a clear
+  message. Asked for by a studio compositor.
+- **File naming template** (`Shot.naming`, Output tab → *File naming*, CLI `--naming`): one template
+  for every file of a run with `{shot} {plate} {version} {pass} {frame} {ext}`, presets for the
+  common studio orders (`SH010_utility_v001.1001.exr`, ...). Files without a frame (comp, camera,
+  splat) drop the frame token. The default is unchanged.
+
+### Changed
+- With a lossy delivery the lossless Cryptomatte sibling is now `<shot>_v001.crypto.####.exr`
+  (`{pass}` = `crypto`) instead of `<shot>_v001.utility.####.crypto.exr`, so it follows the naming
+  template like every other file. The comp script points at the new name.
+
 ## [0.12.0] — 2026-11-08
 
 ### Added

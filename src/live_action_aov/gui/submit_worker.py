@@ -207,7 +207,7 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
         name=state.name,
         folder=state.folder,
         sequence_pattern=state.sequence_pattern,
-        frame_range=state.frame_range,
+        frame_range=state.effective_frame_range(),
         resolution=state.resolution,
         pixel_aspect=state.pixel_aspect,
         colorspace=state.effective_colorspace(),
@@ -219,6 +219,8 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
         delivery_compression=state.delivery_compression,
         delivery_dtype=state.delivery_dtype,
         delivery_layout=state.delivery_layout,
+        naming=state.naming,
+        crop=state.crop,
     )
 
 
@@ -234,6 +236,7 @@ def _parse_concepts(raw: str) -> list[str]:
 def _serialize_click_instances(
     instances: list[ClickInstance],
     ref_size: tuple[int, int],
+    crop: tuple[int, int, int, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Project the GUI's ClickInstance objects into plain JSON-friendly dicts
     for the `sam3_matte` pass's `prompt_instances` param:
@@ -242,13 +245,28 @@ def _serialize_click_instances(
 
     `ref_size` is the plate resolution the clicks were captured at — the pass
     rescales the coordinates onto whatever frames it actually reads, so proxy
-    mode can't shift the clicks. Instances with neither points nor a box are
-    dropped — there is nothing to seed the tracker with.
+    mode can't shift the clicks. With a `crop` (x, y, w, h) the pass only sees
+    that box, so the clicks move into crop coordinates (`ref_size` becomes the
+    crop size); points outside the crop are dropped, a box is clipped to it.
+    Instances left with neither points nor a box are dropped — there is
+    nothing to seed the tracker with.
     """
     out: list[dict[str, Any]] = []
     for inst in instances:
         pts = [[float(x), float(y), int(lbl)] for (x, y, lbl) in inst.points]
         box = [float(v) for v in inst.box] if inst.box is not None else None
+        if crop is not None:
+            cx, cy, cw, ch = (float(v) for v in crop)
+            pts = [
+                [x - cx, y - cy, lbl]
+                for x, y, lbl in pts
+                if cx <= x < cx + cw and cy <= y < cy + ch
+            ]
+            if box is not None:
+                bx0, by0 = max(box[0], cx) - cx, max(box[1], cy) - cy
+                bx1, by1 = min(box[2], cx + cw) - cx, min(box[3], cy + ch) - cy
+                box = [bx0, by0, bx1, by1] if bx1 > bx0 and by1 > by0 else None
+            ref_size = (int(cw), int(ch))
         if not pts and box is None:
             continue
         out.append(
@@ -275,7 +293,7 @@ def _sam3_matte_params(state: ShotState) -> dict[str, Any]:
     concepts = _parse_concepts(state.sam3_concepts)
     if concepts:
         params["concepts"] = concepts
-    clicks = _serialize_click_instances(state.click_instances, state.resolution)
+    clicks = _serialize_click_instances(state.click_instances, state.resolution, state.crop)
     if clicks:
         params["prompt_instances"] = clicks
         if not concepts:

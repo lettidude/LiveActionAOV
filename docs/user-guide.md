@@ -17,6 +17,9 @@ liveaov inspect <sidecar.exr>                 # structural QC of a sidecar
 ```
 
 `liveaov run-shot --help` lists every option (passes, backends, output root, proxy, colourspace).
+Part of a shot only: `--first 1010 --last 1060` (frames) and `--crop x,y,w,h` (one box of the
+plate, pixels from the top-left). Studio file names: `--naming "{shot}_{pass}_{version}.{frame}.{ext}"`,
+see [File naming](#file-naming).
 
 ### `liveaov inspect` — sidecar QC at the terminal
 
@@ -88,8 +91,8 @@ liveaov-gui
    - **Engine** (beside the object list) sets this object's own soft-edge engine; picking one re-previews the object with it straight away, and the submit uses the same engine. Default = the run engine from the Passes tab.
    - **Fewer inputs work better** — a box or 2–6 points beats dozens; SAM collapses under too many point constraints.
    - At submit, each object propagates across the shot into a `mask.<name>` channel + a named **Cryptomatte ID**.
-4. **Output tab** — choose the output **root** (required; remembered between sessions) and an optional proxy resolution for fast iterations. Nothing is ever written next to the plate. Every run is a new version, see [Output folders](#output-folders).
-   The **layout** combo picks one multi-layer EXR (one Read in Nuke) or one EXR per pass in subfolders (`passes/depth/`, `passes/matte/` ...).
+4. **Output tab** — at the top, **this shot only**: the **frames** to process (in / out inside the plate, *Whole plate* resets) and a **crop**: press *Draw crop in viewer*, drag a box on the image. Passes run on that box only (faster, and a small subject fills the models' input); the EXRs keep the full plate as display window with the box as data window, so Nuke places them where they belong. The camera track and the clean plate need the whole frame and refuse to run with a crop.
+   Below, for every shot: where the versions go (next to the plate, or one **root**; remembered between sessions), an optional proxy resolution for fast iterations, the EXR delivery, the **layout** (one multi-layer EXR, one Read in Nuke; or one EXR per pass in subfolders `passes/depth/`, `passes/matte/` ...) and the **file naming** template, see [File naming](#file-naming). Every run is a new version, see [Output folders](#output-folders).
 5. **Submit local** — runs the pipeline; a log panel shows progress.
 6. **Preview output** (button, or right-click a shot) — look at what the last run made without Nuke: pick a version and a layer (each mask, depth, normals, flow, the splat clean plate ...), scrub frames, show a mask over the plate. Camera and splat solves are summarised (frames solved, reprojection error, PSNR). Right-click also opens the output / plate folder and the comp in Nuke.
 
@@ -98,8 +101,8 @@ liveaov-gui
 ```text
 <root>/<shot>/v001/
     <shot>_v001.comp.nk                       <- open this in Nuke
-    passes/<shot>_v001.utility.####.exr      (per-pass layout: passes/<pass>/...)
-    passes/<shot>_v001.utility.####.crypto.exr   (lossy delivery: Cryptomatte kept lossless)
+    passes/<shot>_v001.utility.####.exr      (per-pass layout: passes/<pass>/<shot>_v001.<pass>.####.exr)
+    passes/<shot>_v001.crypto.####.exr       (lossy delivery only: Cryptomatte kept lossless)
     camera/<shot>_v001.camera.nk  .camera.json  .points.obj  .points.ply  _colmap/
     splat/<shot>_v001.splat.ply  .splat.json
     logs/submit_<date>_<shot>.log
@@ -109,6 +112,25 @@ liveaov-gui
 Old versions are never deleted by the tool: remove them by hand when you no longer need them. The CLI works the same way (`--out <root>` is required).
 
 **Sessions** autosave continuously — after a crash, the next launch offers a one-click restore. Use **File → Save / Open session** (`*.laov.json`) for explicit project files; the whole prep round-trips (shots, colour, models, concepts, click points, output routing).
+
+### File naming
+
+Studios have their own conventions, so every file of a run is named from **one template**
+(Output tab → File naming, or `--naming`). Tokens:
+
+| Token | Value |
+|---|---|
+| `{shot}` | the shot name (the plate folder name unless renamed) |
+| `{plate}` | the plate folder name |
+| `{version}` | the run's version folder, `v001` |
+| `{pass}` | what the file holds: `utility`, `crypto`, a pass group in the per-pass layout (`depth`, `matte` ...), `camera`, `points`, `splat`, `comp` |
+| `{frame}` | the frame number, padded like the plate |
+| `{ext}` | the extension |
+
+Default `{shot}_{version}.{pass}.{frame}.{ext}` gives the tree above. `{shot}_{pass}_{version}.{frame}.{ext}`
+gives `SH010_utility_v001.1001.exr`, `SH010_camera_v001.nk`, `SH010_comp_v001.nk`: files without a frame
+drop `{frame}` and the separator before it. `{pass}`, `{frame}` and `{ext}` are required; the folders
+(`passes/`, `camera/`, `splat/`, `v###`) do not change.
 
 ## Opening a run in Nuke — `<shot>_v###.comp.nk`
 

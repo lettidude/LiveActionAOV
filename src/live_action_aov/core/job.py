@@ -20,7 +20,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from live_action_aov.core.pass_base import DisplayTransformParams
 
@@ -114,6 +121,19 @@ class Shot(BaseModel):
     # starter script wires everything up.
     delivery_layout: str = "multilayer"
 
+    # File naming template (`core.output_layout`): tokens {shot} {plate}
+    # {version} {pass} {frame} {ext}. "" = the default
+    # `{shot}_{version}.{pass}.{frame}.{ext}`. Studios map their own
+    # convention here; validated at construction.
+    naming: str = ""
+
+    # Process one box of the plate only: (x, y, w, h) in plate pixels,
+    # origin top-left. Passes see the crop as if it were the plate; the
+    # EXRs carry it as data window inside the full plate's display window,
+    # so Nuke places them. None = the whole frame. Passes that need the
+    # whole frame (camera, splat) refuse to run with a crop.
+    crop: tuple[int, int, int, int] | None = None
+
     status: ShotStatus = "new"
     notes: str = ""
 
@@ -164,6 +184,32 @@ class Shot(BaseModel):
         if v not in ("float16", "float32"):
             raise ValueError(f"delivery_dtype must be 'float16' or 'float32', got {v!r}")
         return v
+
+    @field_validator("naming")
+    @classmethod
+    def _check_naming(cls, v: str) -> str:
+        from live_action_aov.core.output_layout import DEFAULT_NAMING, validate_naming
+
+        t = validate_naming(v or "")
+        return "" if t == DEFAULT_NAMING else t
+
+    @field_validator("crop", mode="before")
+    @classmethod
+    def _coerce_crop(cls, v: Any) -> tuple[int, int, int, int] | None:
+        if v is None or v == "" or v == []:
+            return None
+        vals = [int(round(float(x))) for x in v]
+        if len(vals) != 4:
+            raise ValueError("crop must be (x, y, w, h) in plate pixels")
+        return (vals[0], vals[1], vals[2], vals[3])
+
+    @model_validator(mode="after")
+    def _check_crop_in_plate(self) -> Shot:
+        if self.crop is not None:
+            from live_action_aov.io.readers.crop import clamp_crop
+
+            self.crop = clamp_crop(self.crop, self.resolution)
+        return self
 
     @field_serializer("folder")
     def _serialize_folder(self, v: Path) -> str:

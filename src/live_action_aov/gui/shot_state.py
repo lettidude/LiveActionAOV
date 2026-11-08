@@ -136,6 +136,16 @@ class ShotState:
     # Injected as the camera_pycolmap `pnp_fallback`.
     camera_pnp_fallback: bool = True
 
+    # Work range: the frames to PROCESS, inside `frame_range` (the whole
+    # plate, which the viewer keeps scrubbing). None = every plate frame.
+    work_range: tuple[int, int] | None = None
+
+    # Crop: process one box of the plate only, (x, y, w, h) in plate px,
+    # origin top-left; drawn in the viewer from the Output tab. None = the
+    # whole frame. The EXRs keep the plate as display window with the crop
+    # as data window. Camera + splat need the whole frame and refuse it.
+    crop: tuple[int, int, int, int] | None = None
+
     # Which soft-edge refiner weights to use, per shot — drives BOTH the
     # Masks-tab preview and the submit. Empty = the pass default (portrait).
     # HF model id string (e.g. "ZhengPeng7/BiRefNet-matting").
@@ -207,6 +217,10 @@ class ShotState:
     # sequence per pass in its own subfolder). A <shot>.comp.nk is written
     # either way.
     delivery_layout: str = "multilayer"
+    # File naming template (`core.output_layout.NAMING_PRESETS`); "" = the
+    # default `{shot}_{version}.{pass}.{frame}.{ext}`. Session-wide like
+    # the other Output settings.
+    naming: str = ""
 
     # Per-shot queue flag. The list panel renders a checkbox beside
     # each shot; Submit local iterates every queued shot in order.
@@ -229,6 +243,14 @@ class ShotState:
         if self.output_external_root is None:
             return None
         return self.output_external_root / (self.output_external_name.strip() or self.name)
+
+    def effective_frame_range(self) -> tuple[int, int]:
+        """The frames a run processes: the work range clipped to the plate."""
+        first, last = self.frame_range
+        if self.work_range is None:
+            return (first, last)
+        a, b = sorted((int(self.work_range[0]), int(self.work_range[1])))
+        return (min(max(a, first), last), min(max(b, first), last))
 
     def effective_colorspace(self) -> str:
         """Return the colorspace the preview should use."""

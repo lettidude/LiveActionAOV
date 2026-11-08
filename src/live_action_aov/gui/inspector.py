@@ -52,12 +52,18 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from live_action_aov.core.output_layout import next_version_dir
+from live_action_aov.core.output_layout import (
+    NAMING_PRESETS,
+    file_name,
+    next_version_dir,
+    validate_naming,
+)
 from live_action_aov.gui.engine_menu import OBJECT_ENGINES, RUN_ENGINES, EngineButton
 from live_action_aov.gui.pass_catalog import PASS_CATALOG, ModelEntry, recommended_models
 from live_action_aov.gui.shot_list import remember_output_mode, remember_output_root
@@ -94,6 +100,8 @@ class InspectorPanel(QWidget):
     # "Preview mask (this frame)" — MainWindow routes this to the viewport,
     # which owns the preview image + the single-frame SAM 3 engine.
     mask_preview_requested = Signal()
+    #: Output tab "Draw crop" armed / disarmed: the viewer takes one drag.
+    crop_mode_changed = Signal(bool)
 
     def __init__(self, registry: ShotRegistry) -> None:
         super().__init__()
@@ -222,6 +230,53 @@ class InspectorPanel(QWidget):
             "<shot>.comp.nk opens with everything already wired."
         )
         self._layout_combo.currentIndexChanged.connect(self._on_layout_changed)
+
+        # --- This shot only: work range + crop ---
+        # Mark (studio): "most of the time I want to crop and work on a part
+        # of the video only". Frames in/out inside the plate, and a crop box
+        # drawn in the viewer; both per shot, unlike the rest of this tab.
+        self._range_in = QSpinBox()
+        self._range_out = QSpinBox()
+        for sp in (self._range_in, self._range_out):
+            sp.setRange(-9_999_999, 9_999_999)
+            sp.setKeyboardTracking(False)
+            sp.setMinimumWidth(80)
+        self._range_in.valueChanged.connect(self._on_range_changed)
+        self._range_out.valueChanged.connect(self._on_range_changed)
+        self._range_reset_btn = QPushButton("Whole plate")
+        self._range_reset_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._range_reset_btn.clicked.connect(self._on_range_reset)
+        self._crop_label = QLabel("whole frame")
+        self._crop_label.setStyleSheet("color: #aaa;")
+        self._crop_draw_btn = QPushButton("Draw in viewer")
+        self._crop_draw_btn.setCheckable(True)
+        self._crop_draw_btn.setToolTip(
+            "Then drag a box on the image. Passes run on that box only; the "
+            "EXRs keep the full plate as display window, so Nuke places them. "
+            "Camera and clean plate need the whole frame."
+        )
+        self._crop_draw_btn.toggled.connect(self._on_crop_draw_toggled)
+        self._crop_clear_btn = QPushButton("Clear")
+        self._crop_clear_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._crop_clear_btn.clicked.connect(self._on_crop_clear)
+
+        # --- Naming (session-wide, like the rest of Output) ---
+        self._naming_combo = QComboBox()
+        for label, template in NAMING_PRESETS:
+            self._naming_combo.addItem(label, template)
+        self._naming_combo.addItem("Custom…", "")
+        self._naming_combo.currentIndexChanged.connect(self._on_naming_preset)
+        self._naming_edit = QLineEdit()
+        self._naming_edit.setPlaceholderText(NAMING_PRESETS[0][1])
+        self._naming_edit.setToolTip(
+            "Tokens: {shot} {plate} {version} {pass} {frame} {ext}. {pass} is "
+            "utility / crypto / camera / splat / comp (or the pass group in the "
+            "per-pass layout); files without a frame drop {frame}."
+        )
+        self._naming_edit.editingFinished.connect(self._on_naming_edited)
+        self._naming_example = QLabel("")
+        self._naming_example.setStyleSheet("color: #8f9196; font-size: 8pt;")
+        self._naming_example.setWordWrap(True)
 
         # --- Reset button ---
         # One-click rollback to the auto-detected colorspace + auto-
@@ -635,6 +690,22 @@ class InspectorPanel(QWidget):
         # Output tab.
         output_layout = QVBoxLayout()
         output_layout.setContentsMargins(8, 8, 8, 8)
+        output_layout.addWidget(_section_label("This shot: frames and crop"))
+        range_row = QHBoxLayout()
+        range_row.addWidget(QLabel("Frames"))
+        range_row.addWidget(self._range_in)
+        range_row.addWidget(QLabel("to"))
+        range_row.addWidget(self._range_out)
+        range_row.addWidget(self._range_reset_btn)
+        range_row.addStretch(1)
+        output_layout.addLayout(range_row)
+        crop_row = QHBoxLayout()
+        crop_row.addWidget(QLabel("Crop:"))
+        crop_row.addWidget(self._crop_label, stretch=1)
+        crop_row.addWidget(self._crop_draw_btn)
+        crop_row.addWidget(self._crop_clear_btn)
+        output_layout.addLayout(crop_row)
+        output_layout.addSpacing(16)
         output_layout.addWidget(_section_label("Output"))
         session_wide_note = QLabel("These settings apply to every shot in the session.")
         session_wide_note.setStyleSheet("color: #777; font-size: 8pt; font-style: italic;")
@@ -673,6 +744,18 @@ class InspectorPanel(QWidget):
         layout_hint.setWordWrap(True)
         output_layout.addWidget(layout_hint)
         output_layout.addWidget(self._layout_combo)
+        output_layout.addSpacing(16)
+        output_layout.addWidget(_section_label("File naming"))
+        naming_hint = QLabel(
+            "Match the studio's convention. One template for every file of the "
+            "run; the version folder stays v###."
+        )
+        naming_hint.setStyleSheet("color: #888; font-size: 9pt;")
+        naming_hint.setWordWrap(True)
+        output_layout.addWidget(naming_hint)
+        output_layout.addWidget(self._naming_combo)
+        output_layout.addWidget(self._naming_edit)
+        output_layout.addWidget(self._naming_example)
         output_layout.addStretch()
         output_tab = _scrollable(output_layout)
 
@@ -853,6 +936,8 @@ class InspectorPanel(QWidget):
             self._exposure_spin.setValue(ev)
             self._pixel_aspect_spin.setValue(float(shot.pixel_aspect or 1.0))
 
+            self._rebuild_range_and_crop(shot)
+            self._rebuild_naming(shot)
             self._external_name_edit.setText(shot.output_external_name)
             self._out_mode_plate.setChecked(shot.output_mode == "plate")
             self._out_mode_root.setChecked(shot.output_mode != "plate")
@@ -1012,6 +1097,104 @@ class InspectorPanel(QWidget):
         self._exposure_slider.setValue(int(round(ev * 10)))
         self._exposure_slider.blockSignals(False)
         self._registry.notify_updated(self._current)
+
+    # --- This shot: work range + crop ---
+
+    def _rebuild_range_and_crop(self, shot: ShotState) -> None:
+        first, last = shot.frame_range
+        a, b = shot.effective_frame_range()
+        for sp, v in ((self._range_in, a), (self._range_out, b)):
+            sp.blockSignals(True)
+            sp.setRange(first, last)
+            sp.setValue(v)
+            sp.blockSignals(False)
+        self._range_reset_btn.setEnabled(shot.work_range is not None)
+        if shot.crop is None:
+            self._crop_label.setText("whole frame")
+        else:
+            x, y, w, h = shot.crop
+            self._crop_label.setText(f"{w} × {h} px at ({x}, {y})")
+        self._crop_clear_btn.setEnabled(shot.crop is not None)
+
+    def _on_range_changed(self, _v: int) -> None:
+        if self._building or self._current is None:
+            return
+        shot = self._current
+        first, last = shot.frame_range
+        a, b = sorted((self._range_in.value(), self._range_out.value()))
+        shot.work_range = None if (a, b) == (first, last) else (a, b)
+        self._rebuild_range_and_crop(shot)
+        self._registry.notify_updated(shot)
+
+    def _on_range_reset(self) -> None:
+        if self._current is None:
+            return
+        self._current.work_range = None
+        self._rebuild_range_and_crop(self._current)
+        self._registry.notify_updated(self._current)
+
+    def _on_crop_draw_toggled(self, on: bool) -> None:
+        self.crop_mode_changed.emit(bool(on))
+
+    def crop_mode_finished(self) -> None:
+        """The viewer took its drag (or dropped it): pop the button out."""
+        self._crop_draw_btn.blockSignals(True)
+        self._crop_draw_btn.setChecked(False)
+        self._crop_draw_btn.blockSignals(False)
+
+    def _on_crop_clear(self) -> None:
+        if self._current is None:
+            return
+        self._current.crop = None
+        self._rebuild_range_and_crop(self._current)
+        self._registry.notify_updated(self._current)
+
+    # --- Naming ---
+
+    def _rebuild_naming(self, shot: ShotState) -> None:
+        template = shot.naming or NAMING_PRESETS[0][1]
+        idx = next(
+            (
+                i
+                for i in range(self._naming_combo.count())
+                if self._naming_combo.itemData(i) == template
+            ),
+            self._naming_combo.count() - 1,  # "Custom…"
+        )
+        self._naming_combo.blockSignals(True)
+        self._naming_combo.setCurrentIndex(idx)
+        self._naming_combo.blockSignals(False)
+        self._naming_edit.blockSignals(True)
+        self._naming_edit.setText(template)
+        self._naming_edit.blockSignals(False)
+        self._naming_example.setStyleSheet("color: #8f9196; font-size: 8pt;")
+        self._naming_example.setText(_naming_example(shot))
+
+    def _on_naming_preset(self, idx: int) -> None:
+        if self._building or self._current is None:
+            return
+        template = str(self._naming_combo.itemData(idx) or "")
+        if not template:  # Custom…: keep whatever is in the field, let them type
+            self._naming_edit.setFocus()
+            return
+        self._apply_naming(template)
+
+    def _on_naming_edited(self) -> None:
+        if self._building or self._current is None:
+            return
+        self._apply_naming(self._naming_edit.text())
+
+    def _apply_naming(self, template: str) -> None:
+        if self._current is None:
+            return
+        try:
+            clean = validate_naming(template)
+        except ValueError as e:
+            self._naming_example.setStyleSheet("color: #e07a5f; font-size: 8pt;")
+            self._naming_example.setText(str(e))
+            return
+        self._current.naming = "" if clean == NAMING_PRESETS[0][1] else clean
+        self._broadcast_output_to_all_shots()
 
     def _on_pixel_aspect_changed(self, pa: float) -> None:
         if self._building or self._current is None:
@@ -1340,6 +1523,7 @@ class InspectorPanel(QWidget):
             shot.delivery_compression = active.delivery_compression
             shot.delivery_dtype = active.delivery_dtype
             shot.delivery_layout = active.delivery_layout
+            shot.naming = active.naming
             self._registry.notify_updated(shot)
 
     def _rebuild_resolved_out_label(self) -> None:
@@ -1467,6 +1651,28 @@ class InspectorPanel(QWidget):
         # re-render with the reset settings.
         self._rebuild_from_shot()
         self._registry.notify_updated(self._current)
+
+
+def _naming_example(shot: ShotState) -> str:
+    """`e.g. passes/SH010_v001.utility.1001.exr`, from the shot's own names."""
+    from types import SimpleNamespace
+
+    root = shot.resolve_output_dir()
+    fake = SimpleNamespace(
+        name=shot.name,
+        folder=shot.folder,
+        output_dir=(next_version_dir(root) if root is not None else shot.folder / "v001"),
+        sequence_pattern=shot.sequence_pattern,
+        naming=shot.naming,
+    )
+    first = shot.effective_frame_range()[0]
+    try:
+        return (
+            f"e.g. passes/{file_name(fake, 'utility', 'exr', first)}   "
+            f"camera/{file_name(fake, 'camera', 'nk')}"
+        )
+    except ValueError as e:
+        return str(e)
 
 
 def _section_label(text: str) -> QLabel:
