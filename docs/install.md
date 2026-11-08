@@ -264,13 +264,20 @@ environment; LiveActionAOV runs it as a subprocess.
    uv venv sam31_env --python 3.12
    uv pip install --python sam31_env\Scripts\python.exe torch torchvision --torch-backend=cu128
    gh repo clone facebookresearch/sam3 sam3_repo
+   git -C sam3_repo checkout f1647e8
    uv pip install --python sam31_env\Scripts\python.exe -e sam3_repo huggingface_hub einops
+   uv pip install --python sam31_env\Scripts\python.exe triton-windows pycocotools psutil opencv-python scipy hydra-core omegaconf matplotlib pandas python-rapidjson
    ```
 
-   Tested with sam3 at commit `f1647e8`, torch 2.11 + cu128, on Windows
-   (RTX 5090). The two Windows issues of that commit (no FLASH attention
-   kernel, an unknown `offload_state_to_cpu` argument) are worked around by
-   LiveActionAOV's worker, not by editing Meta's code.
+   The last line adds what Meta's package imports at load time but does not
+   declare (Triton via the `triton-windows` wheel, the rest from its `dev`
+   extras); without it `import sam3` fails. Check with
+   `sam31_env\Scripts\python.exe -c "import sam3"`.
+
+   Tested with sam3 at commit `f1647e8`, torch 2.11 + cu128, triton-windows
+   3.9, on Windows (RTX 5090). The two Windows issues of that commit (no
+   FLASH attention kernel, an unknown `offload_state_to_cpu` argument) are
+   worked around by LiveActionAOV's worker, not by editing Meta's code.
 3. Point LiveActionAOV at its interpreter: the `sam31_python` param, or
 
    ```powershell
