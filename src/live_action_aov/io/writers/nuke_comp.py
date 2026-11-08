@@ -71,7 +71,39 @@ _GROUP_OF_LAYER = {
     "key": "matte",
     "matte": "matte",
     "mask": "matte",
+    "foreground": "matte",  # LTX whole-frame: foreground that belongs to no object
 }
+
+#: Left-to-right order of the pass groups in the DAG.
+_GROUP_ORDER = ("matte", "depth", "normals", "position", "ao", "flow", "splat", "intrinsic")
+
+#: What the Shuffle says under its node (the node NAME keeps the raw layer
+#: so scripts that look nodes up by name keep working).
+_PRETTY_LABEL = {
+    "matte": "matte (hero RGBA)",
+    "foreground": "foreground (no owner)",
+    "depth Z": "Z (depth)",
+    "other Z_raw": "Z raw",
+    "depth_extra confidence": "depth confidence",
+    "N": "N (normals)",
+    "P": "P (world position)",
+    "ao": "ao (SSAO)",
+    "motion_extra": "motion x,y (px)",
+    "back": "back x,y (px)",
+    "forward": "forward u,v",
+    "backward": "backward u,v",
+    "flow confidence": "flow confidence",
+    "flow occlusion": "flow occlusion",
+    "splat": "clean plate (splat RGBA)",
+    "splat Z": "clean plate Z",
+    "albedo": "albedo",
+    "irradiance": "irradiance",
+}
+
+
+def _pretty(label: str) -> str:
+    return _PRETTY_LABEL.get(label, label)
+
 
 _GROUP_COLOR = {
     "matte": 0x7F4C4CFF,
@@ -281,52 +313,80 @@ def render_comp_script(
         for ch in rd.channels:
             n = nuke_channel(ch)
             order.setdefault(n.split(".", 1)[0], []).append(n)
-        sx = x
-        shuffles = _shuffles_for(rd.channels)
-        for k, (label, layer, pairs) in enumerate(shuffles):
-            if k:
-                s.push(rvar)
-            sname = _node_name(f"{layer}_{label}")
-            s.node(
-                "Shuffle2",
-                [
-                    "fromInput1 {{0} B}",
-                    f"in1 {layer}",
-                    "fromInput2 {{0} B}",
-                    f"mappings {_mappings(pairs, order.get(layer, []))}",
-                    f"name {sname}",
-                    f'label "{_q(label)}"',
-                    f"xpos {sx}",
-                    "ypos -250",
-                ],
-            )
-            if layer == "splat" and any(d == "rgba.alpha" for _, d in pairs) and splat_var is None:
-                splat_var = "Nsplat"
-                s.set_var(splat_var)
-            sx += 110
-        # All objects in one matte (max of every mask): handy on its own and
-        # the mask of the clean-plate example below.
+        # Shuffles grouped per pass (matte | depth | normals | ... | splat),
+        # left to right, one backdrop per group: a multi-layer EXR reads
+        # like the per-pass layout instead of one long strip of nodes.
+        group_of_layer: dict[str, str] = {}
+        for ch in rd.channels:
+            group_of_layer.setdefault(nuke_channel(ch).split(".", 1)[0], pass_group(ch))
+        by_group: dict[str, list[tuple[str, str, list[tuple[str, str]]]]] = {}
+        for sh in _shuffles_for(rd.channels):
+            by_group.setdefault(group_of_layer.get(sh[1], "other"), []).append(sh)
         masks = [n for n in (nuke_channel(c) for c in rd.channels) if n.startswith("mask")]
         if masks and mask_var is None:
-            s.push(rvar)
-            expr = masks[0]
-            for m in masks[1:]:
-                expr = f"max({expr}, {m})"
-            s.node(
-                "Expression",
-                [
-                    *(f'expr{i} "{expr}"' for i in range(4)),
-                    "name All_objects_matte",
-                    'label "every mask (max)"',
-                    f"xpos {sx}",
-                    "ypos -250",
-                ],
-            )
-            mask_var = "Nmask"
-            s.set_var(mask_var)
-            sx += 110
-        width = max(sx - x, 110)
-        backdrops.append((rd.group, x - 20, -460, width + 20, 260))
+            by_group.setdefault("matte", [])
+        groups = sorted(
+            by_group.items(),
+            key=lambda kv: _GROUP_ORDER.index(kv[0]) if kv[0] in _GROUP_ORDER else 99,
+        )
+        sx = x
+        k = 0
+        for g, items in groups:
+            gx = sx
+            for label, layer, pairs in items:
+                if k:
+                    s.push(rvar)
+                k += 1
+                sname = _node_name(f"{layer}_{label}")
+                s.node(
+                    "Shuffle2",
+                    [
+                        "fromInput1 {{0} B}",
+                        f"in1 {layer}",
+                        "fromInput2 {{0} B}",
+                        f"mappings {_mappings(pairs, order.get(layer, []))}",
+                        f"name {sname}",
+                        f'label "{_q(_pretty(label))}"',
+                        f"xpos {sx}",
+                        "ypos -250",
+                    ],
+                )
+                if (
+                    layer == "splat"
+                    and any(d == "rgba.alpha" for _, d in pairs)
+                    and splat_var is None
+                ):
+                    splat_var = "Nsplat"
+                    s.set_var(splat_var)
+                sx += 110
+            # All objects in one matte (max of every mask): handy on its own
+            # and the mask of the clean-plate example below.
+            if g == "matte" and masks and mask_var is None:
+                if k:
+                    s.push(rvar)
+                k += 1
+                expr = masks[0]
+                for m in masks[1:]:
+                    expr = f"max({expr}, {m})"
+                s.node(
+                    "Expression",
+                    [
+                        *(f'expr{i} "{expr}"' for i in range(4)),
+                        "name All_objects_matte",
+                        'label "every mask (max)"',
+                        f"xpos {sx}",
+                        "ypos -250",
+                    ],
+                )
+                mask_var = "Nmask"
+                s.set_var(mask_var)
+                sx += 110
+            gw = max(sx - gx, 110)
+            # The backdrop of the first group also covers the Read above it.
+            top = -460 if gx == x else -310
+            backdrops.append((g, gx - 20, top, gw + 20, 260 if gx == x else 110))
+            sx += 50
+        width = max(sx - 50 - x, 110)
         x += width + 60
 
     # --- cryptomatte (lossless sibling file, or inside the multi-layer EXR) ---
