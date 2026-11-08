@@ -36,7 +36,7 @@ Everything lands in one multi-layer EXR per frame (or one sequence per pass, you
 - **RAM**: 32 GB for short shots at 2K. 64 GB or more for long shots at 4K and above.
 - **Disk**: about 15 GB for the install, about 10 GB of model weights for the default set, up to 40 GB with every optional model.
 - **Nuke** 11 or newer to open the result (tested on Nuke 16).
-- **Gaussian splat** (clean plate) needs `gsplat` compiled once for your GPU: no prebuilt Windows wheel exists for the pinned torch/CUDA. `scriptsuild_gsplat_wheel.bat` does it in about ten minutes; every other pass works without it.
+- **Gaussian splat** (clean plate) needs the `gsplat` wheel, which PyPI does not have for this torch/CUDA: download it from the [release](https://github.com/lettidude/LiveActionAOV/releases/latest) into `wheels\` and run `update.bat`, or build it with `scriptsuild_gsplat_wheel.bat`. Every other pass works without it.
 
 ## Quick start
 
