@@ -6,6 +6,8 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-11-08
+
 ### Added
 - **Depth-anchored PnP camera fallback** (`pnp_fallback`, on by default). Fast handheld action often
   gives COLMAP almost no usable parallax (only a few frames register) while the camera clearly
