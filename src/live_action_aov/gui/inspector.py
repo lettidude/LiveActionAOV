@@ -59,7 +59,7 @@ from PySide6.QtWidgets import (
 
 from live_action_aov.core.output_layout import next_version_dir
 from live_action_aov.gui.engine_menu import OBJECT_ENGINES, RUN_ENGINES, EngineButton
-from live_action_aov.gui.pass_catalog import PASS_CATALOG
+from live_action_aov.gui.pass_catalog import PASS_CATALOG, ModelEntry, recommended_models
 from live_action_aov.gui.shot_list import remember_output_mode, remember_output_root
 from live_action_aov.gui.shot_state import ClickInstance, ShotRegistry, ShotState
 from live_action_aov.io.colorspace_detect import SUPPORTED_COLORSPACES
@@ -256,7 +256,11 @@ class InspectorPanel(QWidget):
         self._category_headers: dict[str, QPushButton] = {}
         passes_block = QVBoxLayout()
         passes_block.setSpacing(4)
-        for category, entries in PASS_CATALOG.items():
+        last_block: str | None = None
+        for block_title, blurb, category, entries in _iter_pass_blocks():
+            if block_title != last_block:
+                passes_block.addWidget(_block_header(block_title, blurb))
+                last_block = block_title
             # Header button — flat, label-like, but clickable to toggle
             # the section below. Chevron prefix makes expand/collapse
             # state readable at a glance.
@@ -264,13 +268,7 @@ class InspectorPanel(QWidget):
             header_btn.setCheckable(True)
             header_btn.setChecked(True)
             header_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            header_btn.setStyleSheet(
-                "QPushButton {"
-                " font-weight: 600; color: #dcdcdc; text-align: left;"
-                " padding: 8px 0 2px 0; border: none; background: transparent;"
-                "}"
-                "QPushButton:hover { color: #ffffff; }"
-            )
+            header_btn.setStyleSheet(_FOLD_HEADER_QSS)
             header_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             self._category_headers[category] = header_btn
             passes_block.addWidget(header_btn)
@@ -476,11 +474,29 @@ class InspectorPanel(QWidget):
         refiner_weights_row.addWidget(self._default_engine_combo, stretch=1)
         passes_block.addSpacing(8)
         passes_block.addLayout(refiner_weights_row)
-        passes_block.addLayout(small_row)
-        passes_block.addLayout(detector_row)
-        passes_block.addWidget(self._refine_all_check)
-        passes_block.addWidget(self._outline_check)
-        passes_block.addWidget(self._pnp_check)
+
+        # Advanced: the knobs a first run does not need. Folded by default;
+        # the Pro playbooks say when to open it.
+        self._advanced_btn = QPushButton("▸  Advanced")
+        self._advanced_btn.setCheckable(True)
+        self._advanced_btn.setChecked(False)
+        self._advanced_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._advanced_btn.setStyleSheet(_FOLD_HEADER_QSS)
+        self._advanced_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self._advanced_box = QWidget()
+        adv_layout = QVBoxLayout(self._advanced_box)
+        adv_layout.setContentsMargins(16, 0, 0, 0)
+        adv_layout.setSpacing(4)
+        adv_layout.addLayout(small_row)
+        adv_layout.addLayout(detector_row)
+        adv_layout.addWidget(self._refine_all_check)
+        adv_layout.addWidget(self._outline_check)
+        adv_layout.addWidget(self._pnp_check)
+        self._advanced_box.setVisible(False)
+        self._advanced_btn.toggled.connect(self._on_advanced_toggled)
+        passes_block.addSpacing(4)
+        passes_block.addWidget(self._advanced_btn)
+        passes_block.addWidget(self._advanced_box)
 
         # "Apply to all shots" — one-click broadcast of the active
         # shot's pass selections to every other shot in the queue.
@@ -513,13 +529,21 @@ class InspectorPanel(QWidget):
         # output so it reads as the primary control. Wrap in a scroll
         # area because the catalog can grow and we don't want to push
         # the rest of the inspector off-screen.
-        passes_header = QLabel("PASSES")
+        passes_header = QLabel("Passes")
         passes_header.setStyleSheet(
             "font-weight: 700; color: #fff; font-size: 11pt; padding: 4px 0; letter-spacing: 0.5px;"
         )
         passes_hint = QLabel(
-            "Pick one or more models per category. New models appear here as we add them."
+            "Tick what the comp needs. Recommended = the set we run daily "
+            "(mattes, Cryptomatte, metric depth + normals, motion, camera + clean plate)."
         )
+        self._recommended_btn = QPushButton("Use the recommended set")
+        self._recommended_btn.setToolTip(
+            "Matte (SAM 3 + default engine), Cryptomatte, MoGe-3 depth + normals, "
+            "RAFT motion, camera track + Gaussian-splat clean plate "
+            "(camera only when gsplat is not installed)."
+        )
+        self._recommended_btn.clicked.connect(self._on_recommended_clicked)
         passes_hint.setStyleSheet("color: #999; font-size: 9pt;")
         passes_hint.setWordWrap(True)
 
@@ -560,6 +584,8 @@ class InspectorPanel(QWidget):
         passes_layout.setContentsMargins(8, 8, 8, 8)
         passes_layout.addWidget(passes_header)
         passes_layout.addWidget(passes_hint)
+        passes_layout.addWidget(self._recommended_btn)
+        passes_layout.addSpacing(4)
         passes_layout.addLayout(passes_block)
         passes_layout.addStretch()
         passes_tab = _scrollable(passes_layout)
@@ -1418,6 +1444,18 @@ class InspectorPanel(QWidget):
         self._apply_passes_btn.setText(f"Applied to {count} shot{'s' if count != 1 else ''} ✓")
         QTimer.singleShot(1500, lambda: self._apply_passes_btn.setText(original))
 
+    def _on_advanced_toggled(self, checked: bool) -> None:
+        self._advanced_box.setVisible(checked)
+        self._advanced_btn.setText(f"{'▾' if checked else '▸'}  Advanced")
+
+    def _on_recommended_clicked(self) -> None:
+        """One click to the set we run daily (the README's "what you get")."""
+        if self._current is None:
+            return
+        self._current.enabled_models = recommended_models()
+        self._rebuild_from_shot()
+        self._registry.notify_updated(self._current)
+
     def _on_reset_clicked(self) -> None:
         """Revert both knobs to auto-detected values in one shot."""
         if self._current is None:
@@ -1435,6 +1473,70 @@ def _section_label(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setStyleSheet("font-weight: bold; color: #ccc;")
     return lbl
+
+
+_FOLD_HEADER_QSS = (
+    "QPushButton {"
+    " font-weight: 600; color: #cfcfcf; text-align: left;"
+    " padding: 6px 0 2px 0; border: none; background: transparent;"
+    "}"
+    "QPushButton:hover { color: #ffffff; }"
+)
+
+#: The Passes tab groups the catalog's categories the way the comp sees
+#: them (one block per deliverable), in this order. Categories missing
+#: here (new ones) land in a trailing "More" block, so nothing is lost.
+_PASS_BLOCKS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "Mattes",
+        "Soft alpha per object, Cryptomatte IDs, screen pull.",
+        ("Matte", "Cryptomatte", "Key"),
+    ),
+    (
+        "Geometry",
+        "Depth in metres, normals, world position.",
+        ("Depth", "Normals", "Albedo"),
+    ),
+    ("Motion", "Forward and backward motion vectors.", ("Motion",)),
+    (
+        "Camera & clean plate",
+        "Nuke camera with its verdict in the label, point cloud, Gaussian-splat clean plate.",
+        ("Camera",),
+    ),
+)
+
+
+def _iter_pass_blocks() -> list[tuple[str, str, str, list[ModelEntry]]]:
+    out: list[tuple[str, str, str, list[ModelEntry]]] = []
+    seen: set[str] = set()
+    for title, blurb, cats in _PASS_BLOCKS:
+        for cat in cats:
+            if cat in PASS_CATALOG:
+                out.append((title, blurb, cat, PASS_CATALOG[cat]))
+                seen.add(cat)
+    for cat, entries in PASS_CATALOG.items():
+        if cat not in seen:
+            out.append(("More", "", cat, entries))
+    return out
+
+
+def _block_header(title: str, blurb: str) -> QWidget:
+    box = QWidget()
+    lay = QVBoxLayout(box)
+    lay.setContentsMargins(0, 10, 0, 0)
+    lay.setSpacing(0)
+    t = QLabel(title)
+    t.setStyleSheet(
+        "font-weight: 700; color: #ffffff; font-size: 10pt; "
+        "border-bottom: 1px solid #34363b; padding-bottom: 3px;"
+    )
+    lay.addWidget(t)
+    if blurb:
+        b = QLabel(blurb)
+        b.setStyleSheet("color: #8f9196; font-size: 8pt; padding-top: 2px;")
+        b.setWordWrap(True)
+        lay.addWidget(b)
+    return box
 
 
 __all__ = ["InspectorPanel"]

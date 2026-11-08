@@ -21,6 +21,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from live_action_aov.gui.main_window import MainWindow
+from live_action_aov.gui.theme import apply_theme
 
 # Unique per-app id used by Windows to group taskbar entries and
 # associate a custom icon with the running process. Without this,
@@ -88,6 +89,7 @@ def main() -> int:
     # window in this process. MainWindow inherits it; no per-window
     # call needed unless we want a different icon somewhere.
     app.setWindowIcon(QIcon(_app_icon_path()))
+    apply_theme(app)
 
     window = MainWindow()
     window.show()

@@ -54,7 +54,7 @@ from live_action_aov.gui.shot_state import ShotRegistry, ShotState
 from live_action_aov.gui.submit_worker import SubmitResult, SubmitWorker
 from live_action_aov.gui.viewport import ViewportPanel
 
-_WINDOW_TITLE = "Live Action AOV — Shot Prep"
+_WINDOW_TITLE = "LiveActionAOV"
 
 
 class MainWindow(QMainWindow):
@@ -92,7 +92,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._viewport)
         splitter.addWidget(self._inspector)
         # Sensible initial proportions: 220 / 800 / 380 px.
-        splitter.setSizes([220, 760, 440])
+        splitter.setSizes([220, 720, 480])
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         splitter.setCollapsible(2, False)
@@ -103,7 +103,10 @@ class MainWindow(QMainWindow):
         # Deadline lands when the executor side does. Submit iterates
         # every queued shot (the per-row checkbox), so users can
         # process a whole list in one click.
-        self._submit_btn = QPushButton("Submit local")
+        self._submit_btn = QPushButton("Run")
+        self._submit_btn.setObjectName("primary")
+        self._submit_btn.setMinimumWidth(150)
+        self._submit_btn.setToolTip("Run every ticked shot on this machine.")
         self._submit_btn.setEnabled(False)
         self._submit_btn.clicked.connect(self._on_submit_clicked)
         # Queue state — populated by _on_submit_clicked, drained by
@@ -163,9 +166,18 @@ class MainWindow(QMainWindow):
         self._log_toggle_btn.toggled.connect(self._on_log_toggle)
 
         bottom_row = QHBoxLayout()
+        bottom_row.setContentsMargins(8, 6, 8, 6)
+        bottom_row.setSpacing(8)
+        # Run on the left, progress in the middle, the quiet buttons packed
+        # on the right (they stay their natural width instead of sharing
+        # the row equally).
+        for b in (self._log_toggle_btn, self._reveal_btn, self._preview_btn, self._cancel_btn):
+            b.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._submit_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         bottom_row.addWidget(self._submit_btn)
-        bottom_row.addWidget(self._progress, stretch=1)
+        bottom_row.addWidget(self._progress, stretch=3)
         bottom_row.addWidget(self._cancel_btn)
+        bottom_row.addStretch(1)
         bottom_row.addWidget(self._log_toggle_btn)
         bottom_row.addWidget(self._reveal_btn)
         bottom_row.addWidget(self._preview_btn)
@@ -193,9 +205,7 @@ class MainWindow(QMainWindow):
         self._build_menus()
 
         status = QStatusBar()
-        status.showMessage(
-            "Prep UX — drop a plate folder on the left panel or use File → Add shot."
-        )
+        status.showMessage("Drop a plate folder on the left, or File → Add shot.")
         self.setStatusBar(status)
 
         # Async executor driver — re-used across submits (one-shot runner
@@ -500,7 +510,7 @@ class MainWindow(QMainWindow):
         any_running = any(s.status == "running" for s in self._registry.shots())
         self._submit_btn.setEnabled(bool(queued_with_passes) and not any_running)
         n = len(queued_with_passes)
-        self._submit_btn.setText("Submit local" if n <= 1 else f"Submit local  ({n} shots)")
+        self._submit_btn.setText("Run" if n <= 1 else f"Run  ({n} shots)")
         cur = self._registry.current()
         has_out = cur is not None and _latest_run(cur) is not None
         self._reveal_btn.setEnabled(has_out)

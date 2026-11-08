@@ -266,7 +266,7 @@ class ViewportPanel(QWidget):
         self._canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._canvas.setMinimumSize(320, 200)
         self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._canvas.setStyleSheet("background: #1a1a1a; color: #888;")
+        self._canvas.setStyleSheet("background: #0e0e10; color: #777;")
         self._canvas.setWordWrap(True)
         self._canvas.setText("(no shot loaded)")
         self._canvas.pressed.connect(self._on_canvas_pressed)
