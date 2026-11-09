@@ -133,8 +133,10 @@ class Quality(BaseModel):
     total_frame_count: int = 0
     solve_confidence: float = 0.0
     warnings: list[str] = Field(default_factory=list)
-    # Solvers that hold points out of the fit (depth-anchored PnP): GOOD /
-    # WEAK / FAILED and the median held-out error at plate resolution.
+    # Independent held-out check of the camera: GOOD / WEAK / FAILED and the
+    # median held-out error at plate resolution. Points kept out of the fit
+    # (depth-anchored PnP) or KLT tracks held out frame by frame against
+    # COLMAP's poses (SfM); "" only for solvers without one (nodal).
     verdict: str = ""
     heldout_error_px: float | None = None
 

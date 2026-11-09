@@ -6,6 +6,19 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **The SfM camera carries the held-out verdict too.** When pycolmap registers the frames itself,
+  the camera JSON used to end with `verdict: ""` and `heldout_error_px: null` even on a clean solve,
+  so the GUI light, the Nuke label and `liveaov qc` only knew about the depth-anchored camera. Now a
+  KLT referee judges COLMAP's poses with the same machinery and limits (`pnp_good_frac` /
+  `pnp_weak_frac`): corners of the middle frame are tracked through the shot (tracked objects
+  masked out), each track is triangulated from every frame but the one under test and reprojected
+  into it, and the camera is **GOOD / WEAK / FAILED** with the held-out error in plate px, the
+  reliable-frame count and the NODAL flag leading its warnings and the Nuke label. The verdict is
+  not optional: `build_solve_from_reconstruction` refuses to build a camera without one. Schema
+  version unchanged (the two fields keep their meaning; the SfM line states the parallax instead of
+  metres, since an SfM solve has no scale).
+
 ## [0.12.0] — 2026-11-08
 
 ### Added
