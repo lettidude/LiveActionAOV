@@ -21,6 +21,12 @@ Design decisions (from Phase 3 brainstorm):
 - **Decoupled from inputs**: the scoring function takes pre-reduced
   scalars (area_fraction, centrality, motion_energy, …). Computing those
   from masks + flow is the caller's job. Keeps rank.py free of numpy.
+- **Subjects before scenery**: a scenery track (sky, building, tree, water,
+  …) never takes a hero slot while a subject (person, animal, vehicle, a
+  user click) is still unslotted. With the default concepts a car plate
+  gave the four `matte.rgba` slots to the car, one person, a building and a
+  tree, and the second person none (A65 couple-car plate, 2026-11-09).
+  Scenery keeps its `mask.<label>` channel and Cryptomatte id regardless.
 """
 
 from __future__ import annotations
@@ -35,6 +41,65 @@ from pydantic import BaseModel, ConfigDict
 # reference a single source of truth.
 SLOT_ORDER: tuple[str, ...] = ("r", "g", "b", "a")
 SlotName = Literal["r", "g", "b", "a"]
+
+#: Labels that name SCENERY: the set, not a subject. A label is scenery when
+#: any of its words is here ("brick building", "sky"). Mirrors the default
+#: concept list's non-subject half (tree, building, sky, water) plus the
+#: usual set-dressing words a user types. A user click is never scenery
+#: (the caller decides that: it knows which tracks are clicks).
+SCENERY_WORDS: frozenset[str] = frozenset(
+    [
+        "sky",
+        "skies",
+        "cloud",
+        "clouds",
+        "building",
+        "buildings",
+        "house",
+        "houses",
+        "wall",
+        "walls",
+        "tree",
+        "trees",
+        "forest",
+        "bush",
+        "bushes",
+        "hedge",
+        "grass",
+        "lawn",
+        "field",
+        "water",
+        "sea",
+        "ocean",
+        "lake",
+        "river",
+        "ground",
+        "floor",
+        "road",
+        "street",
+        "pavement",
+        "sidewalk",
+        "mountain",
+        "mountains",
+        "hill",
+        "hills",
+        "rock",
+        "rocks",
+        "sand",
+        "beach",
+        "background",
+        "backdrop",
+        "greenscreen",
+        "bluescreen",
+        "ceiling",
+    ]
+)
+
+
+def is_scenery_label(label: str) -> bool:
+    """True when any word of `label` is a scenery word ("sky", "old building")."""
+    words = label.lower().replace("-", " ").replace("_", " ").split()
+    return any(w in SCENERY_WORDS for w in words)
 
 
 class RankWeights(BaseModel):
@@ -72,6 +137,9 @@ class Instance:
     centrality: float
     motion_energy: float
     user_priority: float = 0.0
+    #: Scenery (sky, building, tree, …): ranked AFTER every subject, so it
+    #: only gets a hero slot when there are fewer subjects than slots.
+    scenery: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,8 +202,10 @@ def rank_and_assign(
        `overrides` that doesn't appear in `instances` is silently skipped
        (caller should validate earlier; we don't raise so test fixtures
        stay light).
-    3. Remaining slots are filled in descending score order. Ties are
-       broken by (larger area_fraction first, then smaller track_id).
+    3. Remaining slots are filled in descending score order, subjects
+       first: an instance with `scenery=True` is only considered once every
+       subject has a slot. Within each group ties are broken by (larger
+       area_fraction first, then smaller track_id).
 
     Returns a list sorted by slot order (r, g, b, a) — NOT by score —
     so the refiner can index directly by slot.
@@ -153,6 +223,7 @@ def rank_and_assign(
     scored.sort(key=lambda p: p[1].track_id)  # tertiary
     scored.sort(key=lambda p: p[1].area_fraction, reverse=True)  # secondary
     scored.sort(key=lambda p: p[0], reverse=True)  # primary
+    scored.sort(key=lambda p: p[1].scenery)  # subjects (False) before scenery
 
     assigned: dict[SlotName, HeroSlot] = {}
     slot_list: list[SlotName] = [cast("SlotName", s) for s in slots[:max_heroes]]
@@ -173,8 +244,8 @@ def rank_and_assign(
             instance=inst,
         )
 
-    # 2) Fill remaining slots in score order, skipping any track_id already
-    # claimed by an override.
+    # 2) Fill remaining slots in score order (every subject before any
+    # scenery), skipping any track_id already claimed by an override.
     claimed_ids = {h.track_id for h in assigned.values()}
     free_slots = [s for s in slot_list if s not in assigned]
     for score, inst in scored:
@@ -197,12 +268,14 @@ def rank_and_assign(
 
 
 __all__ = [
+    "SCENERY_WORDS",
     "SLOT_ORDER",
     "HeroOverride",
     "HeroSlot",
     "Instance",
     "RankWeights",
     "SlotName",
+    "is_scenery_label",
     "rank_and_assign",
     "score_instance",
 ]

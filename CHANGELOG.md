@@ -6,6 +6,24 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Scenery no longer takes a hero slot.** With the default concepts (person, vehicle, tree, building,
+  sky, water, animal) the four `matte.rgba` slots on a car plate went to the car, one person, a
+  building and a tree, and the second person got none (A65 couple-car plate). The ranker now fills
+  the slots with subjects first (person, animal, vehicle, user clicks) and considers scenery labels
+  (`scenery_labels: auto` = sky, building, tree, water, wall, road, ... or an explicit list) only
+  when there are fewer subjects than slots. User overrides and the deterministic tie-break are
+  unchanged; scenery keeps its `mask.<label>` channel and Cryptomatte id, and the SAM artifact marks
+  each track with `scenery`.
+- **LTX per-object crops stop growing to the whole frame.** The crop grew to take in every
+  overlapping neighbour of similar size, and with sky, buildings and trees tracked that chain made
+  every object's box the full 2K proxy; LTX alpha-gen mattes one salient foreground per crop, so
+  each object's gated alpha was somebody else's (matte.rgba at 1.3 / 0.1 / 0.6 / 0.0 % of the frame
+  while `mask.person` was still 10 %). Scenery neighbours never grow the crop, and the size ratio
+  (`neighbour_max_ratio`) is measured against the object's own padded box. In `refine_all_masks`
+  mode scenery tracks are not sent to LTX at all (no hair or motion-blur edge to recover): SAM's
+  mask with the light anti-alias that `refine_min_px` already uses, one log line per skipped track.
+
 ## [0.12.0] — 2026-11-08
 
 ### Added
