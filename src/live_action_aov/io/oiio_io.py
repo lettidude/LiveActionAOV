@@ -113,6 +113,8 @@ def write_exr(
     pixel_aspect: float = 1.0,
     compression: str = "zip",
     dtype: str = "float32",
+    origin: tuple[int, int] | None = None,
+    full_size: tuple[int, int] | None = None,
 ) -> None:
     """Write a multi-channel EXR.
 
@@ -120,6 +122,9 @@ def write_exr(
     `attrs`: flat dict of EXR custom attributes. Keys with '/' are written
     verbatim (OpenEXR supports slash-namespaced attribute names, Nuke
     displays them as hierarchical).
+    `origin` / `full_size`: place the pixels as the data window at
+    `origin` (x, y, top-left) inside a `full_size` (w, h) display window,
+    for a crop of a bigger plate. Default: data window = display window.
     """
     require_oiio()
     pixels = np.ascontiguousarray(pixels)
@@ -140,6 +145,12 @@ def write_exr(
 
     spec = oiio.ImageSpec(w, h, c, oiio_dtype)
     spec.channelnames = tuple(channel_names)
+    if origin is not None or full_size is not None:
+        ox, oy = (int(origin[0]), int(origin[1])) if origin is not None else (0, 0)
+        fw, fh = (int(full_size[0]), int(full_size[1])) if full_size is not None else (w, h)
+        spec.x, spec.y = ox, oy
+        spec.full_x, spec.full_y = 0, 0
+        spec.full_width, spec.full_height = max(fw, ox + w), max(fh, oy + h)
     spec.attribute("compression", compression)
     spec.attribute("PixelAspectRatio", float(pixel_aspect))
     if attrs:

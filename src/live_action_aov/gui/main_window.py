@@ -51,10 +51,14 @@ from live_action_aov.gui.session_io import (
 )
 from live_action_aov.gui.shot_list import ShotListPanel
 from live_action_aov.gui.shot_state import ShotRegistry, ShotState
-from live_action_aov.gui.submit_worker import SubmitResult, SubmitWorker
+from live_action_aov.gui.submit_worker import (
+    SubmitResult,
+    SubmitWorker,
+    outside_range_message,
+)
 from live_action_aov.gui.viewport import ViewportPanel
 
-_WINDOW_TITLE = "Live Action AOV — Shot Prep"
+_WINDOW_TITLE = "LiveActionAOV"
 
 
 class MainWindow(QMainWindow):
@@ -86,13 +90,19 @@ class MainWindow(QMainWindow):
         self._inspector.click_mode_changed.connect(self._viewport.set_click_mode)
         self._inspector.active_click_instance_changed.connect(self._viewport.set_active_instance)
         self._inspector.mask_preview_requested.connect(self._viewport.preview_active_mask)
+        self._inspector.mask_auto_preview_toggled.connect(self._viewport.set_auto_preview)
+        self._inspector.frame_requested.connect(self._viewport.go_to_frame)
+        # Crop: the Output tab arms one drag in the viewer; the viewer reports
+        # back when the box is set so the button pops out.
+        self._inspector.crop_mode_changed.connect(self._viewport.set_crop_mode)
+        self._viewport.crop_mode_ended.connect(self._inspector.crop_mode_finished)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._shot_list)
         splitter.addWidget(self._viewport)
         splitter.addWidget(self._inspector)
         # Sensible initial proportions: 220 / 800 / 380 px.
-        splitter.setSizes([220, 760, 440])
+        splitter.setSizes([220, 720, 480])
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         splitter.setCollapsible(2, False)
@@ -103,7 +113,10 @@ class MainWindow(QMainWindow):
         # Deadline lands when the executor side does. Submit iterates
         # every queued shot (the per-row checkbox), so users can
         # process a whole list in one click.
-        self._submit_btn = QPushButton("Submit local")
+        self._submit_btn = QPushButton("Run")
+        self._submit_btn.setObjectName("primary")
+        self._submit_btn.setMinimumWidth(150)
+        self._submit_btn.setToolTip("Run every ticked shot on this machine.")
         self._submit_btn.setEnabled(False)
         self._submit_btn.clicked.connect(self._on_submit_clicked)
         # Queue state — populated by _on_submit_clicked, drained by
@@ -163,9 +176,18 @@ class MainWindow(QMainWindow):
         self._log_toggle_btn.toggled.connect(self._on_log_toggle)
 
         bottom_row = QHBoxLayout()
+        bottom_row.setContentsMargins(8, 6, 8, 6)
+        bottom_row.setSpacing(8)
+        # Run on the left, progress in the middle, the quiet buttons packed
+        # on the right (they stay their natural width instead of sharing
+        # the row equally).
+        for b in (self._log_toggle_btn, self._reveal_btn, self._preview_btn, self._cancel_btn):
+            b.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._submit_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         bottom_row.addWidget(self._submit_btn)
-        bottom_row.addWidget(self._progress, stretch=1)
+        bottom_row.addWidget(self._progress, stretch=3)
         bottom_row.addWidget(self._cancel_btn)
+        bottom_row.addStretch(1)
         bottom_row.addWidget(self._log_toggle_btn)
         bottom_row.addWidget(self._reveal_btn)
         bottom_row.addWidget(self._preview_btn)
@@ -193,9 +215,7 @@ class MainWindow(QMainWindow):
         self._build_menus()
 
         status = QStatusBar()
-        status.showMessage(
-            "Prep UX — drop a plate folder on the left panel or use File → Add shot."
-        )
+        status.showMessage("Drop a plate folder on the left, or File → Add shot.")
         self.setStatusBar(status)
 
         # Async executor driver — re-used across submits (one-shot runner
@@ -500,7 +520,7 @@ class MainWindow(QMainWindow):
         any_running = any(s.status == "running" for s in self._registry.shots())
         self._submit_btn.setEnabled(bool(queued_with_passes) and not any_running)
         n = len(queued_with_passes)
-        self._submit_btn.setText("Submit local" if n <= 1 else f"Submit local  ({n} shots)")
+        self._submit_btn.setText("Run" if n <= 1 else f"Run  ({n} shots)")
         cur = self._registry.current()
         has_out = cur is not None and _latest_run(cur) is not None
         self._reveal_btn.setEnabled(has_out)
@@ -544,6 +564,10 @@ class MainWindow(QMainWindow):
                     f"'{shot.name}': pick an output root (Inspector → Output → "
                     "Choose root…). Each run lands in <root>/<shot>/v###/.",
                 )
+                return
+            outside = outside_range_message(shot)
+            if outside:
+                QMessageBox.warning(self, "Object outside the frames to process", outside)
                 return
 
         # Non-commercial consent — one dialog for the whole batch,
@@ -625,6 +649,10 @@ class MainWindow(QMainWindow):
                 self._log_panel.append_error(
                     f"'{shot.name}' was ticked during the batch but has no output root - skipped."
                 )
+                continue
+            outside = outside_range_message(shot)
+            if outside:
+                self._log_panel.append_error(f"{outside} Skipped.")
                 continue
             if _collect_nc_entries([shot]):
                 self._log_panel.append_error(

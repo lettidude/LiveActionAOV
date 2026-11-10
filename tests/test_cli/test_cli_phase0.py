@@ -58,3 +58,24 @@ def test_run_shot_without_out_writes_next_to_the_plate(test_plate_1080p: Path) -
     written = sorted((sibling / "v001" / "passes").glob("*.utility.*.exr"))
     assert len(written) == 5
     assert not list(test_plate_1080p.glob("*.utility.*"))  # plate folder stays clean
+
+
+@pytest.mark.skipif(not HAS_OIIO, reason="OpenImageIO not installed")
+def test_run_shot_proxy_and_window_options(test_plate_1080p: Path, tmp_path: Path) -> None:
+    base = ["run-shot", str(test_plate_1080p), "--out", str(tmp_path), "--passes", "noop"]
+    ok = runner.invoke(app, [*base, "--proxy", "320", "--window", "off"])
+    assert ok.exit_code == 0, ok.stdout
+    auto = runner.invoke(app, [*base, "--proxy", "auto"])
+    assert auto.exit_code == 0 and "--proxy auto:" in auto.stdout, auto.stdout
+    assert runner.invoke(app, [*base, "--proxy", "big"]).exit_code == 2
+    assert runner.invoke(app, [*base, "--window", "1"]).exit_code == 2
+
+
+def test_doctor_reports_the_machine_and_a_suggestion(monkeypatch: pytest.MonkeyPatch) -> None:
+    from live_action_aov.passes.matte import ltx_alpha
+
+    monkeypatch.setattr(ltx_alpha, "comfy_check", lambda params=None: (False, "not reachable"))
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.stdout
+    for word in ("GPU", "SAM 3.1", "LTX Alpha", "Suggested for"):
+        assert word in result.stdout

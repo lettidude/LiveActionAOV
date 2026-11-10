@@ -124,7 +124,25 @@ def read_layer(layer: Layer, frame: int) -> np.ndarray:
     finally:
         inp.close()
     arr = np.asarray(px, dtype=np.float32).reshape(spec.height, spec.width, hi - lo)
-    return arr[..., [i - lo for i in idx]]
+    return _pad_to_display_window(arr[..., [i - lo for i in idx]], spec)
+
+
+def _pad_to_display_window(arr: np.ndarray, spec: Any) -> np.ndarray:
+    """A crop run writes its box as the EXR data window inside the plate's
+    display window; pad it back out so the layer sits over the plate."""
+    fw, fh = int(spec.full_width), int(spec.full_height)
+    x, y = int(spec.x - spec.full_x), int(spec.y - spec.full_y)
+    h, w = arr.shape[:2]
+    if (w, h) == (fw, fh) and (x, y) == (0, 0):
+        return arr
+    if fw < 1 or fh < 1:
+        return arr
+    out = np.zeros((fh, fw, arr.shape[2]), np.float32)
+    x0, y0 = max(x, 0), max(y, 0)
+    x1, y1 = min(x + w, fw), min(y + h, fh)
+    if x1 > x0 and y1 > y0:
+        out[y0:y1, x0:x1] = arr[y0 - y : y1 - y, x0 - x : x1 - x]
+    return out
 
 
 def layer_to_display(layer: Layer, px: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
@@ -181,7 +199,9 @@ def summary_lines(run_dir: Path) -> list[str]:
             if d.get("holdout_psnr_db") is not None:
                 bits.append(f"held-out PSNR {d['holdout_psnr_db']} dB")
             if (d.get("masked_fraction") or 0) > 0.4:
-                bits.append(f"{100 * d['masked_fraction']:.0f}% masked: clean plate unreliable")
+                bits.append(
+                    f"{100 * d['masked_fraction']:.0f}% masked: splat background unreliable"
+                )
             if d.get("train_seconds") is not None:
                 bits.append(f"{d['train_seconds']:.0f} s training")
             out.append("Splat: " + (", ".join(bits) or p.name))
@@ -328,7 +348,7 @@ class OutputPreviewDialog(QDialog):
     def _open_comp(self) -> None:
         if self._run is None:
             return
-        comps = sorted(self._run.glob("*.comp.nk"))
+        comps = sorted(self._run.glob("*.nk"))  # the comp; camera .nk lives in camera/
         self._open(comps[0] if comps else self._run)
 
     @staticmethod

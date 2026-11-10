@@ -69,6 +69,7 @@ class RAFTPass(UtilityPass):
     )
     pass_type = PassType.MOTION
     temporal_mode = TemporalMode.PAIR
+    window_safe = True
     input_colorspace = "srgb_display"
 
     produces_channels = [

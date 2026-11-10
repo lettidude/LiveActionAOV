@@ -25,7 +25,7 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -202,6 +202,9 @@ class _ClickCanvas(QLabel):
 
 
 class ViewportPanel(QWidget):
+    #: The crop box was drawn (or the drag was too small): crop mode is off.
+    crop_mode_ended = Signal()
+
     def __init__(self, registry: ShotRegistry) -> None:
         super().__init__()
         self._registry = registry
@@ -217,11 +220,19 @@ class ViewportPanel(QWidget):
         # unscaled preview so markers repaint without re-decoding the EXR.
         self._click_mode = False
         self._active_instance: ClickInstance | None = None
+        # Crop mode (Output tab, "Draw crop"): the next left-drag sets the
+        # shot's crop box instead of a mask prompt, then the mode ends.
+        self._crop_mode = False
         self._last_composed: QPixmap | None = None
         # Single-frame SAM 3 preview of the active instance's mask. The
         # ndarray lives at `_last_composed` resolution; it's invalidated on
         # any point/frame/instance change so a stale mask never lies.
         self._preview_mask: np.ndarray | None = None
+        # Auto preview: every click or box asks for a preview by itself. A
+        # request that arrives while one is running is remembered and run
+        # when that one lands, so the overlay always matches the points.
+        self._auto_preview = True
+        self._preview_again = False
         # Live rubber-band rect while the user drags a box, in normalized
         # [0,1] image coords — drawn as a dashed rectangle, cleared on release.
         self._drag_rect: tuple[float, float, float, float] | None = None
@@ -266,7 +277,7 @@ class ViewportPanel(QWidget):
         self._canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._canvas.setMinimumSize(320, 200)
         self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._canvas.setStyleSheet("background: #1a1a1a; color: #888;")
+        self._canvas.setStyleSheet("background: #0e0e10; color: #777;")
         self._canvas.setWordWrap(True)
         self._canvas.setText("(no shot loaded)")
         self._canvas.pressed.connect(self._on_canvas_pressed)
@@ -351,6 +362,13 @@ class ViewportPanel(QWidget):
         self._canvas.setText("loading…")
         self._request_preview()
 
+    def go_to_frame(self, frame: int) -> None:
+        """Scrub the viewer to `frame` (clamped to the shot)."""
+        if self._current is None or not self._frame_slider.isEnabled():
+            return
+        lo, hi = self._frame_slider.minimum(), self._frame_slider.maximum()
+        self._frame_slider.setValue(min(max(int(frame), lo), hi))
+
     # --- UI → state ---
 
     def _on_frame_slider_changed(self, value: int) -> None:
@@ -419,6 +437,18 @@ class ViewportPanel(QWidget):
         )
         self._repaint_canvas()
 
+    def set_crop_mode(self, on: bool) -> None:
+        """Arm one drag that sets the shot's crop (Output tab button)."""
+        self._crop_mode = bool(on)
+        self._canvas.setCursor(
+            Qt.CursorShape.CrossCursor
+            if (self._crop_mode or self._click_mode)
+            else Qt.CursorShape.ArrowCursor
+        )
+        if not self._crop_mode:
+            self._drag_rect = None
+        self._repaint_canvas()
+
     def set_active_instance(self, inst: object) -> None:
         """Select which ClickInstance receives clicks (or None)."""
         new = inst if isinstance(inst, ClickInstance) else None
@@ -446,6 +476,7 @@ class ViewportPanel(QWidget):
             self._frame_status("Preview: no image loaded yet.")
             return
         if self._mask_worker.is_busy():
+            self._preview_again = True
             return
         image = _pixmap_to_rgb_float(self._last_composed)
         ih, iw = image.shape[0], image.shape[1]
@@ -519,7 +550,23 @@ class ViewportPanel(QWidget):
     def _frame_status(self, text: str) -> None:
         self._frame_label.setText(text)
 
+    def set_auto_preview(self, on: bool) -> None:
+        self._auto_preview = bool(on)
+        if not on:
+            self._preview_again = False
+
+    def _kick_auto_preview(self) -> None:
+        """After a click or a box: preview by itself (Masks tab "Auto")."""
+        if self._auto_preview:
+            QTimer.singleShot(0, self.preview_active_mask)
+
     def _on_mask_preview_ready(self, mask: object) -> None:
+        if self._preview_again:
+            # The points changed while this one ran: it is stale, run the new one.
+            self._preview_again = False
+            self._preview_mask = None
+            QTimer.singleShot(0, self.preview_active_mask)
+            return
         self._preview_mask = mask if isinstance(mask, np.ndarray) else None
         shot = self._current
         frame = (shot.current_frame or shot.frame_range[0]) if shot else "—"
@@ -528,6 +575,7 @@ class ViewportPanel(QWidget):
 
     def _on_mask_preview_failed(self, error: str) -> None:
         self._preview_mask = None
+        self._preview_again = False
         self._frame_status(f"Preview failed: {error[:60]}")
 
     def _can_edit_active(self) -> bool:
@@ -551,6 +599,8 @@ class ViewportPanel(QWidget):
         return True
 
     def _on_canvas_pressed(self, nx: float, ny: float, label: int) -> None:
+        if self._crop_mode:
+            return  # a crop is a drag, a click means nothing here
         if not self._can_edit_active():
             return
         shot, inst = self._current, self._active_instance
@@ -560,8 +610,12 @@ class ViewportPanel(QWidget):
         self._preview_mask = None  # point set changed → previewed mask stale
         self._repaint_canvas()
         self._registry.notify_updated(shot)
+        self._kick_auto_preview()
 
     def _on_canvas_boxed(self, nx0: float, ny0: float, nx1: float, ny1: float) -> None:
+        if self._crop_mode:
+            self._set_crop_from_drag(nx0, ny0, nx1, ny1)
+            return
         if not self._can_edit_active():
             return
         shot, inst = self._current, self._active_instance
@@ -572,13 +626,48 @@ class ViewportPanel(QWidget):
         self._drag_rect = None
         self._repaint_canvas()
         self._registry.notify_updated(shot)
+        self._kick_auto_preview()
+
+    def _set_crop_from_drag(self, nx0: float, ny0: float, nx1: float, ny1: float) -> None:
+        """Crop mode: the dragged box (normalized) becomes the shot's crop in
+        plate px; a drag under 8 px is ignored. Either way crop mode ends."""
+        shot = self._current
+        self._drag_rect = None
+        if shot is not None:
+            w, h = shot.resolution
+            x0, y0 = int(round(nx0 * w)), int(round(ny0 * h))
+            x1, y1 = int(round(nx1 * w)), int(round(ny1 * h))
+            if x1 - x0 >= 8 and y1 - y0 >= 8:
+                shot.crop = (x0, y0, x1 - x0, y1 - y0)
+        self.set_crop_mode(False)
+        self.crop_mode_ended.emit()
+        if shot is not None:
+            self._registry.notify_updated(shot)
 
     def _on_canvas_dragging(self, rect: object) -> None:
         """Live rubber-band overlay while the user drags a box."""
+        if self._crop_mode:
+            self._drag_rect = rect if isinstance(rect, tuple) else None
+            self._repaint_canvas()
+            return
         if not self._click_mode or self._active_instance is None:
             return
         self._drag_rect = rect if isinstance(rect, tuple) else None
         self._repaint_canvas()
+
+    def _paint_crop(
+        self, painter: QPainter, shot: ShotState, off_x: float, off_y: float, zw: float, zh: float
+    ) -> None:
+        _paint_crop_overlay(
+            painter,
+            shot.crop,
+            self._drag_rect if self._crop_mode else None,
+            shot.resolution,
+            off_x,
+            off_y,
+            zw,
+            zh,
+        )
 
     def _pos_to_norm(self, x: float, y: float) -> tuple[float, float] | None:
         """Widget coords → normalized image coords under the current
@@ -666,6 +755,8 @@ class ViewportPanel(QWidget):
         painter.drawPixmap(QRectF(off_x, off_y, zw, zh), base, QRectF(base.rect()))
 
         shot = self._current
+        if shot is not None and (shot.crop is not None or (self._crop_mode and self._drag_rect)):
+            self._paint_crop(painter, shot, off_x, off_y, zw, zh)
         inst = self._active_instance
         on_seed = (
             shot is not None
@@ -719,6 +810,45 @@ class ViewportPanel(QWidget):
                 painter.drawEllipse(int(cx) - 4, int(cy) - 4, 8, 8)
         painter.end()
         self._canvas.setPixmap(out)
+
+
+def _paint_crop_overlay(
+    painter: QPainter,
+    crop: tuple[int, int, int, int] | None,
+    drag: tuple[float, float, float, float] | None,
+    plate: tuple[int, int],
+    off_x: float,
+    off_y: float,
+    zw: float,
+    zh: float,
+) -> None:
+    """Shade what the crop leaves out, outline the crop (orange) and the live
+    drag (dashed white). Coordinates: plate px -> the zoomed image rect."""
+    w, h = max(int(plate[0]), 1), max(int(plate[1]), 1)
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.translate(off_x, off_y)
+    if crop is not None:
+        cx, cy, cw, ch = crop
+        rx, ry, rw, rh = cx / w * zw, cy / h * zh, cw / w * zw, ch / h * zh
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 110))
+        painter.drawRect(QRectF(0.0, 0.0, zw, ry))
+        painter.drawRect(QRectF(0.0, ry + rh, zw, zh - ry - rh))
+        painter.drawRect(QRectF(0.0, ry, rx, rh))
+        painter.drawRect(QRectF(rx + rw, ry, zw - rx - rw, rh))
+        painter.setPen(QPen(QColor(255, 170, 40), 1.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(QRectF(rx, ry, rw, rh))
+        painter.drawText(QPointF(rx + 4.0, ry + 14.0), f"crop {cw}x{ch}")
+    if drag is not None:
+        dx0, dy0, dx1, dy1 = drag
+        painter.setPen(QPen(QColor(255, 255, 255), 1.0, Qt.PenStyle.DashLine))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(
+            QRectF(min(dx0, dx1) * zw, min(dy0, dy1) * zh, abs(dx1 - dx0) * zw, abs(dy1 - dy0) * zh)
+        )
+    painter.restore()
 
 
 def _compose_pixmap(result: PreviewResult) -> QPixmap | None:

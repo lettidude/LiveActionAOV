@@ -52,14 +52,21 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from live_action_aov.core.output_layout import next_version_dir
+from live_action_aov.core import hardware
+from live_action_aov.core.output_layout import (
+    NAMING_PRESETS,
+    file_name,
+    next_version_dir,
+    validate_naming,
+)
 from live_action_aov.gui.engine_menu import OBJECT_ENGINES, RUN_ENGINES, EngineButton
-from live_action_aov.gui.pass_catalog import PASS_CATALOG
+from live_action_aov.gui.pass_catalog import PASS_CATALOG, ModelEntry, recommended_models
 from live_action_aov.gui.shot_list import remember_output_mode, remember_output_root
 from live_action_aov.gui.shot_state import ClickInstance, ShotRegistry, ShotState
 from live_action_aov.io.colorspace_detect import SUPPORTED_COLORSPACES
@@ -94,6 +101,12 @@ class InspectorPanel(QWidget):
     # "Preview mask (this frame)" — MainWindow routes this to the viewport,
     # which owns the preview image + the single-frame SAM 3 engine.
     mask_preview_requested = Signal()
+    #: Masks tab "Auto": preview by itself after every click or box.
+    mask_auto_preview_toggled = Signal(bool)
+    #: Masks tab "Go to" : scrub the viewer to an object's seed frame.
+    frame_requested = Signal(int)
+    #: Output tab "Draw crop" armed / disarmed: the viewer takes one drag.
+    crop_mode_changed = Signal(bool)
 
     def __init__(self, registry: ShotRegistry) -> None:
         super().__init__()
@@ -184,15 +197,28 @@ class InspectorPanel(QWidget):
         # quick passes before committing to a full-res run.
         self._proxy_combo = QComboBox()
         self._proxy_combo.addItem("Full plate (native)", None)
+        self._proxy_combo.addItem("Large  (long edge 2816)", 2816)
         self._proxy_combo.addItem("1080p  (long edge 1920)", 1920)
         self._proxy_combo.addItem("720p  (long edge 1280)", 1280)
         self._proxy_combo.addItem("540p  (long edge 960)", 960)
         self._proxy_combo.setToolTip(
-            "Resize every plate frame to this long edge before passes "
-            "see it. Sidecars are written at the same resolution. Use "
-            "for fast iteration; switch back to Full plate for delivery."
+            "Resize every plate frame to this long edge before the passes see it. "
+            "The EXRs are scaled back to plate size, so they line up in comp. "
+            "Smaller = faster and less memory, slightly softer matte edges."
         )
         self._proxy_combo.currentIndexChanged.connect(self._on_proxy_changed)
+        # What this machine (card + RAM) can run for the selected shot, and
+        # one click to take it. It proposes; nothing changes until pressed.
+        self._hw_label = QLabel("")
+        self._hw_label.setStyleSheet("color: #aaa; font-size: 9pt;")
+        self._hw_label.setWordWrap(True)
+        self._hw_apply_btn = QPushButton("Use suggested")
+        self._hw_apply_btn.setToolTip(
+            "Set the proxy size and the detector to what this card and the free RAM "
+            "can run for this shot. Long clips are cut in windows by themselves."
+        )
+        self._hw_apply_btn.clicked.connect(self._on_hw_apply)
+        self._hw_suggestion: hardware.Suggestion | None = None
 
         # Delivery: EXR codec + bit depth. Bandwidth-bound jobs (separate
         # machines, limited share) need compact sidecars. Item data is a
@@ -200,8 +226,8 @@ class InspectorPanel(QWidget):
         # float32 sibling by the writer when a lossy/half delivery is chosen,
         # so its hash IDs always survive.
         self._delivery_combo = QComboBox()
-        self._delivery_combo.addItem("Lossless 32-bit (ZIP) - largest", ("zip", "float32"))
-        self._delivery_combo.addItem("Lossless 16-bit half (ZIP)", ("zip", "float16"))
+        self._delivery_combo.addItem("Lossless 32-bit (ZIP) - largest", ("zips", "float32"))
+        self._delivery_combo.addItem("Lossless 16-bit half (ZIP)", ("zips", "float16"))
         self._delivery_combo.addItem(
             "Compact - DWAB 16-bit (recommended for delivery)", ("dwab:45", "float16")
         )
@@ -222,6 +248,53 @@ class InspectorPanel(QWidget):
             "<shot>.comp.nk opens with everything already wired."
         )
         self._layout_combo.currentIndexChanged.connect(self._on_layout_changed)
+
+        # --- This shot only: work range + crop ---
+        # Mark (studio): "most of the time I want to crop and work on a part
+        # of the video only". Frames in/out inside the plate, and a crop box
+        # drawn in the viewer; both per shot, unlike the rest of this tab.
+        self._range_in = QSpinBox()
+        self._range_out = QSpinBox()
+        for sp in (self._range_in, self._range_out):
+            sp.setRange(-9_999_999, 9_999_999)
+            sp.setKeyboardTracking(False)
+            sp.setMinimumWidth(80)
+        self._range_in.valueChanged.connect(self._on_range_changed)
+        self._range_out.valueChanged.connect(self._on_range_changed)
+        self._range_reset_btn = QPushButton("Whole plate")
+        self._range_reset_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._range_reset_btn.clicked.connect(self._on_range_reset)
+        self._crop_label = QLabel("whole frame")
+        self._crop_label.setStyleSheet("color: #aaa;")
+        self._crop_draw_btn = QPushButton("Draw in viewer")
+        self._crop_draw_btn.setCheckable(True)
+        self._crop_draw_btn.setToolTip(
+            "Then drag a box on the image. Passes run on that box only; the "
+            "EXRs keep the full plate as display window, so Nuke places them. "
+            "Camera and Gaussian splat need the whole frame."
+        )
+        self._crop_draw_btn.toggled.connect(self._on_crop_draw_toggled)
+        self._crop_clear_btn = QPushButton("Clear")
+        self._crop_clear_btn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._crop_clear_btn.clicked.connect(self._on_crop_clear)
+
+        # --- Naming (session-wide, like the rest of Output) ---
+        self._naming_combo = QComboBox()
+        for label, template in NAMING_PRESETS:
+            self._naming_combo.addItem(label, template)
+        self._naming_combo.addItem("Custom…", "")
+        self._naming_combo.currentIndexChanged.connect(self._on_naming_preset)
+        self._naming_edit = QLineEdit()
+        self._naming_edit.setPlaceholderText(NAMING_PRESETS[0][1])
+        self._naming_edit.setToolTip(
+            "Tokens: {shot} {plate} {version} {pass} {frame} {ext}. {pass} is "
+            "utility / crypto / camera / splat / comp (or the pass group in the "
+            "per-pass layout); files without a frame drop {frame}."
+        )
+        self._naming_edit.editingFinished.connect(self._on_naming_edited)
+        self._naming_example = QLabel("")
+        self._naming_example.setStyleSheet("color: #8f9196; font-size: 8pt;")
+        self._naming_example.setWordWrap(True)
 
         # --- Reset button ---
         # One-click rollback to the auto-detected colorspace + auto-
@@ -256,7 +329,11 @@ class InspectorPanel(QWidget):
         self._category_headers: dict[str, QPushButton] = {}
         passes_block = QVBoxLayout()
         passes_block.setSpacing(4)
-        for category, entries in PASS_CATALOG.items():
+        last_block: str | None = None
+        for block_title, blurb, category, entries in _iter_pass_blocks():
+            if block_title != last_block:
+                passes_block.addWidget(_block_header(block_title, blurb))
+                last_block = block_title
             # Header button — flat, label-like, but clickable to toggle
             # the section below. Chevron prefix makes expand/collapse
             # state readable at a glance.
@@ -264,13 +341,7 @@ class InspectorPanel(QWidget):
             header_btn.setCheckable(True)
             header_btn.setChecked(True)
             header_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            header_btn.setStyleSheet(
-                "QPushButton {"
-                " font-weight: 600; color: #dcdcdc; text-align: left;"
-                " padding: 8px 0 2px 0; border: none; background: transparent;"
-                "}"
-                "QPushButton:hover { color: #ffffff; }"
-            )
+            header_btn.setStyleSheet(_FOLD_HEADER_QSS)
             header_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             self._category_headers[category] = header_btn
             passes_block.addWidget(header_btn)
@@ -381,19 +452,13 @@ class InspectorPanel(QWidget):
         )
         self._sam3_concepts_edit.textEdited.connect(self._on_sam3_concepts_edited)
 
-        concepts_label = QLabel("SAM 3 detects")
-        concepts_label.setStyleSheet(
-            "font-weight: 600; color: #ddd; font-size: 9pt; padding-top: 6px;"
-        )
         concepts_hint = QLabel(
-            "Comma-separated. Matte + Cryptomatte. Empty = default concepts - "
-            "unless you have click objects (Masks tab): then empty = clicks only."
+            "What gets a matte and a Cryptomatte ID (people, vehicles, your own objects) "
+            "is chosen on the Masks tab."
         )
         concepts_hint.setStyleSheet("color: #999; font-size: 8pt;")
         concepts_hint.setWordWrap(True)
         passes_block.addSpacing(8)
-        passes_block.addWidget(concepts_label)
-        passes_block.addWidget(self._sam3_concepts_edit)
         passes_block.addWidget(concepts_hint)
 
         # DEFAULT ENGINE for the run — one dropdown, covering both the
@@ -445,6 +510,7 @@ class InspectorPanel(QWidget):
 
         # Detector: SAM 3 (built in) or SAM 3.1 Object Multiplex.
         self._detector_combo = QComboBox()
+        self._detector_combo.addItem("Auto - SAM 3.1 when installed, else SAM 3", "auto")
         self._detector_combo.addItem("SAM 3 (built in)", "sam3")
         self._detector_combo.addItem(
             "SAM 3.1 Object Multiplex - many objects, fast motion", "sam3.1"
@@ -452,8 +518,9 @@ class InspectorPanel(QWidget):
         self._detector_combo.setToolTip(
             "SAM 3.1 tracks every instance of a concept together and keeps identities "
             "where SAM 3 can swap two similar objects or lose a part in motion blur. "
-            "It runs in its own Python 3.12 environment: set LAOV_SAM31_PYTHON to its "
-            "python.exe (docs/install.md, SAM 3.1). Clicked objects still use SAM 3."
+            "It runs in its own Python 3.12 environment: `liveaov setup-sam31` builds it "
+            "(docs/install.md, SAM 3.1). Auto uses it when it is installed and the card "
+            "has the memory, else SAM 3. Clicked objects still use SAM 3."
         )
         self._detector_combo.currentIndexChanged.connect(self._on_detector_changed)
         detector_row = QHBoxLayout()
@@ -476,11 +543,29 @@ class InspectorPanel(QWidget):
         refiner_weights_row.addWidget(self._default_engine_combo, stretch=1)
         passes_block.addSpacing(8)
         passes_block.addLayout(refiner_weights_row)
-        passes_block.addLayout(small_row)
-        passes_block.addLayout(detector_row)
-        passes_block.addWidget(self._refine_all_check)
-        passes_block.addWidget(self._outline_check)
-        passes_block.addWidget(self._pnp_check)
+
+        # Advanced: the knobs a first run does not need. Folded by default;
+        # the Pro playbooks say when to open it.
+        self._advanced_btn = QPushButton("▸  Advanced")
+        self._advanced_btn.setCheckable(True)
+        self._advanced_btn.setChecked(False)
+        self._advanced_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._advanced_btn.setStyleSheet(_FOLD_HEADER_QSS)
+        self._advanced_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self._advanced_box = QWidget()
+        adv_layout = QVBoxLayout(self._advanced_box)
+        adv_layout.setContentsMargins(16, 0, 0, 0)
+        adv_layout.setSpacing(4)
+        adv_layout.addLayout(small_row)
+        adv_layout.addLayout(detector_row)
+        adv_layout.addWidget(self._refine_all_check)
+        adv_layout.addWidget(self._outline_check)
+        adv_layout.addWidget(self._pnp_check)
+        self._advanced_box.setVisible(False)
+        self._advanced_btn.toggled.connect(self._on_advanced_toggled)
+        passes_block.addSpacing(4)
+        passes_block.addWidget(self._advanced_btn)
+        passes_block.addWidget(self._advanced_box)
 
         # "Apply to all shots" — one-click broadcast of the active
         # shot's pass selections to every other shot in the queue.
@@ -513,13 +598,21 @@ class InspectorPanel(QWidget):
         # output so it reads as the primary control. Wrap in a scroll
         # area because the catalog can grow and we don't want to push
         # the rest of the inspector off-screen.
-        passes_header = QLabel("PASSES")
+        passes_header = QLabel("Passes")
         passes_header.setStyleSheet(
             "font-weight: 700; color: #fff; font-size: 11pt; padding: 4px 0; letter-spacing: 0.5px;"
         )
         passes_hint = QLabel(
-            "Pick one or more models per category. New models appear here as we add them."
+            "Tick what the comp needs. Recommended = the set we run daily "
+            "(mattes, Cryptomatte, metric depth + normals, motion, camera + splat background)."
         )
+        self._recommended_btn = QPushButton("Use the recommended set")
+        self._recommended_btn.setToolTip(
+            "Matte (SAM + default engine), Cryptomatte, MoGe-3 depth + normals, "
+            "RAFT motion, camera track + Gaussian splat background "
+            "(camera only when gsplat is not installed)."
+        )
+        self._recommended_btn.clicked.connect(self._on_recommended_clicked)
         passes_hint.setStyleSheet("color: #999; font-size: 9pt;")
         passes_hint.setWordWrap(True)
 
@@ -560,6 +653,8 @@ class InspectorPanel(QWidget):
         passes_layout.setContentsMargins(8, 8, 8, 8)
         passes_layout.addWidget(passes_header)
         passes_layout.addWidget(passes_hint)
+        passes_layout.addWidget(self._recommended_btn)
+        passes_layout.addSpacing(4)
         passes_layout.addLayout(passes_block)
         passes_layout.addStretch()
         passes_tab = _scrollable(passes_layout)
@@ -606,28 +701,72 @@ class InspectorPanel(QWidget):
         preview_layout.addStretch()
         preview_tab = _scrollable(preview_layout)
 
-        # Output tab.
+        # "This shot" tab: the ad-hoc settings of ONE shot. Everything in
+        # the Output tab is for the whole session; a batch must not need a
+        # visit to every shot.
+        shot_layout = QVBoxLayout()
+        shot_layout.setContentsMargins(8, 8, 8, 8)
+        shot_layout.addWidget(_section_label("Only this shot"))
+        shot_only_note = QLabel(
+            "Optional. These apply to the selected shot alone; the Output tab is the "
+            "same for every shot of the session."
+        )
+        shot_only_note.setStyleSheet("color: #888; font-size: 9pt;")
+        shot_only_note.setWordWrap(True)
+        shot_layout.addWidget(shot_only_note)
+        shot_layout.addSpacing(10)
+        shot_layout.addWidget(_section_label("Frames to process"))
+        range_row = QHBoxLayout()
+        range_row.addWidget(QLabel("Frames"))
+        range_row.addWidget(self._range_in)
+        range_row.addWidget(QLabel("to"))
+        range_row.addWidget(self._range_out)
+        range_row.addWidget(self._range_reset_btn)
+        range_row.addStretch(1)
+        shot_layout.addLayout(range_row)
+        shot_layout.addSpacing(10)
+        shot_layout.addWidget(_section_label("Part of the frame"))
+        crop_row = QHBoxLayout()
+        crop_row.addWidget(QLabel("Crop:"))
+        crop_row.addWidget(self._crop_label, stretch=1)
+        crop_row.addWidget(self._crop_draw_btn)
+        crop_row.addWidget(self._crop_clear_btn)
+        shot_layout.addLayout(crop_row)
+        shot_layout.addSpacing(10)
+        shot_layout.addWidget(_section_label("Folder name"))
+        shot_layout.addLayout(external_name_row)
+        shot_layout.addStretch()
+        shot_tab = _scrollable(shot_layout)
+
+        # Output tab: the same for every shot of the session.
         output_layout = QVBoxLayout()
         output_layout.setContentsMargins(8, 8, 8, 8)
-        output_layout.addWidget(_section_label("Output"))
-        session_wide_note = QLabel("These settings apply to every shot in the session.")
-        session_wide_note.setStyleSheet("color: #777; font-size: 8pt; font-style: italic;")
+        output_layout.addWidget(_section_label("Output - every shot"))
+        session_wide_note = QLabel(
+            "One setting for the whole session. A single shot's frames, crop and folder "
+            "name are in the This shot tab."
+        )
+        session_wide_note.setStyleSheet("color: #888; font-size: 9pt;")
+        session_wide_note.setWordWrap(True)
         output_layout.addWidget(session_wide_note)
         output_layout.addWidget(self._out_mode_plate)
         output_layout.addWidget(self._out_mode_root)
         output_layout.addLayout(out_root_row)
-        output_layout.addLayout(external_name_row)
         output_layout.addWidget(self._resolved_out_label)
         output_layout.addSpacing(16)
         output_layout.addWidget(_section_label("Proxy resolution"))
         proxy_hint = QLabel(
-            "Resize plate before passes run; sidecars land at this "
-            "resolution. Use Full plate for delivery."
+            "The models run on a smaller copy of the plate (faster, less memory); "
+            "the EXRs are still written at plate size."
         )
         proxy_hint.setStyleSheet("color: #888; font-size: 9pt;")
         proxy_hint.setWordWrap(True)
         output_layout.addWidget(proxy_hint)
         output_layout.addWidget(self._proxy_combo)
+        hw_row = QHBoxLayout()
+        hw_row.addWidget(self._hw_label, stretch=1)
+        hw_row.addWidget(self._hw_apply_btn)
+        output_layout.addLayout(hw_row)
         output_layout.addSpacing(16)
         output_layout.addWidget(_section_label("Delivery (size vs fidelity)"))
         delivery_hint = QLabel(
@@ -647,6 +786,18 @@ class InspectorPanel(QWidget):
         layout_hint.setWordWrap(True)
         output_layout.addWidget(layout_hint)
         output_layout.addWidget(self._layout_combo)
+        output_layout.addSpacing(16)
+        output_layout.addWidget(_section_label("File naming"))
+        naming_hint = QLabel(
+            "Match the studio's convention. One template for every file of the "
+            "run; the version folder stays v###."
+        )
+        naming_hint.setStyleSheet("color: #888; font-size: 9pt;")
+        naming_hint.setWordWrap(True)
+        output_layout.addWidget(naming_hint)
+        output_layout.addWidget(self._naming_combo)
+        output_layout.addWidget(self._naming_edit)
+        output_layout.addWidget(self._naming_example)
         output_layout.addStretch()
         output_tab = _scrollable(output_layout)
 
@@ -657,21 +808,73 @@ class InspectorPanel(QWidget):
         # submit the SAM 3 tracker propagates it across the shot into a
         # mask.<name> channel + Cryptomatte ID.
         masks_hint = QLabel(
-            "Drag a box or click points (left = include, right = exclude) "
-            "to seed a tracked mask.<name> + Cryptomatte ID. "
-            "FEW INPUTS WORK BEST: a box or 2-6 points, Preview, then one "
-            "corrective click."
+            "For anything the names above do not find, or one object you want on its "
+            "own: press New object, then drag a box around it in the viewer or click on "
+            "it (left = include, right = exclude). A box or 2-6 clicks is enough: "
+            "Preview, then one corrective click. Each object gets its own mask.<name> "
+            "and Cryptomatte ID."
         )
         masks_hint.setStyleSheet("color: #999; font-size: 9pt;")
         masks_hint.setWordWrap(True)
+        found_hint = QLabel(
+            "Every one of these found in the shot is tracked and gets a Cryptomatte ID "
+            "and a mask. Comma-separated, any words (person, red car, dog). Sky, "
+            "buildings and trees get an ID but never one of the four matte slots. "
+            "Empty = the default list; with your own objects below, empty = only those."
+        )
+        found_hint.setStyleSheet("color: #999; font-size: 9pt;")
+        found_hint.setWordWrap(True)
+        self._concept_preset_btns: list[QPushButton] = []
+        preset_row = QHBoxLayout()
+        for label, text, tip in (
+            ("People", "person", "Only people."),
+            ("People + vehicles", "person, vehicle", "People, cars, bikes, trucks."),
+            (
+                "Everything",
+                "",
+                "The default list: person, vehicle, tree, building, sky, water, animal.",
+            ),
+        ):
+            btn = QPushButton(label)
+            btn.setToolTip(tip)
+            btn.setCheckable(True)  # the preset in use stays lit
+            btn.setProperty("preset", text)
+            btn.clicked.connect(lambda _=False, t=text: self._on_concept_preset(t))
+            preset_row.addWidget(btn)
+            self._concept_preset_btns.append(btn)
+        preset_row.addStretch(1)
 
         # Point placement is ALWAYS armed while the Masks tab is open (and
         # disarmed on any other tab) — the old "Place points in viewport"
         # checkbox was one more thing to forget. Scrubbing stays free: the
         # frame slider lives outside the canvas.
         self._mask_list = QListWidget()
-        self._mask_list.setFixedHeight(140)
+        self._mask_list.setMinimumHeight(110)
+        self._mask_list.setMaximumHeight(220)
         self._mask_list.currentRowChanged.connect(self._on_mask_selected)
+        # The selected object's own settings, in one block under the list.
+        self._mask_slot_combo = QComboBox()
+        for label, slot in (
+            ("Auto - the ranking decides", ""),
+            ("matte.r (red)", "r"),
+            ("matte.g (green)", "g"),
+            ("matte.b (blue)", "b"),
+            ("matte.a (alpha)", "a"),
+        ):
+            self._mask_slot_combo.addItem(label, slot)
+        self._mask_slot_combo.setToolTip(
+            "Which of the four matte.rgba channels carries this object's soft matte. "
+            "Auto lets the biggest, most central subjects take them; pick one when the "
+            "comp must always find the hero in the same channel."
+        )
+        self._mask_slot_combo.currentIndexChanged.connect(self._on_mask_slot_changed)
+        self._mask_seed_label = QLabel("-")
+        self._mask_goto_btn = QPushButton("Go to")
+        self._mask_goto_btn.setToolTip(
+            "Scrub the viewer to the frame this object was drawn on: its points and "
+            "box only show, and only preview, on that frame."
+        )
+        self._mask_goto_btn.clicked.connect(self._on_mask_goto_seed)
 
         self._mask_name_edit = QLineEdit()
         self._mask_name_edit.setPlaceholderText("object name (→ Cryptomatte)")
@@ -691,13 +894,50 @@ class InspectorPanel(QWidget):
         # on the seed frame BEFORE running the whole shot. The heavy lifting
         # lives in the viewport (which owns the preview image); this button
         # just asks for it.
-        self._mask_preview_btn = QPushButton("Preview mask (this frame)")
+        self._mask_preview_btn = QPushButton("Preview")
         self._mask_preview_btn.setToolTip(
-            "Runs SAM 3 on the seed frame only and overlays the resulting "
-            "mask in the viewport. First use loads the model (one-time "
-            "wait); after that it's quick. Adjust points and preview again."
+            "Runs SAM on the object's frame only and overlays the soft matte "
+            "in the viewer. First use loads the model (one-time wait); after "
+            "that it is quick. Adjust the points and preview again."
         )
         self._mask_preview_btn.clicked.connect(self.mask_preview_requested.emit)
+        self._mask_auto_preview_btn = QPushButton("Auto")
+        self._mask_auto_preview_btn.setCheckable(True)
+        self._mask_auto_preview_btn.setChecked(True)
+        self._mask_auto_preview_btn.setToolTip(
+            "On: the preview runs by itself after every click or box, so you "
+            "always see what is being matted. Off: only when you press Preview."
+        )
+        self._mask_auto_preview_btn.toggled.connect(self.mask_auto_preview_toggled.emit)
+        # What the preview is made with: the run engine, or one you want to
+        # compare against it. Switching re-previews the selected object.
+        self._preview_with_btns: dict[str, QPushButton] = {}
+        preview_row = QHBoxLayout()
+        preview_row.addWidget(self._mask_preview_btn)
+        preview_row.addWidget(self._mask_auto_preview_btn)
+        preview_row.addSpacing(12)
+        preview_with_label = QLabel("with")
+        preview_with_label.setStyleSheet("color: #999;")
+        preview_row.addWidget(preview_with_label)
+        for label, key, tip in (
+            (
+                "Run engine",
+                "auto",
+                "The object's own engine, else the run engine. LTX Alpha only runs at "
+                "submit: its preview is ViTMatte.",
+            ),
+            ("ViTMatte", "vitmatte", "Soft edge from ViTMatte (trimap matting)."),
+            ("BiRefNet", "birefnet:", "Soft edge from BiRefNet."),
+            ("SAM only", "none", "The hard SAM mask, no soft edge: is the object right at all?"),
+        ):
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, k=key: self._on_preview_with(k))
+            preview_row.addWidget(b)
+            self._preview_with_btns[key] = b
+        self._preview_with_btns["auto"].setChecked(True)
+        preview_row.addStretch(1)
 
         mask_btn_row = QHBoxLayout()
         mask_btn_row.addWidget(self._mask_new_btn)
@@ -707,10 +947,16 @@ class InspectorPanel(QWidget):
 
         masks_layout = QVBoxLayout()
         masks_layout.setContentsMargins(8, 8, 8, 8)
-        masks_layout.addWidget(_section_label("Click-to-mask"))
+        masks_layout.addWidget(_section_label("Found by name"))
+        masks_layout.addWidget(found_hint)
+        masks_layout.addWidget(self._sam3_concepts_edit)
+        masks_layout.addLayout(preset_row)
+        masks_layout.addSpacing(14)
+        masks_layout.addWidget(_section_label("Your own objects"))
         masks_layout.addWidget(masks_hint)
         masks_layout.addSpacing(6)
         masks_layout.addLayout(mask_btn_row)
+        masks_layout.addLayout(preview_row)
         # Too-many-points guardrail. Empirically verified on real plates:
         # 3+2 points → full-object mask (34.8% of frame); 50+ points → the
         # mask collapses to nearly nothing (1.6%). SAM's interactive
@@ -726,10 +972,6 @@ class InspectorPanel(QWidget):
         self._preview_refiner_note = QLabel("")
         self._preview_refiner_note.setStyleSheet("color: #888; font-size: 8pt;")
         self._preview_refiner_note.setWordWrap(True)
-        masks_layout.addWidget(self._preview_refiner_note)
-        pv_row = QHBoxLayout()
-        pv_row.addWidget(self._mask_preview_btn, stretch=1)
-        masks_layout.addLayout(pv_row)
         # Per-object ENGINE, BESIDE the list: the weight belongs to the
         # LAYER, not the shot — portrait on the person, trimap/chroma on
         # the car, in one run. Selecting a row shows its engine here.
@@ -740,17 +982,23 @@ class InspectorPanel(QWidget):
             "submit refines its mask.<name> with the same engine."
         )
         self._mask_engine_combo.picked.connect(self._on_mask_engine_changed)
-        engine_col = QVBoxLayout()
-        engine_col.addWidget(QLabel("Engine:"))
-        engine_col.addWidget(self._mask_engine_combo)
-        engine_col.addStretch()
-        list_row = QHBoxLayout()
-        list_row.addWidget(self._mask_list, stretch=1)
-        list_row.addLayout(engine_col)
-        masks_layout.addLayout(list_row)
+        masks_layout.addWidget(self._mask_list)
         masks_layout.addWidget(self._mask_points_warn)
-        masks_layout.addWidget(QLabel("Name:"))
-        masks_layout.addWidget(self._mask_name_edit)
+        masks_layout.addSpacing(8)
+        self._mask_detail_title = _section_label("Selected object")
+        masks_layout.addWidget(self._mask_detail_title)
+        detail = QFormLayout()
+        detail.setContentsMargins(0, 2, 0, 0)
+        detail.addRow("Name", self._mask_name_edit)
+        detail.addRow("Soft edge", self._mask_engine_combo)
+        detail.addRow("Matte slot", self._mask_slot_combo)
+        seed_row = QHBoxLayout()
+        seed_row.addWidget(self._mask_seed_label, stretch=1)
+        seed_row.addWidget(self._mask_goto_btn)
+        detail.addRow("Drawn on", seed_row)
+        masks_layout.addLayout(detail)
+        masks_layout.addSpacing(6)
+        masks_layout.addWidget(self._preview_refiner_note)
         masks_layout.addStretch()
         masks_tab = _scrollable(masks_layout)
 
@@ -759,6 +1007,7 @@ class InspectorPanel(QWidget):
         tabs.addTab(masks_tab, "Masks")
         tabs.addTab(preview_tab, "Colour")
         tabs.addTab(output_tab, "Output")
+        tabs.addTab(shot_tab, "This shot")
         # Auto-arm point placement while the Masks tab is open (replaces
         # the old "Place points in viewport" checkbox).
         self._masks_tab_index = tabs.indexOf(masks_tab)
@@ -827,6 +1076,8 @@ class InspectorPanel(QWidget):
             self._exposure_spin.setValue(ev)
             self._pixel_aspect_spin.setValue(float(shot.pixel_aspect or 1.0))
 
+            self._rebuild_range_and_crop(shot)
+            self._rebuild_naming(shot)
             self._external_name_edit.setText(shot.output_external_name)
             self._out_mode_plate.setChecked(shot.output_mode == "plate")
             self._out_mode_root.setChecked(shot.output_mode != "plate")
@@ -842,6 +1093,7 @@ class InspectorPanel(QWidget):
             self._proxy_combo.blockSignals(True)
             self._proxy_combo.setCurrentIndex(proxy_index)
             self._proxy_combo.blockSignals(False)
+            self._rebuild_hw_suggestion(shot)
             # Match the delivery combo to the shot's (compression, dtype).
             delivery_index = 0
             want = (shot.delivery_compression, shot.delivery_dtype)
@@ -892,6 +1144,7 @@ class InspectorPanel(QWidget):
 
             # SAM 3 concepts free-text (drives Matte + Cryptomatte).
             self._sam3_concepts_edit.setText(shot.sam3_concepts)
+            self._sync_concept_presets()
 
             self._refine_all_check.blockSignals(True)
             self._refine_all_check.setChecked(bool(shot.refine_all_masks))
@@ -904,7 +1157,7 @@ class InspectorPanel(QWidget):
             self._small_objects_combo.setCurrentIndex(max(so, 0))
             self._small_objects_combo.blockSignals(False)
             self._detector_combo.blockSignals(True)
-            di = self._detector_combo.findData(shot.detector or "sam3")
+            di = self._detector_combo.findData(shot.detector or "auto")
             self._detector_combo.setCurrentIndex(max(di, 0))
             self._detector_combo.blockSignals(False)
             self._pnp_check.blockSignals(True)
@@ -912,8 +1165,7 @@ class InspectorPanel(QWidget):
             self._pnp_check.blockSignals(False)
 
             self._default_engine_combo.set_current((shot.default_engine, shot.refiner_model))
-            # The preview follows each object's engine (no separate preview pick).
-            shot.preview_refiner = "auto"
+            self._sync_preview_with()
             self._update_preview_refiner_note()
 
             # Click-to-mask object list (Masks tab).
@@ -987,6 +1239,104 @@ class InspectorPanel(QWidget):
         self._exposure_slider.blockSignals(False)
         self._registry.notify_updated(self._current)
 
+    # --- This shot: work range + crop ---
+
+    def _rebuild_range_and_crop(self, shot: ShotState) -> None:
+        first, last = shot.frame_range
+        a, b = shot.effective_frame_range()
+        for sp, v in ((self._range_in, a), (self._range_out, b)):
+            sp.blockSignals(True)
+            sp.setRange(first, last)
+            sp.setValue(v)
+            sp.blockSignals(False)
+        self._range_reset_btn.setEnabled(shot.work_range is not None)
+        if shot.crop is None:
+            self._crop_label.setText("whole frame")
+        else:
+            x, y, w, h = shot.crop
+            self._crop_label.setText(f"{w} × {h} px at ({x}, {y})")
+        self._crop_clear_btn.setEnabled(shot.crop is not None)
+
+    def _on_range_changed(self, _v: int) -> None:
+        if self._building or self._current is None:
+            return
+        shot = self._current
+        first, last = shot.frame_range
+        a, b = sorted((self._range_in.value(), self._range_out.value()))
+        shot.work_range = None if (a, b) == (first, last) else (a, b)
+        self._rebuild_range_and_crop(shot)
+        self._registry.notify_updated(shot)
+
+    def _on_range_reset(self) -> None:
+        if self._current is None:
+            return
+        self._current.work_range = None
+        self._rebuild_range_and_crop(self._current)
+        self._registry.notify_updated(self._current)
+
+    def _on_crop_draw_toggled(self, on: bool) -> None:
+        self.crop_mode_changed.emit(bool(on))
+
+    def crop_mode_finished(self) -> None:
+        """The viewer took its drag (or dropped it): pop the button out."""
+        self._crop_draw_btn.blockSignals(True)
+        self._crop_draw_btn.setChecked(False)
+        self._crop_draw_btn.blockSignals(False)
+
+    def _on_crop_clear(self) -> None:
+        if self._current is None:
+            return
+        self._current.crop = None
+        self._rebuild_range_and_crop(self._current)
+        self._registry.notify_updated(self._current)
+
+    # --- Naming ---
+
+    def _rebuild_naming(self, shot: ShotState) -> None:
+        template = shot.naming or NAMING_PRESETS[0][1]
+        idx = next(
+            (
+                i
+                for i in range(self._naming_combo.count())
+                if self._naming_combo.itemData(i) == template
+            ),
+            self._naming_combo.count() - 1,  # "Custom…"
+        )
+        self._naming_combo.blockSignals(True)
+        self._naming_combo.setCurrentIndex(idx)
+        self._naming_combo.blockSignals(False)
+        self._naming_edit.blockSignals(True)
+        self._naming_edit.setText(template)
+        self._naming_edit.blockSignals(False)
+        self._naming_example.setStyleSheet("color: #8f9196; font-size: 8pt;")
+        self._naming_example.setText(_naming_example(shot))
+
+    def _on_naming_preset(self, idx: int) -> None:
+        if self._building or self._current is None:
+            return
+        template = str(self._naming_combo.itemData(idx) or "")
+        if not template:  # Custom…: keep whatever is in the field, let them type
+            self._naming_edit.setFocus()
+            return
+        self._apply_naming(template)
+
+    def _on_naming_edited(self) -> None:
+        if self._building or self._current is None:
+            return
+        self._apply_naming(self._naming_edit.text())
+
+    def _apply_naming(self, template: str) -> None:
+        if self._current is None:
+            return
+        try:
+            clean = validate_naming(template)
+        except ValueError as e:
+            self._naming_example.setStyleSheet("color: #e07a5f; font-size: 8pt;")
+            self._naming_example.setText(str(e))
+            return
+        self._current.naming = "" if clean == NAMING_PRESETS[0][1] else clean
+        self._broadcast_output_to_all_shots()
+
     def _on_pixel_aspect_changed(self, pa: float) -> None:
         if self._building or self._current is None:
             return
@@ -1008,6 +1358,7 @@ class InspectorPanel(QWidget):
         if self._building or self._current is None:
             return
         self._current.sam3_concepts = text
+        self._sync_concept_presets()
         self._registry.notify_updated(self._current)
 
     # --- Click-to-mask (Masks tab) ---
@@ -1034,7 +1385,9 @@ class InspectorPanel(QWidget):
             "ltx": "LTX Alpha",
         }
         eng = f"  ·  [{eng_names.get(inst.refiner, inst.refiner)}]" if inst.refiner else ""
-        return f"{inst.name}  ·  f{inst.seed_frame}  ·  {n} pt{'s' if n != 1 else ''}{box}{eng}"
+        slot = f"  ·  matte.{inst.slot}" if inst.slot else ""
+        prompts = f"{n} pt{'s' if n != 1 else ''}{box}" if (n or inst.box is not None) else "empty"
+        return f"{inst.name}  ·  f{inst.seed_frame}  ·  {prompts}{eng}{slot}"
 
     def _refresh_mask_list(self) -> None:
         """Repopulate the Masks list from the current shot, preserving the
@@ -1053,8 +1406,90 @@ class InspectorPanel(QWidget):
         self._mask_name_edit.blockSignals(True)
         self._mask_name_edit.setText(active.name if active is not None else "")
         self._mask_name_edit.blockSignals(False)
+        self._sync_mask_detail(active)
         self._update_mask_points_warning(active)
         self.active_click_instance_changed.emit(active)
+
+    def _sync_mask_detail(self, active: ClickInstance | None) -> None:
+        """The "Selected object" block follows the list selection."""
+        self._mask_slot_combo.blockSignals(True)
+        self._mask_slot_combo.setCurrentIndex(
+            max(self._mask_slot_combo.findData(active.slot if active is not None else ""), 0)
+        )
+        self._mask_slot_combo.blockSignals(False)
+        self._mask_seed_label.setText(
+            f"frame {active.seed_frame}" if active is not None else "no object selected"
+        )
+        for w in (
+            self._mask_name_edit,
+            self._mask_engine_combo,
+            self._mask_slot_combo,
+            self._mask_goto_btn,
+            self._mask_preview_btn,
+            self._mask_del_btn,
+            self._mask_undo_btn,
+            self._mask_clear_btn,
+        ):
+            w.setEnabled(active is not None)
+
+    def _on_concept_preset(self, text: str) -> None:
+        """People / People + vehicles / Everything: fill the names field."""
+        if self._current is None:
+            return
+        self._sam3_concepts_edit.setText(text)
+        self._current.sam3_concepts = text
+        self._sync_concept_presets()
+        self._registry.notify_updated(self._current)
+
+    def _sync_concept_presets(self) -> None:
+        """Light the preset that matches the names field (none for a custom list)."""
+
+        def norm(text: str) -> str:
+            return ", ".join(p.strip().lower() for p in text.split(",") if p.strip())
+
+        now = norm(self._sam3_concepts_edit.text())
+        for btn in self._concept_preset_btns:
+            btn.blockSignals(True)
+            btn.setChecked(norm(str(btn.property("preset") or "")) == now)
+            btn.blockSignals(False)
+
+    def _on_preview_with(self, key: str) -> None:
+        """Masks tab "with": what the preview is made with; re-previews."""
+        if self._current is None:
+            self._sync_preview_with()
+            return
+        self._current.preview_refiner = key
+        self._sync_preview_with()
+        inst = self._active_mask_instance()
+        if inst is not None and (inst.points or inst.box is not None):
+            self.mask_preview_requested.emit()
+
+    def _sync_preview_with(self) -> None:
+        want = str(getattr(self._current, "preview_refiner", "auto") or "auto")
+        if want.startswith("birefnet:"):
+            want = "birefnet:"
+        for key, btn in self._preview_with_btns.items():
+            btn.blockSignals(True)
+            btn.setChecked(key == want)
+            btn.blockSignals(False)
+
+    def _on_mask_slot_changed(self, idx: int) -> None:
+        inst = self._active_mask_instance()
+        if self._building or self._current is None or inst is None:
+            return
+        slot = str(self._mask_slot_combo.itemData(idx) or "")
+        if slot:
+            # One object per slot: taking a slot frees it on the others.
+            for other in self._current.click_instances:
+                if other is not inst and other.slot == slot:
+                    other.slot = ""
+        inst.slot = slot
+        self._refresh_mask_list()
+
+    def _on_mask_goto_seed(self) -> None:
+        inst = self._active_mask_instance()
+        if inst is not None:
+            self.frame_requested.emit(int(inst.seed_frame))
 
     def _update_mask_points_warning(self, inst: ClickInstance | None) -> None:
         """Amber warning once an object has more points than SAM's
@@ -1091,7 +1526,7 @@ class InspectorPanel(QWidget):
     def _on_detector_changed(self, idx: int) -> None:
         if self._building or self._current is None:
             return
-        self._current.detector = str(self._detector_combo.itemData(idx) or "sam3")
+        self._current.detector = str(self._detector_combo.itemData(idx) or "auto")
 
     def _on_pnp_toggled(self, checked: bool) -> None:
         if self._building or self._current is None:
@@ -1130,7 +1565,7 @@ class InspectorPanel(QWidget):
         label = self._default_engine_combo.short_label()
         pinned = sum(1 for ci in shot.click_instances if ci.refiner)
         extra = f", {pinned} object(s) with their own engine" if pinned else ""
-        text = f"Run engine: {label}{extra} (set per object below)"
+        text = f"Run engine: {label}{extra} (one object can use another: Soft edge, above)"
         if any(ci.refiner == "ltx" for ci in shot.click_instances):
             from live_action_aov.gui import comfy_dialog
 
@@ -1210,6 +1645,7 @@ class InspectorPanel(QWidget):
         self._mask_name_edit.blockSignals(False)
         want = getattr(inst, "refiner", "") if inst is not None else ""
         self._mask_engine_combo.set_current((want or "", ""))
+        self._sync_mask_detail(inst)
         self.active_click_instance_changed.emit(inst)
 
     def _on_mask_engine_changed(self, data: tuple[str, str]) -> None:
@@ -1256,6 +1692,34 @@ class InspectorPanel(QWidget):
             return
         self._current.proxy_long_edge = self._proxy_combo.itemData(idx)
         self._broadcast_output_to_all_shots()
+        self._rebuild_hw_suggestion(self._current)
+
+    def _rebuild_hw_suggestion(self, shot: ShotState) -> None:
+        """ "This machine: ... Suggested: ..." under the proxy menu."""
+        hw, sam31 = _machine()
+        first, last = shot.effective_frame_range()
+        res = (shot.crop[2], shot.crop[3]) if shot.crop else shot.resolution
+        s = hardware.suggest(hw, res, last - first + 1, sam31_installed=sam31)
+        self._hw_suggestion = s
+        applied = shot.proxy_long_edge == s.proxy_long_edge and shot.detector in (
+            "auto",
+            s.detector,
+        )
+        self._hw_label.setText(
+            f"This machine: {hw.summary()}. Suggested - {s.one_line()}"
+            + (" (in use)." if applied else ".")
+        )
+        self._hw_label.setToolTip("\n".join(s.notes))
+        self._hw_apply_btn.setEnabled(s.tier != "none" and not applied)
+
+    def _on_hw_apply(self) -> None:
+        s = self._hw_suggestion
+        if self._current is None or s is None:
+            return
+        self._current.proxy_long_edge = s.proxy_long_edge
+        self._current.detector = "auto"  # the pass picks SAM 3.1 / SAM 3 the same way
+        self._broadcast_output_to_all_shots()
+        self._rebuild_from_shot()
 
     def _on_delivery_changed(self, idx: int) -> None:
         if self._building or self._current is None:
@@ -1314,6 +1778,7 @@ class InspectorPanel(QWidget):
             shot.delivery_compression = active.delivery_compression
             shot.delivery_dtype = active.delivery_dtype
             shot.delivery_layout = active.delivery_layout
+            shot.naming = active.naming
             self._registry.notify_updated(shot)
 
     def _rebuild_resolved_out_label(self) -> None:
@@ -1418,6 +1883,18 @@ class InspectorPanel(QWidget):
         self._apply_passes_btn.setText(f"Applied to {count} shot{'s' if count != 1 else ''} ✓")
         QTimer.singleShot(1500, lambda: self._apply_passes_btn.setText(original))
 
+    def _on_advanced_toggled(self, checked: bool) -> None:
+        self._advanced_box.setVisible(checked)
+        self._advanced_btn.setText(f"{'▾' if checked else '▸'}  Advanced")
+
+    def _on_recommended_clicked(self) -> None:
+        """One click to the set we run daily (the README's "what you get")."""
+        if self._current is None:
+            return
+        self._current.enabled_models = recommended_models()
+        self._rebuild_from_shot()
+        self._registry.notify_updated(self._current)
+
     def _on_reset_clicked(self) -> None:
         """Revert both knobs to auto-detected values in one shot."""
         if self._current is None:
@@ -1431,10 +1908,112 @@ class InspectorPanel(QWidget):
         self._registry.notify_updated(self._current)
 
 
+def _naming_example(shot: ShotState) -> str:
+    """`e.g. passes/SH010_v001.utility.1001.exr`, from the shot's own names."""
+    from types import SimpleNamespace
+
+    root = shot.resolve_output_dir()
+    fake = SimpleNamespace(
+        name=shot.name,
+        folder=shot.folder,
+        output_dir=(next_version_dir(root) if root is not None else shot.folder / "v001"),
+        sequence_pattern=shot.sequence_pattern,
+        naming=shot.naming,
+    )
+    first = shot.effective_frame_range()[0]
+    try:
+        return (
+            f"e.g. passes/{file_name(fake, 'utility', 'exr', first)}   "
+            f"camera/{file_name(fake, 'camera', 'nk')}"
+        )
+    except ValueError as e:
+        return str(e)
+
+
 def _section_label(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setStyleSheet("font-weight: bold; color: #ccc;")
     return lbl
 
 
+_FOLD_HEADER_QSS = (
+    "QPushButton {"
+    " font-weight: 600; color: #cfcfcf; text-align: left;"
+    " padding: 6px 0 2px 0; border: none; background: transparent;"
+    "}"
+    "QPushButton:hover { color: #ffffff; }"
+)
+
+#: The Passes tab groups the catalog's categories the way the comp sees
+#: them (one block per deliverable), in this order. Categories missing
+#: here (new ones) land in a trailing "More" block, so nothing is lost.
+_PASS_BLOCKS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "Mattes",
+        "Soft alpha per object, Cryptomatte IDs, screen pull.",
+        ("Matte", "Cryptomatte", "Key"),
+    ),
+    (
+        "Geometry",
+        "Depth in metres, normals, world position.",
+        ("Depth", "Normals", "Albedo"),
+    ),
+    ("Motion", "Forward and backward motion vectors.", ("Motion",)),
+    (
+        "Camera & splat",
+        "Nuke camera with its verdict in the label, point cloud, Gaussian splat background (the set behind the masked objects).",
+        ("Camera",),
+    ),
+)
+
+
+def _iter_pass_blocks() -> list[tuple[str, str, str, list[ModelEntry]]]:
+    out: list[tuple[str, str, str, list[ModelEntry]]] = []
+    seen: set[str] = set()
+    for title, blurb, cats in _PASS_BLOCKS:
+        for cat in cats:
+            if cat in PASS_CATALOG:
+                out.append((title, blurb, cat, PASS_CATALOG[cat]))
+                seen.add(cat)
+    for cat, entries in PASS_CATALOG.items():
+        if cat not in seen:
+            out.append(("More", "", cat, entries))
+    return out
+
+
+def _block_header(title: str, blurb: str) -> QWidget:
+    box = QWidget()
+    lay = QVBoxLayout(box)
+    lay.setContentsMargins(0, 10, 0, 0)
+    lay.setSpacing(0)
+    t = QLabel(title)
+    t.setStyleSheet(
+        "font-weight: 700; color: #ffffff; font-size: 10pt; "
+        "border-bottom: 1px solid #34363b; padding-bottom: 3px;"
+    )
+    lay.addWidget(t)
+    if blurb:
+        b = QLabel(blurb)
+        b.setStyleSheet("color: #8f9196; font-size: 8pt; padding-top: 2px;")
+        b.setWordWrap(True)
+        lay.addWidget(b)
+    return box
+
+
 __all__ = ["InspectorPanel"]
+
+
+_MACHINE: tuple[hardware.Hardware, bool] | None = None
+
+
+def _machine() -> tuple[hardware.Hardware, bool]:
+    """(the card and RAM, is SAM 3.1 installed), read once per session
+    except the free RAM, which is read every time."""
+    global _MACHINE
+    from live_action_aov.passes.matte import sam31_bridge
+
+    if _MACHINE is None:
+        _MACHINE = (hardware.detect(), sam31_bridge.available({})[0])
+    hw, sam31 = _MACHINE
+    _total, free = hardware.detect_ram()
+    return hardware.Hardware(hw.gpu_name, hw.vram_gb, hw.ram_gb, free), sam31

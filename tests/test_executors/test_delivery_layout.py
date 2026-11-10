@@ -95,3 +95,54 @@ def test_layout_is_validated() -> None:
             resolution=(8, 8),
             delivery_layout="zip",
         )
+
+
+def test_crop_and_naming_place_the_box_in_the_plate(test_plate_1080p: Path, tmp_path: Path) -> None:
+    """A crop runs the passes on one box only; the EXR carries it as data
+    window inside the plate's display window, named by the template."""
+    import OpenImageIO as oiio
+
+    run = tmp_path / "SH010" / "v001"
+    shot = Shot(
+        name="SH010",
+        folder=test_plate_1080p,
+        output_dir=run,
+        sequence_pattern="test_plate.####.exr",
+        frame_range=(2, 3),
+        resolution=(640, 360),
+        passes_enabled=["noop"],
+        crop=(100, 50, 200, 120),
+        naming="{shot}_{pass}_{version}.{frame}.{ext}",
+    )
+    job = Job(shot=shot, passes=[PassConfig(name="noop")])
+    live_action_aov.run(job)
+    files = sorted(p.name for p in (run / "passes").glob("*.exr"))
+    assert files == ["SH010_utility_v001.0002.exr", "SH010_utility_v001.0003.exr"]
+    spec = oiio.ImageInput.open(str(run / "passes" / files[0])).spec()
+    assert (spec.x, spec.y, spec.width, spec.height) == (100, 50, 200, 120)
+    assert (spec.full_width, spec.full_height) == (640, 360)
+    comp = run / "SH010_comp_v001.nk"
+    assert comp.exists()
+    text = comp.read_text()
+    assert "passes/SH010_utility_v001.####.exr" in text
+    assert "first_frame 2" in text and "last_frame 3" in text
+    assert 'format "640 360 0 0 640 360' in text  # the plate, not the crop
+
+
+def test_crop_refuses_whole_frame_passes(test_plate_1080p: Path, tmp_path: Path) -> None:
+    from live_action_aov.core.registry import get_registry
+
+    if "camera_pycolmap" not in get_registry().list_passes():
+        pytest.skip("camera pass not registered")
+    shot = Shot(
+        name="SH010",
+        folder=test_plate_1080p,
+        output_dir=tmp_path / "v001",
+        sequence_pattern="test_plate.####.exr",
+        frame_range=(1, 2),
+        resolution=(640, 360),
+        passes_enabled=["camera_pycolmap"],
+        crop=(0, 0, 320, 180),
+    )
+    with pytest.raises(ValueError, match="whole frame"):
+        live_action_aov.run(Job(shot=shot, passes=[PassConfig(name="camera_pycolmap")]))

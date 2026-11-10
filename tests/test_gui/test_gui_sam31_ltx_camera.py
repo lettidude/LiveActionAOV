@@ -34,8 +34,10 @@ def _params(state: ShotState) -> dict[str, dict]:
 
 
 def test_sam31_detector_reaches_the_matte_pass() -> None:
+    assert _shot().detector == "auto"  # the pass decides: SAM 3.1 when installed
     assert "detector" not in _params(_shot()).get("sam3_matte", {})
     assert _params(_shot(detector="sam3.1"))["sam3_matte"]["detector"] == "sam3.1"
+    assert _params(_shot(detector="sam3"))["sam3_matte"]["detector"] == "sam3"
 
 
 def test_whole_frame_ltx_is_a_run_engine_with_the_comfy_url(
