@@ -58,6 +58,18 @@ uses [semantic versioning](https://semver.org/).
   template like every other file. The comp script points at the new name.
 
 ### Fixed
+- **Model licences that were declared wrong.** Checked against each model's own repository:
+  **DSINE** is under Imperial College London's licence for non-commercial, internal or academic
+  use, not MIT: it is now marked NC, asks for `--allow-noncommercial`, and is out of the default
+  prefetch set (MoGe-3 is the normals model for paid work). **Robust Video Matting** is GPL-3.0,
+  not MIT: its mattes may still be delivered, the model code must not ship inside a closed bundle
+  (the portable build should not carry its torch.hub copy). **Depth Anything V2 Base** and
+  **Video Depth Anything Base / Large** are CC-BY-NC-4.0: the passes now load the Apache-2.0 Small
+  models only and refuse the others. The README has the full table.
+- **An object LTX does not see as foreground no longer gets an empty matte.** In whole-frame mode
+  LTX mattes mostly people; a tracked car, a prop or scenery in a hero slot received almost
+  nothing. When an object's share covers under half of its SAM mask (`whole_min_cover`) it is
+  matted with ViTMatte (a subject) or SAM's anti-aliased edge (scenery), with a warning.
 - **Scenery no longer takes a hero slot.** With the default concepts (person, vehicle, tree, building,
   sky, water, animal) the four `matte.rgba` slots on a car plate went to the car, one person, a
   building and a tree, and the second person got none (A65 couple-car plate). The ranker now fills

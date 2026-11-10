@@ -50,8 +50,8 @@ Models download once from Hugging Face (and torch.hub) and are cached on
 disk — they are **not** re-downloaded on later runs, and each model is
 stored once. Total size depends on which passes you use:
 
-- Default commercial-safe set (Depth Anything V2, DSINE, SAM 3, RVM,
-  BiRefNet): a few GB.
+- Default commercial-safe set (MoGe-3, Depth Anything V2 Small, SAM 3,
+  ViTMatte, BiRefNet): a few GB.
 - Everything (`liveaov prefetch --all`, incl. DepthCrafter / NormalCrafter
   which pull Stable Video Diffusion): **~30–40 GB**.
 
@@ -129,8 +129,8 @@ on PyPI), so the install string is a `git+https://…@<tag>` URL.
 ```bash
 # CORE — the commercial-safe default passes, nothing else:
 #   • Depth   → Depth Anything V2 (Apache-2.0)
-#   • Normals → DSINE (MIT)
-#   • Matte   → SAM 3 + RVM (SAM-License / MIT)
+#   • Normals → MoGe-3 (MIT)
+#   • Matte   → SAM 3 + ViTMatte (SAM-License / MIT)
 uv tool install "git+https://github.com/lettidude/LiveActionAOV@v0.5.1" --torch-backend=auto
 
 # EVERY PASS — adds the optional backends (DepthCrafter, NormalCrafter,
@@ -328,8 +328,8 @@ instead:
 
 Note: Pascal/Volta don't have first-class fp16 support. Passes that
 load fp16 by default (DepthCrafter, NormalCrafter) will be slow or
-fall back to fp32. Commercial-safe passes (RAFT, DA-V2, DSINE, SAM3,
-RVM) run fine.
+fall back to fp32. Commercial-safe passes (RAFT, DA-V2, MoGe-3, SAM3,
+ViTMatte) run fine.
 
 ### Apple Silicon (M1 / M2 / M3)
 

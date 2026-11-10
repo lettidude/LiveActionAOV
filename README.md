@@ -21,7 +21,7 @@ From one plate folder, one run writes a version folder next to it:
 | **Mattes** | Soft, roto-grade alpha per object, with hair and motion blur | SAM 3.1 (or SAM 3) finds and tracks the objects; **LTX-2.5 Alpha** on the whole frame gives the soft edge when your ComfyUI has it, ViTMatte when it does not |
 | **Cryptomatte** | Every object as a pickable ID, like a CG render | from the same tracks |
 | **Depth** | `Z` in metres, plus `P` world position | MoGe-3 (default), Depth Anything V2, Video Depth Anything |
-| **Normals** | Camera-space `N`, steady over the shot | MoGe-3 (default) or DSINE |
+| **Normals** | Camera-space `N`, steady over the shot | MoGe-3 |
 | **Motion** | Forward and backward vectors in pixels, Nuke VectorBlur names included | RAFT or MegaFlow |
 | **Camera** | A Nuke `Camera2` with its error and coverage in the label, point cloud, COLMAP model | COLMAP, with the masked people kept out of the solve; nodal and depth-anchored fallbacks when parallax is short |
 | **Clean plate** | The set without the people, re-rendered through the solved camera | 3D Gaussian splat trained on the plate |
@@ -176,6 +176,32 @@ An early demo video (June 2026, the interface has changed since) is on [YouTube]
 
 Older NVIDIA cards (Pascal, Volta) and manual overrides: [docs/install.md](docs/install.md#alternate-gpu-configurations).
 
+## Models, licences and thanks
+
+LiveActionAOV is glue and comp sense on top of research that other people published openly. None of these models is ours, none ships inside the installer: each one is downloaded from its makers the first time a pass needs it, under its own licence. If the tool is useful to you, star and cite their work.
+
+| Model | Used here for | Made by | Licence | Paid work |
+|---|---|---|---|---|
+| [SAM 3 / SAM 3.1](https://github.com/facebookresearch/sam3) | finding and tracking the objects | Meta AI (FAIR) | SAM License | yes (no military use; gated download) |
+| [LTX-2.5](https://github.com/Lightricks/LTX-2) + alpha-gen IC-LoRA | soft mattes, in your ComfyUI | Lightricks | LTX-2 Community License | yes under USD 10M of yearly revenue, a Lightricks licence above |
+| [ViTMatte](https://github.com/hustvl/ViTMatte) | soft mattes without ComfyUI | HUST Vision Lab | MIT | yes |
+| [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) | guide for ViTMatte, portrait mattes | Peng Zheng and co-authors | MIT | yes |
+| [MoGe-3](https://github.com/microsoft/MoGe) | depth in metres, normals, position | Microsoft Research | MIT | yes |
+| [DINOv2](https://github.com/facebookresearch/dinov2) | backbone of MoGe-3 and MegaFlow | Meta AI | Apache-2.0 | yes |
+| [RAFT](https://github.com/princeton-vl/RAFT) | motion vectors | Princeton Vision & Learning Lab | BSD-3-Clause | yes |
+| [MegaFlow](https://github.com/cvg/megaflow) | motion on fast action | ETH Zurich, Computer Vision and Geometry Lab | Apache-2.0 | yes |
+| [COLMAP](https://github.com/colmap/colmap) / pycolmap | camera track | Johannes Schönberger and contributors, ETH Zurich and UNC Chapel Hill | BSD-3-Clause | yes |
+| [gsplat](https://github.com/nerfstudio-project/gsplat) | Gaussian-splat clean plate | the nerfstudio project | Apache-2.0 | yes |
+| [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2), [Video Depth Anything](https://github.com/DepthAnything/Video-Depth-Anything) | alternative depth | the Depth Anything team (HKU, ByteDance) | Apache-2.0 for the **Small** models, the only ones the tool loads | yes |
+| [Cryptomatte](https://github.com/Psyop/Cryptomatte) | the ID matte format | Psyop | BSD-3-Clause | yes |
+| [Robust Video Matting](https://github.com/PeterL1n/RobustVideoMatting) | alternative matte engine | Shanchuan Lin and co-authors, ByteDance | GPL-3.0 | the mattes yes; the model is fetched from its repository and must not be shipped inside a closed bundle |
+
+Marked **NC** in the app and refused on the command line without `--allow-noncommercial`, because their licences do not allow paid work: [DSINE](https://github.com/baegwangbin/DSINE) (Imperial College London), [DepthCrafter](https://github.com/Tencent/DepthCrafter) and [NormalCrafter](https://github.com/Binyr/NormalCrafter) (both built on Stable Video Diffusion), [Depth Pro](https://github.com/apple/ml-depth-pro) (Apple), [MatAnyone](https://github.com/pq-yang/MatAnyone) (NTU S-Lab).
+
+Under the hood: [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO), [OpenColorIO](https://github.com/AcademySoftwareFoundation/OpenColorIO) and OpenEXR from the Academy Software Foundation, PyTorch, Hugging Face `transformers`, Qt for Python, `uv`, and [ComfyUI](https://github.com/comfyanonymous/ComfyUI), which runs LTX as your own separate server.
+
+Licences change. This table was checked against each repository on 10 November 2026; the terms in the model's own repository are the ones that count, and every sidecar EXR records which model and licence made each layer.
+
 ## License
 
 LiveActionAOV is released under the [Business Source License 1.1](LICENSE):
@@ -185,7 +211,7 @@ LiveActionAOV is released under the [Business Source License 1.1](LICENSE):
 - Each version becomes **Apache-2.0** four years after its release. Code published before 30 October 2026 stays MIT.
 - Not covered: reselling it, or offering it as a hosted service.
 
-The AI models it downloads keep their own licences (SAM 3, MoGe-3, MegaFlow and the other defaults allow commercial use; LTX-2.5 is free for organisations under USD 10M of revenue; the models marked NC are not for client work). Every sidecar EXR carries a `liveActionAOV/<pass>/license` stamp and a `liveActionAOV/matte/commercial` flag so downstream QC can audit what is shippable. Full matrix in [architecture.md](docs/architecture.md#license-matrix).
+The AI models it downloads keep their own licences, listed in [Models, licences and thanks](#models-licences-and-thanks): the defaults allow paid work, LTX-2.5 is free for organisations under USD 10M of revenue, and the models marked NC are not for client work. Every sidecar EXR carries a `liveActionAOV/<pass>/license` stamp and a `liveActionAOV/matte/commercial` flag so downstream QC can audit what is shippable.
 
 ## Author
 
