@@ -41,8 +41,11 @@ See `docs/developing-plugins.md` for how to write a pass.
 
 Per-pass licenses are declared on each plugin's `License` object. The CLI
 enforces `--allow-noncommercial` before running any pass with
-`commercial_use=False`. The full model-license matrix lives in
-`dev/design_notes.md` §17.
+`commercial_use=False`. The model-licence table users read is in the README
+("Models, licences and thanks"); keep the two in step, and check a model's
+own repository before declaring it: DSINE and RVM were declared MIT for
+months (they are non-commercial and GPL-3.0), and only the Small sizes of
+Depth Anything V2 / Video Depth Anything are Apache-2.0.
 
 ## Design document
 

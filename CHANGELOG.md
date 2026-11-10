@@ -6,6 +6,61 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **The camera as USD.** `camera/<shot>_v###.camera.usda`: the solved camera (one matrix per solved
+  frame, the Nuke camera's focal and film back) and the point cloud with colours, for Houdini, Maya,
+  Blender, Unreal and Nuke's USD 3D system. Plain text, no USD library needed to write it. Checked
+  with Pixar's USD inside Nuke 16: the camera matches the Nuke `Camera2` to 5e-7.
+- **A point cloud you can read.** The cloud in the Nuke script was a few thousand grey feature
+  points, drawn 1 px wide and invisible in a render. With a depth pass in the run it is now the set
+  itself: keyframes of the depth pass pushed back through the solved camera (each brought to the
+  solve's units with the feature points seen in that frame), in the plate's colours, lifted on dark
+  plates, without the tracked objects and without drawing a surface twice. Up to 60,000 points,
+  about 2 s. Without depth: the feature points without the outliers, coloured from the plate. It is
+  written as `camera/<shot>_v###.cloud.obj` (one small quad per point) + `.cloud.png` (their
+  colours), which Nuke's classic 3D shows and renders; the same cloud goes into the USD.
+- **Part of a shot only.** Per shot, a **frame range** (in / out inside the plate) and a **crop**
+  box drawn in the viewer (*This shot* tab → *Draw in viewer*; CLI `--first/--last`, `--crop x,y,w,h`).
+  Passes run on the box as if it were the plate (a proxy scales the crop); the EXRs carry the box
+  as data window inside the plate's display window, so Nuke places them, and the output preview
+  pads them back over the plate. Click prompts move into crop coordinates. The camera track and
+  the Gaussian splat need the whole frame (`needs_full_frame`) and refuse a crop with a clear
+  message. Asked for by a studio compositor.
+- **File naming template** (`Shot.naming`, Output tab → *File naming*, CLI `--naming`): one template
+  for every file of a run with `{shot} {plate} {version} {pass} {frame} {ext}`, presets for the
+  common studio orders (`SH010_utility_v001.1001.exr`, ...). Files without a frame (comp, camera,
+  splat) drop the frame token. The default is unchanged.
+
+- **Long clips run in windows by themselves.** The executor keeps every pass's channels for every
+  frame until the write, so host RAM grows with the frame count and a long shot at a big proxy used
+  to run out of memory half an hour in. Now a clip that does not fit the free RAM is cut in
+  overlapping windows of frames (`Shot.window_frames`: `auto`, a number, or off; `window_overlap`
+  context frames on each side; CLI `--window`). Whole-clip passes (the SAM tracker, the camera, the
+  splat, video models) run once and their channels wait on disk; window-safe passes (MoGe-3, DSINE,
+  the flow passes, the refiners, Cryptomatte) run per window and each window's frames are written
+  before the next starts. The frames are the ones a whole-clip run writes: same pixels, one header
+  on every frame, the Cryptomatte manifest from the whole clip. Clip-level decisions are taken once
+  (`UtilityPass.probe_clip`: MoGe-3 pins its FOV and letterbox box), and a pass whose result differs
+  a little between windows (`window_crossfade`: the generative matte) is cross-faded over the first
+  frames after each cut. New pass attributes `window_safe` / `window_crossfade`; a pass that does
+  not declare `window_safe` runs on the whole clip, as before.
+- **`liveaov doctor`** and the same line in the app's Output tab: the card, the RAM, whether SAM 3.1,
+  ComfyUI + the LTX models and gsplat are there, and the settings proposed for a plate (proxy size,
+  detector, windows) with the reason for each. **Use suggested** applies them. `run-shot --proxy`
+  takes a long edge in pixels or `auto` (the proposal). New proxy size 2816 in the app.
+- **`liveaov setup-sam31`** builds the SAM 3.1 environment (Python 3.12 venv, PyTorch, Meta's `sam3`
+  at the tested commit, the imports it needs but does not declare) in a per-user folder that the
+  matte pass finds by itself; finished steps are skipped on a rerun.
+- **Masks tab rebuilt.** *Found by name*: the names SAM looks for (moved here from Passes >
+  Advanced) with People / People + vehicles / Everything. *Your own objects*: the click and box
+  objects, and a *Selected object* block with its name, its soft-edge engine, its **matte slot**
+  (pin an object to `matte.r/g/b/a` instead of the ranking; prompt spec key `slot`) and *Go to*,
+  which scrubs the viewer to the frame the object was drawn on.
+- **Output tab is for the whole session; a new *This shot* tab** holds what belongs to one shot
+  (frames to process, crop, folder name), so a batch never needs a visit to every shot.
+- **LTX Alpha crop** (`crop_labels`, Masks tab: per-object engine *LTX Alpha crop*): inside a
+  whole-frame run, the named objects get their own LTX run on a rectangle around them, for the one
+  subject that needs more pixels than the whole frame gives it.
 ### Changed
 - **The SfM camera carries the held-out verdict too.** When pycolmap registers the frames itself,
   the camera JSON used to end with `verdict: ""` and `heldout_error_px: null` even on a clean solve,
@@ -26,6 +81,71 @@ uses [semantic versioning](https://semver.org/).
   NODAL, and a rotation the plate disagrees with gets a finite held-out error and FAILED. The
   verdict line leads the warnings, ahead of the "No parallax" note; `build_solve_from_nodal`
   refuses to build a camera without one. Every camera JSON the pass writes now has a verdict.
+- **Masks tab: the preview is back in front.** *Preview* sits right under the object buttons, and
+  with *Auto* on (the default) every click or box previews by itself: no more points on a plate with
+  nothing to show for them. *with* switches what the preview is made with (run engine, ViTMatte,
+  BiRefNet, SAM only) and previews again. The names preset in use (People, People + vehicles,
+  Everything) stays lit. The pass is listed as *Matte (SAM + soft-edge engine)*: it may be SAM 3.1.
+- **ComfyUI not running is said in plain words** ("nothing is running there, start ComfyUI or check
+  the port") instead of the raw socket error.
+- **The Gaussian splat output is called *splat background*, no longer *clean plate*** in the app, the
+  docs and the Nuke script (the example node is `SplatFill_example`, was `CleanPlate_example`). It is a
+  soft rebuild of what was behind the masked objects: a base for a patch, not a finished clean
+  plate. The `splat.*` channels and the files are unchanged.
+- **LTX Alpha runs on the whole frame by default** (`mode: whole_frame`, was `per_object`): one run
+  whatever the number of objects, no mask cutting the outline. In the app the default matte engine
+  is now *LTX Alpha whole frame in your ComfyUI, else ViTMatte* (ViTMatte alone is the second entry).
+  Scenery tracks own none of the whole-frame foreground: a wall tracked behind an actor no longer
+  takes the hair outside the actor's mask. A clip a few frames longer than one LTX call goes in a
+  single call (`whole_chunk_max`) instead of two almost identical ones.
+- **Lossless EXRs are written with ZIP one scanline at a time** (`zips`, was `zip`): the same size
+  and the same read speed, about 8x faster to write on a 4K multi-layer frame (0.7 s against 5.7 s
+  per frame measured, eight minutes on a 100-frame shot), and the flavour Nuke reads fastest. Saved
+  sessions move over by themselves; `zip` can still be asked for by name.
+- **The detector is `auto`** (was `sam3`): SAM 3.1 when its environment is installed and the card
+  has the memory (`sam31_min_vram_gb`), else SAM 3, and the log says which and why. If SAM 3.1 fails
+  on a shot in `auto` (out of memory on a long clip), the shot is redone with SAM 3 with a warning;
+  asking for `sam3.1` by name still fails loudly.
+- With a lossy delivery the lossless Cryptomatte sibling is now `<shot>_v001.crypto.####.exr`
+  (`{pass}` = `crypto`) instead of `<shot>_v001.utility.####.crypto.exr`, so it follows the naming
+  template like every other file. The comp script points at the new name.
+
+### Fixed
+- **Gaussian splat: one frame could come out as flat fog.** Every 8th frame is held out of the
+  training to measure quality, so nothing penalised a floater sitting in front of one of those
+  views: that frame of `splat.rgb` was delivered washed out (seen once, on 1 frame of 102, with a
+  held-out mean of 36.7 dB where a clean run reads 39.2). After the measure the splat now gets a
+  short polish on every frame (`holdout_polish_frac`, 10% of the iterations, no densification).
+  The report gains `holdout_psnr_min_db` and `polish_steps`, and the log warns when a held-out
+  frame reads under 20 dB.
+- **Model licences that were declared wrong.** Checked against each model's own repository:
+  **DSINE** is under Imperial College London's licence for non-commercial, internal or academic
+  use, not MIT: it is now marked NC, asks for `--allow-noncommercial`, and is out of the default
+  prefetch set (MoGe-3 is the normals model for paid work). **Robust Video Matting** is GPL-3.0,
+  not MIT: its mattes may still be delivered, the model code must not ship inside a closed bundle
+  (the portable build should not carry its torch.hub copy). **Depth Anything V2 Base** and
+  **Video Depth Anything Base / Large** are CC-BY-NC-4.0: the passes now load the Apache-2.0 Small
+  models only and refuse the others. The README has the full table.
+- **An object LTX does not see as foreground no longer gets an empty matte.** In whole-frame mode
+  LTX mattes mostly people; a tracked car, a prop or scenery in a hero slot received almost
+  nothing. When an object's share covers under half of its SAM mask (`whole_min_cover`) it is
+  matted with ViTMatte (a subject) or SAM's anti-aliased edge (scenery), with a warning.
+- **Scenery no longer takes a hero slot.** With the default concepts (person, vehicle, tree, building,
+  sky, water, animal) the four `matte.rgba` slots on a car plate went to the car, one person, a
+  building and a tree, and the second person got none (A65 couple-car plate). The ranker now fills
+  the slots with subjects first (person, animal, vehicle, user clicks) and considers scenery labels
+  (`scenery_labels: auto` = sky, building, tree, water, wall, road, ... or an explicit list) only
+  when there are fewer subjects than slots. User overrides and the deterministic tie-break are
+  unchanged; scenery keeps its `mask.<label>` channel and Cryptomatte id, and the SAM artifact marks
+  each track with `scenery`.
+- **LTX per-object crops stop growing to the whole frame.** The crop grew to take in every
+  overlapping neighbour of similar size, and with sky, buildings and trees tracked that chain made
+  every object's box the full 2K proxy; LTX alpha-gen mattes one salient foreground per crop, so
+  each object's gated alpha was somebody else's (matte.rgba at 1.3 / 0.1 / 0.6 / 0.0 % of the frame
+  while `mask.person` was still 10 %). Scenery neighbours never grow the crop, and the size ratio
+  (`neighbour_max_ratio`) is measured against the object's own padded box. In `refine_all_masks`
+  mode scenery tracks are not sent to LTX at all (no hair or motion-blur edge to recover): SAM's
+  mask with the light anti-alias that `refine_min_px` already uses, one log line per skipped track.
 
 ## [0.12.0] — 2026-11-08
 

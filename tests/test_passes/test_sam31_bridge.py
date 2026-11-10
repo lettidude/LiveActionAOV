@@ -52,6 +52,16 @@ def test_find_python_explains_the_setup(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert sam31_bridge.find_python({}) == str(exe)
 
 
+def test_find_python_uses_the_setup_folder(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`liveaov setup-sam31` installs under default_dir(): found with no env var."""
+    monkeypatch.delenv(sam31_bridge.ENV_PYTHON, raising=False)
+    monkeypatch.setattr(sam31_bridge, "default_dir", lambda: tmp_path)
+    exe = sam31_bridge.env_python(tmp_path)
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    assert sam31_bridge.find_python({}) == str(exe)
+
+
 def test_keep_object_drops_small_and_brief_hits() -> None:
     assert sam31_bridge.keep_object(_stack(10, 100, 100, 10, 60, 10, 40), 0.005, 3)
     assert not sam31_bridge.keep_object(_stack(10, 100, 100, 0, 3, 0, 3), 0.005, 3)  # shelf item
@@ -128,3 +138,67 @@ def test_matte_pass_uses_sam31_masks_without_loading_sam3(monkeypatch: pytest.Mo
     assert sorted(hard) == [1, 2, 3]  # false hit dropped, ids from 1
     assert all(d["label"] == "person" and d["stack"].shape == (n, h, w) for d in hard.values())
     assert hard[1]["stack"][2, 20, 10] == 1 and hard[2]["stack"][2, 20, 48] == 1
+
+
+# --- detector: auto ----------------------------------------------------------
+
+
+def test_auto_detector_picks_sam31_only_when_it_can_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    from live_action_aov.passes.matte import sam3
+
+    p = SAM3MattePass({})
+    assert p.params["detector"] == "auto"
+    assert p._resolve_detector()[0] == "sam3"  # not installed (conftest)
+    monkeypatch.setattr(sam31_bridge, "available", lambda params=None: (True, "py312"))
+    monkeypatch.setattr(sam3, "_total_vram_gb", lambda: 31.8)
+    assert p._resolve_detector() == ("sam3.1", "installed")
+    monkeypatch.setattr(sam3, "_total_vram_gb", lambda: 15.9)
+    det, why = p._resolve_detector()
+    assert det == "sam3" and "16 GB" in why  # small card: SAM 3, and it says why
+    assert SAM3MattePass({"detector": "sam3"})._resolve_detector()[0] == "sam3"
+    assert SAM3MattePass({"detector": "sam3.1"})._resolve_detector()[0] == "sam3.1"
+
+
+class _FakeSAM3(SAM3MattePass):
+    """SAM 3 replaced by one fixed detection, tracked as a constant mask."""
+
+    def _load_model(self) -> None:  # type: ignore[override]
+        self._model = object()
+
+    def _detect_frame(self, frames, seed_local, concepts):  # type: ignore[no-untyped-def,override]
+        m = np.zeros(frames.shape[1:3], np.uint8)
+        m[8:44, 4:24] = 1
+        return [(1, "person", m)]
+
+    def _track_instance(  # type: ignore[no-untyped-def,override]
+        self, frames, seed_frame_idx, seed_mask=None, *, points=None, labels=None, box=None
+    ):
+        return np.stack([np.asarray(seed_mask)] * len(frames), axis=0)
+
+
+def test_auto_detector_falls_back_to_sam3_when_sam31_fails(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from live_action_aov.passes.matte import sam3
+
+    def boom(*a, **kw):  # type: ignore[no-untyped-def]
+        raise RuntimeError("SAM 3.1 worker failed (exit 1): CUDA out of memory")
+
+    monkeypatch.setattr(sam31_bridge, "available", lambda params=None: (True, "py312"))
+    monkeypatch.setattr(sam31_bridge, "find_python", lambda p: "py312")
+    monkeypatch.setattr(sam31_bridge, "run_sam31", boom)
+    monkeypatch.setattr(sam3, "_total_vram_gb", lambda: 31.8)
+    n, h, w = 5, 48, 64
+    frames = [np.full((h, w, 3), 0.5, np.float32) for _ in range(n)]
+    kw = {"concepts": ["person"], "layer_order": "area", "small_objects": "off"}
+    p = _FakeSAM3({**kw, "joint_tracking": False, "redetect_stride": 0})
+    with caplog.at_level("WARNING"):
+        p.run_shot(_Reader(frames), frame_range=(1, n))
+    assert "using SAM 3 for this shot" in caplog.text
+    assert (p.detector_used, p.detector_reason) == ("sam3", "SAM 3.1 failed on this shot")
+    hard = next(iter(p.emit_artifacts()["sam3_hard_masks"].values()))
+    assert [d["label"] for d in hard.values()] == ["person"]
+    # Asked for by name: the failure is the user's to see.
+    strict = _FakeSAM3({**kw, "detector": "sam3.1"})
+    with pytest.raises(RuntimeError, match="out of memory"):
+        strict.run_shot(_Reader(frames), frame_range=(1, n))

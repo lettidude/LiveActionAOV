@@ -119,6 +119,21 @@ class UtilityPass(ABC):
     vram_estimate_gb_fn: Callable[[int, int], float] = staticmethod(lambda w, h: 0.0)
     model_native_resolution: tuple[int, int] | None = None
     supports_tiling: bool = False
+    # True for passes that only make sense on the whole plate (a camera
+    # solve, the Gaussian splat): the executor refuses them when the shot
+    # has a crop, instead of solving from a quarter of the image.
+    needs_full_frame: bool = False
+    # Long clips are run in overlapping windows of frames so host RAM stays
+    # bounded (`executors.local`). True = this pass gives the same result
+    # for a frame whether it sees the whole clip or a window around it
+    # (per-frame and pair passes, given the clip-level decisions from
+    # `probe_clip`). False (the default, the safe side) = it must see the
+    # whole clip: trackers, camera solves, video models with clip context.
+    window_safe: bool = False
+    # A window-safe pass whose result still differs a little from window
+    # to window (a generative matte levelled per call): its channels are
+    # cross-faded over the first frames after each cut.
+    window_crossfade: bool = False
 
     # --- Temporal behavior ---
     temporal_mode: TemporalMode = TemporalMode.PER_FRAME
@@ -208,6 +223,16 @@ class UtilityPass(ABC):
             model_out = self.infer(model_in)
             out[f] = self.postprocess(model_out)
         return out
+
+    def probe_clip(self, reader: Any, frame_range: tuple[int, int]) -> dict[str, Any]:
+        """Clip-level decisions of a window-safe pass, as params.
+
+        Called once on the WHOLE frame range before a run in windows; the
+        returned params are merged into the pass's params for every window,
+        so a decision taken once per shot (a field of view, a letterbox box)
+        is the same in each. Default: nothing to pin.
+        """
+        return {}
 
     def emit_artifacts(self) -> dict[str, dict[int, Any]]:
         """Return any non-channel artifacts produced by this pass.

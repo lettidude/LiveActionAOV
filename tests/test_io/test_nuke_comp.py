@@ -67,10 +67,10 @@ def test_script_declares_layers_and_wires_every_pass(tmp_path: Path) -> None:
     # Relative to the script, data read raw.
     assert 'file "[file dirname [value root.name]]/sh-010.utility.####.exr"' in s
     assert "raw true" in s
-    # One Shuffle per mask, the splat clean plate, depth.
+    # One Shuffle per mask, the splat background, depth.
     for name in ("mask_extra_person", "mask_extra_car", "splat_splat", "depth_depth"):
         assert f"name {name}" in s, name
-    # Union of masks + the clean-plate example.
+    # Union of masks + the splat-fill example.
     assert 'expr3 "max(mask_extra.person, mask_extra.car)"' in s
     assert "Keymix {" in s and "inputs 3" in s
     assert s.count("{") == s.count("}")

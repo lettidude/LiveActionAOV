@@ -34,13 +34,15 @@ class EngineChoice:
 
 #: The run's default engine (Passes tab) -> ShotState.default_engine / refiner_model.
 RUN_ENGINES: tuple[EngineChoice, ...] = (
-    EngineChoice(("vitmatte", ""), "Auto (recommended) - ViTMatte + BiRefNet guide"),
-    EngineChoice(("chromakey", ""), "Green / blue screen - Chroma key"),
     # One LTX run on the whole frame, split between the objects by nearest
-    # one: fast action, motion blur, edges SAM misses (your ComfyUI).
+    # one: hair, fast action, motion blur, edges SAM misses. Runs in the
+    # user's ComfyUI; without it the pass uses ViTMatte and says so.
     EngineChoice(
-        ("ltx_whole", ""), "LTX Alpha whole frame - action, motion blur (your ComfyUI)", True
+        ("ltx_whole", ""),
+        "Auto (recommended) - LTX Alpha whole frame in your ComfyUI, else ViTMatte",
     ),
+    EngineChoice(("vitmatte", ""), "ViTMatte + BiRefNet guide - no ComfyUI needed"),
+    EngineChoice(("chromakey", ""), "Green / blue screen - Chroma key"),
     EngineChoice(("birefnet", ""), "BiRefNet Portrait - people, hair", advanced=True),
     EngineChoice(
         ("birefnet", "ZhengPeng7/BiRefNet-matting"), "BiRefNet Matting - general soft", True
@@ -52,9 +54,10 @@ RUN_ENGINES: tuple[EngineChoice, ...] = (
 #: A click object's own engine (Masks tab) -> ClickInstance.refiner.
 OBJECT_ENGINES: tuple[EngineChoice, ...] = (
     EngineChoice(("", ""), "Default (run engine)"),
-    # Generative video matte in the user's own ComfyUI (crop around the
-    # object, SAM-gated). Preview shows the run engine; LTX runs at submit.
-    EngineChoice(("ltx", ""), "LTX Alpha - generative, hair (your ComfyUI)"),
+    # Generative video matte in the user's own ComfyUI on a crop around
+    # THIS object (more pixels than the whole-frame run gives it), SAM-gated.
+    # Preview shows the run engine; LTX runs at submit.
+    EngineChoice(("ltx", ""), "LTX Alpha crop - this object only (your ComfyUI)"),
     EngineChoice(("chromakey", ""), "Green / blue screen - Chroma key"),
     EngineChoice(("vitmatte", ""), "ViTMatte + BiRefNet guide", advanced=True),
     EngineChoice(("birefnet", ""), "BiRefNet Portrait - people, hair", advanced=True),

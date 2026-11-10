@@ -51,7 +51,7 @@ class ExrSidecarWriter(SidecarWriter):
     """Write sidecar EXR files matching the Nuke/VFX channel contract.
 
     Args:
-        compression: OIIO codec string (default ``"zip"``, lossless). Pass
+        compression: OIIO codec string (default ``"zips"``, lossless). Pass
             ``"dwab"`` / ``"dwab:45"`` etc. for compact lossy delivery.
         dtype: ``"float32"`` (default) or ``"float16"`` (half).
         split_crypto: ``"auto"`` (default) splits Cryptomatte to a lossless
@@ -64,7 +64,7 @@ class ExrSidecarWriter(SidecarWriter):
     def __init__(
         self,
         *,
-        compression: str = "zip",
+        compression: str = "zips",
         dtype: str = "float32",
         split_crypto: bool | str = "auto",
     ) -> None:
@@ -84,9 +84,17 @@ class ExrSidecarWriter(SidecarWriter):
         *,
         attrs: dict[str, Any] | None = None,
         pixel_aspect: float = 1.0,
+        origin: tuple[int, int] | None = None,
+        full_size: tuple[int, int] | None = None,
+        crypto_path: Path | None = None,
     ) -> None:
+        """Write one frame. `origin` + `full_size` place a crop inside the
+        full plate (EXR data / display window). `crypto_path` names the
+        lossless Cryptomatte sibling when the delivery forces a split
+        (default: `<stem>.crypto<ext>` next to `out_path`)."""
         if not channels:
             raise ValueError("ExrSidecarWriter requires at least one channel")
+        window = {"origin": origin, "full_size": full_size}
 
         crypto = {n: a for n, a in channels.items() if n.startswith(CRYPTOMATTE_TYPENAME)}
         rest = {n: a for n, a in channels.items() if not n.startswith(CRYPTOMATTE_TYPENAME)}
@@ -100,15 +108,20 @@ class ExrSidecarWriter(SidecarWriter):
             # Single file, current behaviour — write everything with the
             # configured delivery (safe when lossless float32, or when there's
             # no Cryptomatte to protect).
-            self._write_one(out_path, channels, attrs, pixel_aspect, self.compression, self.dtype)
+            self._write_one(
+                out_path, channels, attrs, pixel_aspect, self.compression, self.dtype, **window
+            )
             return
 
         # Compact delivery for the AOVs; Cryptomatte kept lossless float32 in
         # a sibling file so its hash IDs survive intact.
         if rest:
-            self._write_one(out_path, rest, attrs, pixel_aspect, self.compression, self.dtype)
-        crypto_path = out_path.parent / f"{out_path.stem}.crypto{out_path.suffix}"
-        self._write_one(crypto_path, crypto, attrs, pixel_aspect, "zip", "float32")
+            self._write_one(
+                out_path, rest, attrs, pixel_aspect, self.compression, self.dtype, **window
+            )
+        if crypto_path is None:
+            crypto_path = out_path.parent / f"{out_path.stem}.crypto{out_path.suffix}"
+        self._write_one(crypto_path, crypto, attrs, pixel_aspect, "zips", "float32", **window)
 
     @staticmethod
     def _write_one(
@@ -118,6 +131,8 @@ class ExrSidecarWriter(SidecarWriter):
         pixel_aspect: float,
         compression: str,
         dtype: str,
+        origin: tuple[int, int] | None = None,
+        full_size: tuple[int, int] | None = None,
     ) -> None:
         ordered_names = _order_channels(list(channels.keys()))
         first = channels[ordered_names[0]]
@@ -140,6 +155,8 @@ class ExrSidecarWriter(SidecarWriter):
             pixel_aspect=pixel_aspect,
             compression=compression,
             dtype=dtype,
+            origin=origin,
+            full_size=full_size,
         )
 
 

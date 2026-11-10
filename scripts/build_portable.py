@@ -15,7 +15,8 @@ Layout (everything resolves relative to the folder, so it can be moved):
 
     app/python/      standalone CPython 3.11 + every dependency + liveaov
     models/hf/hub/   Hugging Face weights   (HF_HUB_CACHE)
-    models/torch/    torch.hub repos/weights (TORCH_HOME: DSINE, RVM)
+    models/torch/    torch.hub repos/weights (TORCH_HOME; DSINE and RVM are NOT bundled:
+                     non-commercial and GPL-3.0, they download at first use if asked for)
     LiveActionAOV.bat   GUI          liveaov.bat   CLI (offline by default)
     install_local.bat   copy/update this folder onto the local disk
     VERSION.txt

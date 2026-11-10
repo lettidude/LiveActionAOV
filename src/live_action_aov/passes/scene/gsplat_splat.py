@@ -12,7 +12,7 @@ re-renders every solved frame through the solved camera:
 
 - `splat.R/G/B` — the static scene, scene-linear in the plate's colourspace.
   When a SAM 3 matte ran in the same job, every tracked object is excluded
-  from the training loss, so this is a **clean plate**: what was behind the
+  from the training loss, so this is the **background**: what was behind the
   person, recovered from the frames where the camera saw past them.
 - `splat.A` — splat coverage (0 = nothing reconstructed there).
 - `splat.Z` — camera-space depth of the splat (camera-track units, same
@@ -46,7 +46,7 @@ from typing import Any
 
 import numpy as np
 
-from live_action_aov.core.output_layout import SPLAT_DIR, run_stem, sub_dir
+from live_action_aov.core.output_layout import SPLAT_DIR, file_name, sub_dir
 from live_action_aov.core.pass_base import (
     ChannelSpec,
     License,
@@ -83,12 +83,12 @@ def camera_gate(solve: Any) -> Any:
     if solve.backend.mapper == "nodal" or solve.quality.nodal is True:
         raise RuntimeError(
             "splat_gsplat: the camera only rotates (nodal solve, no parallax) - a splat "
-            "cannot recover depth or what is behind objects. No clean plate written."
+            "cannot recover depth or what is behind objects. No splat background written."
         )
     if solve.quality.verdict == "FAILED":
         raise RuntimeError(
             "splat_gsplat: the camera solve FAILED its held-out check (do not use it) - "
-            "no clean plate written."
+            "no splat background written."
         )
     return solve
 
@@ -104,7 +104,8 @@ class GsplatSplatPass(UtilityPass):
     )
     pass_type = PassType.SCENE_3D
     temporal_mode = TemporalMode.VIDEO_CLIP
-    # Train and output in scene-linear: the clean plate must comp straight
+    needs_full_frame = True
+    # Train and output in scene-linear: the splat background must comp straight
     # back over the plate.
     input_colorspace = "scene_linear"
 
@@ -133,6 +134,11 @@ class GsplatSplatPass(UtilityPass):
         # Every Nth solved frame is held out of training to measure quality
         # honestly (PSNR on frames the splat never saw). 0 = train on all.
         "holdout_every": 8,
+        # After the held-out measure, a short polish on EVERY frame (this
+        # fraction of `iterations`, no densification). A held-out view was
+        # never penalised, so a floater in front of it survives training and
+        # that one frame is delivered as a flat fog. 0 = off.
+        "holdout_polish_frac": 0.1,
         # SAM 3 exclusion: [] = every tracked object; or a list of labels.
         "mask_objects": True,
         "mask_labels": [],
@@ -280,8 +286,8 @@ class GsplatSplatPass(UtilityPass):
         order = np.random.permutation(np.repeat(train_idx, math.ceil(iters / len(train_idx))))[
             :iters
         ]
-        for step in range(iters):
-            i = int(order[step])
+
+        def train_step(i: int, step: int, densify: bool) -> float:
             sh_use = min(step // 1000, sh_deg)
             img, _alpha, info = rasterization(
                 means=params["means"],
@@ -296,7 +302,8 @@ class GsplatSplatPass(UtilityPass):
                 sh_degree=sh_use,
                 packed=False,
             )
-            strategy.step_pre_backward(params, optimizers, state, step, info)
+            if densify:
+                strategy.step_pre_backward(params, optimizers, state, step, info)
             pred = img[0]
             w = keep[i][..., None]
             l1 = (torch.abs(pred - gt[i]) * w).sum() / (w.sum() * 3 + 1e-6)
@@ -307,22 +314,24 @@ class GsplatSplatPass(UtilityPass):
             for opt in optimizers.values():
                 opt.step()
                 opt.zero_grad(set_to_none=True)
-            sched.step()
-            strategy.step_post_backward(params, optimizers, state, step, info, packed=False)
+            if densify:
+                sched.step()
+                strategy.step_post_backward(params, optimizers, state, step, info, packed=False)
+            return float(loss.item())
+
+        for step in range(iters):
+            loss_v = train_step(int(order[step]), step, True)
             if step % 1000 == 0:
                 _log.info(
                     "splat step %d/%d loss %.4f gaussians %d",
                     step,
                     iters,
-                    loss.item(),
+                    loss_v,
                     params["means"].shape[0],
                 )
-        train_s = time.time() - t0
 
-        # --- quality on held-out frames (never trained on) ---
-        with torch.no_grad():
-
-            def render(i: int, K: Any, w_: int, h_: int) -> tuple[Any, Any]:
+        def render(i: int, K: Any, w_: int, h_: int) -> tuple[Any, Any]:
+            with torch.no_grad():
                 out, alpha, _ = rasterization(
                     means=params["means"],
                     quats=params["quats"],
@@ -337,20 +346,40 @@ class GsplatSplatPass(UtilityPass):
                     packed=False,
                     render_mode="RGB+ED",
                 )
-                return out[0], alpha[0, ..., 0]
+            return out[0], alpha[0, ..., 0]
 
+        # --- quality on held-out frames (never trained on) ---
+        with torch.no_grad():
             psnr = []
             for i in holdout:
                 pred, _a = render(i, Kt, tw, th)
                 m = keep[i] > 0
                 mse = ((pred[..., :3].clamp(0, 1) - gt[i].clamp(0, 1)) ** 2)[m].mean()
                 psnr.append(float(-10 * torch.log10(mse + 1e-10)))
+
+        # --- polish on every frame, held-out ones included (see DEFAULT_PARAMS) ---
+        polish = int(iters * float(self.params.get("holdout_polish_frac", 0.0))) if holdout else 0
+        if polish > 0:
+            everyone = np.arange(len(frames))
+            # Held-out frames come up as often as the others put together.
+            pool = np.concatenate(
+                [everyone, np.repeat(holdout, max(1, len(train_idx) // len(holdout)))]
+            )
+            for step, i in enumerate(np.random.permutation(np.resize(pool, polish))):
+                train_step(int(i), iters + step, False)
+        train_s = time.time() - t0
+
+        with torch.no_grad():
             self.report = {
                 "gaussians": int(params["means"].shape[0]),
                 "train_seconds": round(train_s, 1),
                 "train_res": [tw, th],
                 "holdout_frames": [frames[i] for i in holdout],
                 "holdout_psnr_db": round(float(np.mean(psnr)), 2) if psnr else None,
+                # The worst held-out frame, before the polish: a low value next to a
+                # good mean is a floater in front of one view.
+                "holdout_psnr_min_db": round(float(np.min(psnr)), 2) if psnr else None,
+                "polish_steps": polish,
                 "masked_fraction": round(masked_frac, 4),
                 "scene_scale": scene_scale,
             }
@@ -363,12 +392,21 @@ class GsplatSplatPass(UtilityPass):
                 self.report["holdout_psnr_db"],
                 100 * masked_frac,
             )
+            if psnr and min(psnr) < 20.0:
+                worst = int(np.argmin(psnr))
+                _log.warning(
+                    "Splat: held-out frame %d read %.1f dB before the polish (mean %.1f dB) - "
+                    "something sat in front of that view; look at that frame of splat.rgb",
+                    frames[holdout[worst]],
+                    psnr[worst],
+                    float(np.mean(psnr)),
+                )
             if masked_frac > 0.4:
                 # Field test (Sparks hands, 65% masked): the background seen
                 # around the subject is too little to rebuild what it hides.
                 _log.warning(
-                    "Splat: the masked objects cover %.0f%% of the plate - the clean "
-                    "plate behind them is mostly guesswork; use splat.Z / the "
+                    "Splat: the masked objects cover %.0f%% of the plate - the background "
+                    "behind them is mostly guesswork; use splat.Z / the "
                     "camera, not splat.rgb, on this shot",
                     100 * masked_frac,
                 )
@@ -398,12 +436,11 @@ class GsplatSplatPass(UtilityPass):
         if self._splats is None:
             return {}
         out_dir = sub_dir(shot, SPLAT_DIR)
-        stem = run_stem(shot)
-        path = out_dir / f"{stem}.splat.ply"
+        path = out_dir / file_name(shot, "splat", "ply")
         write_3dgs_ply(self._splats, path)
         import json
 
-        (out_dir / f"{stem}.splat.json").write_text(
+        (out_dir / file_name(shot, "splat", "json")).write_text(
             json.dumps(self.report, indent=2), encoding="utf-8"
         )
         return {"splat": path}

@@ -50,8 +50,8 @@ Models download once from Hugging Face (and torch.hub) and are cached on
 disk — they are **not** re-downloaded on later runs, and each model is
 stored once. Total size depends on which passes you use:
 
-- Default commercial-safe set (Depth Anything V2, DSINE, SAM 3, RVM,
-  BiRefNet): a few GB.
+- Default commercial-safe set (MoGe-3, Depth Anything V2 Small, SAM 3,
+  ViTMatte, BiRefNet): a few GB.
 - Everything (`liveaov prefetch --all`, incl. DepthCrafter / NormalCrafter
   which pull Stable Video Diffusion): **~30–40 GB**.
 
@@ -129,8 +129,8 @@ on PyPI), so the install string is a `git+https://…@<tag>` URL.
 ```bash
 # CORE — the commercial-safe default passes, nothing else:
 #   • Depth   → Depth Anything V2 (Apache-2.0)
-#   • Normals → DSINE (MIT)
-#   • Matte   → SAM 3 + RVM (SAM-License / MIT)
+#   • Normals → MoGe-3 (MIT)
+#   • Matte   → SAM 3 + ViTMatte (SAM-License / MIT)
 uv tool install "git+https://github.com/lettidude/LiveActionAOV@v0.5.1" --torch-backend=auto
 
 # EVERY PASS — adds the optional backends (DepthCrafter, NormalCrafter,
@@ -249,28 +249,50 @@ DSINE, MatAnyone 2, RVM, RAFT) are not currently gated. If a publisher
 adds gating to one of them later, the same three-step flow applies — just
 swap the URL in step 1.
 
-### SAM 3.1 (optional detector)
+### SAM 3.1 (recommended on a 24 GB card or bigger)
 
-The matte pass can use Meta's **SAM 3.1 Object Multiplex** instead of SAM 3
-(`detector: sam3.1`). It tracks every instance of a concept jointly and keeps
-identities apart where SAM 3 can swap two similar objects. It needs
-Python 3.12 and Meta's own `sam3` package, so it lives in a separate
-environment; LiveActionAOV runs it as a subprocess.
+The matte pass uses Meta's **SAM 3.1 Object Multiplex** instead of SAM 3 when
+it is installed (`detector: auto`, the default; `sam3` / `sam3.1` force one).
+It tracks every instance of a concept jointly and keeps identities apart
+where SAM 3 can swap two similar objects. It needs Python 3.12 and Meta's own
+`sam3` package, so it lives in a separate environment; LiveActionAOV runs it
+as a subprocess.
 
 1. Request access to `facebook/sam3.1` on Hugging Face (same flow as above).
-2. Create the environment (PowerShell, one line at a time; any folder):
+2. Build the environment (about 8 GB, needs `git`):
+
+   ```powershell
+   uv run liveaov setup-sam31
+   ```
+
+   It goes to a per-user folder (`%LOCALAPPDATA%\LiveActionAOV\sam31`) that
+   the matte pass finds by itself. `--dir D:\somewhere` puts it elsewhere and
+   stores the path in `LAOV_SAM31_PYTHON`. Running it again skips what is
+   already there. `uv run liveaov doctor` then shows SAM 3.1 as OK.
+
+By hand, the same steps (PowerShell, one line at a time; any folder):
+
+1. Request access as above.
+2. Create the environment:
 
    ```powershell
    uv venv sam31_env --python 3.12
    uv pip install --python sam31_env\Scripts\python.exe torch torchvision --torch-backend=cu128
    gh repo clone facebookresearch/sam3 sam3_repo
+   git -C sam3_repo checkout f1647e8
    uv pip install --python sam31_env\Scripts\python.exe -e sam3_repo huggingface_hub einops
+   uv pip install --python sam31_env\Scripts\python.exe triton-windows pycocotools psutil opencv-python scipy hydra-core omegaconf matplotlib pandas python-rapidjson
    ```
 
-   Tested with sam3 at commit `f1647e8`, torch 2.11 + cu128, on Windows
-   (RTX 5090). The two Windows issues of that commit (no FLASH attention
-   kernel, an unknown `offload_state_to_cpu` argument) are worked around by
-   LiveActionAOV's worker, not by editing Meta's code.
+   The last line adds what Meta's package imports at load time but does not
+   declare (Triton via the `triton-windows` wheel, the rest from its `dev`
+   extras); without it `import sam3` fails. Check with
+   `sam31_env\Scripts\python.exe -c "import sam3"`.
+
+   Tested with sam3 at commit `f1647e8`, torch 2.11 + cu128, triton-windows
+   3.9, on Windows (RTX 5090). The two Windows issues of that commit (no
+   FLASH attention kernel, an unknown `offload_state_to_cpu` argument) are
+   worked around by LiveActionAOV's worker, not by editing Meta's code.
 3. Point LiveActionAOV at its interpreter: the `sam31_python` param, or
 
    ```powershell
@@ -306,8 +328,8 @@ instead:
 
 Note: Pascal/Volta don't have first-class fp16 support. Passes that
 load fp16 by default (DepthCrafter, NormalCrafter) will be slow or
-fall back to fp32. Commercial-safe passes (RAFT, DA-V2, DSINE, SAM3,
-RVM) run fine.
+fall back to fp32. Commercial-safe passes (RAFT, DA-V2, MoGe-3, SAM3,
+ViTMatte) run fine.
 
 ### Apple Silicon (M1 / M2 / M3)
 

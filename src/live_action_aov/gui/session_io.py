@@ -94,6 +94,8 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
         "small_objects": s.small_objects,
         "detector": s.detector,
         "camera_pnp_fallback": bool(s.camera_pnp_fallback),
+        "work_range": None if s.work_range is None else [int(v) for v in s.work_range],
+        "crop": None if s.crop is None else [int(v) for v in s.crop],
         "refiner_model": s.refiner_model,
         "default_engine": s.default_engine,
         "preview_refiner": s.preview_refiner,
@@ -104,6 +106,7 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
                 "points": [[float(x), float(y), int(lbl)] for (x, y, lbl) in ci.points],
                 "box": None if ci.box is None else [float(v) for v in ci.box],
                 "refiner": ci.refiner,
+                "slot": ci.slot,
             }
             for ci in s.click_instances
         ],
@@ -116,6 +119,7 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
         "delivery_compression": s.delivery_compression,
         "delivery_dtype": s.delivery_dtype,
         "delivery_layout": s.delivery_layout,
+        "naming": s.naming,
         "queued": bool(s.queued),
     }
 
@@ -138,6 +142,7 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
             points=[(float(p[0]), float(p[1]), int(p[2])) for p in (ci.get("points") or [])],
             box=(tuple(float(v) for v in ci["box"]) if ci.get("box") else None),  # type: ignore[arg-type]
             refiner=str(ci.get("refiner", "")),
+            slot=str(ci.get("slot", "")),
         )
         for ci in (d.get("click_instances") or [])
     ]
@@ -166,6 +171,10 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         small_objects=str(d.get("small_objects", "auto")),
         detector=str(d.get("detector", "sam3")),
         camera_pnp_fallback=bool(d.get("camera_pnp_fallback", True)),
+        work_range=(
+            None if not d.get("work_range") else (int(d["work_range"][0]), int(d["work_range"][1]))
+        ),
+        crop=(None if not d.get("crop") else tuple(int(v) for v in d["crop"])),  # type: ignore[arg-type]
         refiner_model=str(d.get("refiner_model", "")),
         default_engine=str(d.get("default_engine", "birefnet")),
         preview_refiner=str(d.get("preview_refiner", "auto")),
@@ -175,9 +184,13 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         output_external_root=(None if ext_root is None else Path(str(ext_root))),
         output_external_name=str(d.get("output_external_name", "")),
         proxy_long_edge=d.get("proxy_long_edge"),
-        delivery_compression=str(d.get("delivery_compression", "zip")),
+        # "zip" sessions move to "zips": same pixels and size, far faster to write.
+        delivery_compression={"zip": "zips"}.get(
+            str(d.get("delivery_compression", "zips")), str(d.get("delivery_compression", "zips"))
+        ),
         delivery_dtype=str(d.get("delivery_dtype", "float32")),
         delivery_layout=str(d.get("delivery_layout", "multilayer")),
+        naming=str(d.get("naming", "")),
         queued=bool(d.get("queued", True)),
     )
 

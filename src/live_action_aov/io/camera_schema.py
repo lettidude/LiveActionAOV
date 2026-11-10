@@ -65,8 +65,9 @@ class Conventions(BaseModel):
     angle_unit: str = "degrees"
     units: str = "unitless"
     unit_note: str = (
-        "pycolmap incremental SfM produces arbitrary-scale reconstructions. "
-        "Metric recovery (depth prior / user hint) lands in v2b."
+        "Structure-from-motion has no absolute scale: the camera and the point "
+        "cloud are consistent with each other but not in metres. Scale the rig "
+        "to a known distance in the comp if you need world units."
     )
 
 

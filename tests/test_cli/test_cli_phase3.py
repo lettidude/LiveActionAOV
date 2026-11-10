@@ -60,8 +60,8 @@ def test_rvm_is_marked_commercial_safe_in_plugins_list() -> None:
         "",
     )
     assert rvm_line, "rvm_refiner not listed"
-    assert "MIT" in rvm_line
-    assert "yes" in rvm_line
+    assert "GPL-3.0" in rvm_line  # the model's real licence (it was declared MIT)
+    assert "yes" in rvm_line  # its mattes may be used in paid work
 
 
 def test_sam3_is_marked_commercial_safe_in_plugins_list() -> None:

@@ -4,14 +4,15 @@ Two passes in the **Camera** category of the Passes tab:
 
 | Pass | What you get | Needs |
 |---|---|---|
-| Camera track (`camera_pycolmap`) | `camera/<shot>_v###.camera.nk` (Nuke Camera2), `.camera.json`, `.points.ply`, `_colmap/` | nothing extra (pycolmap is in the normal install) |
-| Gaussian splat (`splat_gsplat`) | EXR layer `splat` = clean plate (`splat.R/G/B`), coverage (`splat.A`), depth (`splat.Z`) + `splat/<shot>_v###.splat.ply` | the **gsplat wheel** (below), an NVIDIA GPU |
+| Camera track (`camera_pycolmap`) | `camera/<shot>_v###.camera.nk` (Nuke Camera2), `.camera.usda` (the same camera and the point cloud for Houdini, Maya, Blender, Unreal), `.camera.json`, `.cloud.obj` + `.cloud.png` (the point cloud Nuke shows), `.points.ply`, `_colmap/` | nothing extra (pycolmap is in the normal install) |
+| Gaussian splat (`splat_gsplat`) | EXR layer `splat` = the splat background (`splat.R/G/B`), coverage (`splat.A`), depth (`splat.Z`) + `splat/<shot>_v###.splat.ply` | the **gsplat wheel** (below), an NVIDIA GPU |
 
 Ticking *Gaussian splat* also runs the camera track (the splat is trained on
 that solve). Turn **Matte** on in the same job and every SAM 3 object
 (people, cars...) is masked out of BOTH the camera features and the splat
-training — so `splat.rgb` is the scene *without* them: a clean plate built
-from the frames where the camera saw behind them.
+training — so `splat.rgb` is the scene *without* them: the background, built
+from the frames where the camera saw behind them. It is softer than the plate: a base for a
+patch, not a finished clean plate.
 
 ## Installing gsplat (one time)
 
@@ -58,7 +59,22 @@ Check: `.venv\Scripts\python.exe -c "from gsplat.cuda._backend import _C; print(
 | Quality on frames held OUT of training | 33.9 dB PSNR |
 | Total job (SAM 3 + camera + splat) | ~4 min |
 
-## Limits (read before trusting a clean plate)
+## Looking at the splat in 3D
+
+`splat/<shot>_v###.splat.ply` is a standard 3D Gaussian Splatting PLY, in the same Y-up world as
+the exported camera, so any tool that reads 3DGS PLY can fly around it:
+
+- **SuperSplat** (PlayCanvas, free): open the editor in a browser and drop the `.ply` on it. The
+  quickest look; for client plates prefer a tool installed on your machine.
+- **Blender** with a Gaussian-splat add-on (for example KIRI Engine's *3DGS Render*): import the
+  `.ply`, then import the camera to look through the shot camera.
+- **Nuke 17** and newer read Gaussian splats in the 3D system, next to the `Camera2` and the point
+  cloud this tool writes. In Nuke 16 and older use the `splat` EXR layer, already rendered through
+  the shot camera.
+
+Away from the path the camera took, the splat falls apart: it only knows what the plate saw.
+
+## Limits (read before trusting a splat background)
 
 - It only reconstructs what the plate saw. Anything never revealed (behind
   a person who never moves out of the way, outside the camera move) is

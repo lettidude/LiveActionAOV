@@ -224,3 +224,44 @@ def test_overlap_kept_when_exclusive_off() -> None:
     )
     out = pass_.run_shot(_FakeReader(frames), frame_range=(1, 4))
     assert f"{MASK_PREFIX}person" in out[1] and f"{MASK_PREFIX}prop" in out[1]
+
+
+def test_click_object_takes_the_matte_slot_it_was_given() -> None:
+    """Masks tab "Matte slot": the object's soft matte goes to that
+    matte.rgba channel whatever the ranking would have picked."""
+    frames = _plate_frames(4)
+    pass_ = _SmallClickFake(
+        _params(
+            concepts=["person"],
+            prompt_instances=[
+                {
+                    "name": "prop",
+                    "seed_frame": 2,
+                    "points": [[6.0, 6.0, 1]],
+                    "box": None,
+                    "slot": "b",
+                }
+            ],
+        )
+    )
+    pass_.run_shot(_FakeReader(frames), frame_range=(1, 4))
+    slots = {h.label: h.slot for h in pass_._heroes}
+    assert slots["prop"] == "b"
+    assert slots["person"] in ("r", "g", "a")  # the ranking fills the rest
+    # Without a slot the ranking decides (and "x" is not a slot).
+    auto = _SmallClickFake(
+        _params(
+            concepts=["person"],
+            prompt_instances=[
+                {
+                    "name": "prop",
+                    "seed_frame": 2,
+                    "points": [[6.0, 6.0, 1]],
+                    "box": None,
+                    "slot": "x",
+                }
+            ],
+        )
+    )
+    auto.run_shot(_FakeReader(frames), frame_range=(1, 4))
+    assert auto._click_slots == {}
