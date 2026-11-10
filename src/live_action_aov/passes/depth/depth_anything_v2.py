@@ -6,9 +6,9 @@
 """Depth Anything V2 pass (commercial-safe fallback, spec §13.1 Phase 2).
 
 Backend: `transformers.pipeline("depth-estimation", "depth-anything/Depth-Anything-V2-Small-hf")`.
-The Small + Base variants ship Apache-2.0; Large and Giant are CC-BY-NC-4.0
-and must be declared as such by a separate pass. This class defaults to Small
-and refuses to load Large/Giant identifiers — a dedicated `DepthAnythingV2LargePass`
+Only the Small variant is Apache-2.0; Base, Large and Giant are CC-BY-NC-4.0
+and must be declared as such by a separate pass. This class runs Small and
+refuses to load the others — a dedicated `DepthAnythingV2LargePass`
 (not shipped in Phase 2) would carry the non-commercial license flag instead.
 
 Outputs (spec §5.1, channels.py):
@@ -53,13 +53,13 @@ from live_action_aov.core.pass_base import (
 from live_action_aov.core.runtime_env import load_local_first
 from live_action_aov.io.channels import CH_Z, CH_Z_RAW
 
-# HF model IDs. Small/Base are Apache-2.0 (commercial OK); Large/Giant are
-# CC-BY-NC-4.0 — we refuse to load them from this class.
+# HF model IDs. ONLY Small is Apache-2.0 (commercial OK); Base, Large and
+# Giant are CC-BY-NC-4.0 (the upstream README) — we refuse to load them from
+# this class. Base was accepted here until 2026-11-10, which was wrong.
 _COMMERCIAL_VARIANTS: dict[str, str] = {
     "small": "depth-anything/Depth-Anything-V2-Small-hf",
-    "base": "depth-anything/Depth-Anything-V2-Base-hf",
 }
-_NONCOMMERCIAL_VARIANTS: set[str] = {"large", "giant"}
+_NONCOMMERCIAL_VARIANTS: set[str] = {"base", "large", "giant"}
 
 
 class DepthAnythingV2Pass(UtilityPass):
@@ -70,7 +70,7 @@ class DepthAnythingV2Pass(UtilityPass):
         commercial_use=True,
         commercial_tool_resale=True,
         notes=(
-            "Depth Anything V2 Small/Base are Apache-2.0. Large/Giant are "
+            "Depth Anything V2 Small is Apache-2.0. Base/Large/Giant are "
             "CC-BY-NC-4.0 and must be loaded through a separate non-commercial "
             "pass — this pass refuses those identifiers."
         ),
@@ -88,7 +88,7 @@ class DepthAnythingV2Pass(UtilityPass):
     smoothable_channels = [CH_Z]
 
     DEFAULT_PARAMS: dict[str, Any] = {
-        "variant": "small",  # "small" | "base"
+        "variant": "small",  # the only Apache-2.0 size
         "inference_short_edge": 518,  # ViT-14 trained size
         "precision": "fp32",  # "fp32" | "fp16" (fp16 only if cuda)
         "smooth": "auto",  # executor uses this to auto-wire TemporalSmoother
@@ -102,8 +102,8 @@ class DepthAnythingV2Pass(UtilityPass):
         variant = str(self.params["variant"]).lower()
         if variant in _NONCOMMERCIAL_VARIANTS:
             raise ValueError(
-                f"DepthAnythingV2Pass refuses variant {variant!r} — Large/Giant "
-                f"are CC-BY-NC-4.0. Use a non-commercial pass or pick 'small'/'base'."
+                f"DepthAnythingV2Pass refuses variant {variant!r} — Base/Large/Giant "
+                f"are CC-BY-NC-4.0. Use 'small' (Apache-2.0), or MoGe-3 for metric depth."
             )
         if variant not in _COMMERCIAL_VARIANTS:
             raise ValueError(

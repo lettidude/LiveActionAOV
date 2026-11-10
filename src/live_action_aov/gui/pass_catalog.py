@@ -112,7 +112,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
     ],
     "Normals": [
         ModelEntry("moge3_normals", "MoGe-3 (sharp, stable)", "MIT", True, ("moge3",)),
-        ModelEntry("dsine", "DSINE", "MIT", True, ("dsine",)),
+        ModelEntry("dsine", "DSINE", "Imperial-NC", False, ("dsine",)),
         ModelEntry(
             "normalcrafter",
             "NormalCrafter",

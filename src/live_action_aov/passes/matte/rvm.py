@@ -6,8 +6,8 @@
 """Robust Video Matting refiner (spec §13.1 Phase 3).
 
 Backend: `PeterL1n/RobustVideoMatting` — a light recurrent network that
-turns a hard mask + RGB plate into a soft alpha matte. MIT-licensed and
-commercial-safe, which is why it's the default refiner for Phase 3 round 1.
+turns a hard mask + RGB plate into a soft alpha matte. GPL-3.0 (code and
+weights, fetched by torch.hub, never bundled); its mattes may be used in paid work.
 The non-commercial MatAnyone 2 refiner (Round 2) will drop in behind the
 same contract (same `requires_artifacts`, same emitted channels).
 
@@ -197,13 +197,16 @@ class RVMRefinerPass(UtilityPass):
     name = "rvm_refiner"
     version = "0.1.0"
     license = License(
-        spdx="MIT",
+        spdx="GPL-3.0-only",
         commercial_use=True,
-        commercial_tool_resale=True,
+        commercial_tool_resale=False,
         notes=(
-            "Robust Video Matting (PeterL1n/RobustVideoMatting) is MIT-"
-            "licensed. No usage gate needed — both inference and outputs "
-            "are commercial-safe. Sidecars stamp "
+            "Robust Video Matting (PeterL1n/RobustVideoMatting) code and weights "
+            "are GPL-3.0 (declared MIT here until 2026-11-10, which was wrong). "
+            "Running it and delivering its mattes in paid work is allowed; the GPL "
+            "is about redistributing the model code. It is fetched from its own "
+            "repository by torch.hub at first use and is not part of "
+            "LiveActionAOV: do not ship it inside a closed bundle. Sidecars stamp "
             "`liveaov/matte/commercial = true` so downstream QC can "
             "distinguish them from MatAnyone 2 (NTU-S-Lab-1.0, NC) deliverables."
         ),

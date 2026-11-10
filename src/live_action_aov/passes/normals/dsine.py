@@ -56,10 +56,16 @@ class DSINEPass(UtilityPass):
     name = "dsine"
     version = "0.1.0"
     license = License(
-        spdx="MIT",
-        commercial_use=True,
-        commercial_tool_resale=True,
-        notes="DSINE (Bae & Davison 2024). MIT-licensed weights.",
+        spdx="LicenseRef-DSINE-Imperial-NC",
+        commercial_use=False,
+        commercial_tool_resale=False,
+        notes=(
+            "DSINE (Bae & Davison, Imperial College London, 2024) is under Imperial "
+            "College's DSINE software licence: non-commercial, internal or academic "
+            "research only; commercial use needs an agreement with Imperial. It was "
+            "declared MIT here until 2026-11-10, which was wrong. For paid work use "
+            "MoGe-3 normals."
+        ),
     )
     pass_type = PassType.GEOMETRIC
     temporal_mode = TemporalMode.PER_FRAME

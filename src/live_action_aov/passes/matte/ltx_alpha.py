@@ -186,6 +186,13 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         "mode": "whole_frame",
         # Object names refined on their own crop even in whole-frame mode.
         "crop_labels": [],
+        # Whole frame: LTX decides what the foreground is, and it is mostly
+        # people. A tracked object it does not see as foreground (a parked
+        # car, a prop, scenery in a hero slot) would get an empty matte: when
+        # an object's share covers less than this fraction of its SAM mask,
+        # the object is matted without LTX (ViTMatte for a subject, SAM's
+        # edge anti-aliased for scenery) and the log says so. 0 = never.
+        "whole_min_cover": 0.5,
         "whole_long_edge": 1920,  # whole-frame working resolution
         "whole_chunk": 97,  # whole-frame frames per LTX call, 8n+1
         # A clip only a few frames longer than `whole_chunk` goes in ONE call
@@ -204,6 +211,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         self._models: dict[str, tuple[str, str]] = {}
         self._track_id: int | None = None
         self._track_label = ""
+        self._track_scenery = False
         self._first = 0
         # Whole-frame mode: LTX foreground at working res (T, wh, ww) and the
         # nearest-owner map (T, wh, ww), -1 = no owner; built once per shot.
@@ -262,6 +270,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
     ) -> tuple[np.ndarray, list[int]]:
         self._track_id = int(track_id)
         self._track_label = str(track.get("label", "") or "")
+        self._track_scenery = _is_scenery_track(track)
         return super()._refine_track(
             track, frames, frame_to_local, n_frames, plate_h, plate_w, track_id
         )
@@ -286,7 +295,8 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         if not self._comfy_ready():
             return self._vitmatte()._refine_instance(plate_stack, hard_stack)
         if not self._on_crop():
-            return self._whole_frame_share(plate_stack, hard_stack)
+            share = self._whole_frame_share(plate_stack, hard_stack)
+            return self._unless_unseen(share, plate_stack, hard_stack)
         import cv2
 
         T, H, W = hard_stack.shape
@@ -377,8 +387,36 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         crop = {str(x) for x in (self.params.get("crop_labels") or [])}
         return bool(self._track_label) and self._track_label in crop
 
+    def _unless_unseen(
+        self, share: np.ndarray, plate_stack: np.ndarray, hard_stack: np.ndarray
+    ) -> np.ndarray:
+        """`share`, or a matte made without LTX when LTX did not see this
+        object as foreground (`whole_min_cover`)."""
+        floor = float(self.params.get("whole_min_cover", 0.5) or 0.0)
+        sam_px = float(np.count_nonzero(hard_stack))
+        if floor <= 0.0 or sam_px == 0.0:
+            return share
+        cover = float(np.count_nonzero((share > 0.5) & (hard_stack > 0))) / sam_px
+        if cover >= floor:
+            return share
+        how = "SAM's edge, anti-aliased" if self._track_scenery else "ViTMatte"
+        _log.warning(
+            "LTX alpha: '%s' (track %s) is not foreground for LTX (its share covers %.0f%% "
+            "of its SAM mask): %s for this object.",
+            self._track_label or "object",
+            self._track_id,
+            100.0 * cover,
+            how,
+        )
+        self.unseen.append(self._track_label or str(self._track_id))
+        if self._track_scenery:
+            return antialiased(hard_stack)
+        return self._vitmatte()._refine_instance(plate_stack, hard_stack)
+
     def _reset_whole_frame(self) -> None:
         self._fg_work, self._owner, self._owner_ids = None, None, []
+        #: Objects of the last run that LTX did not see as foreground.
+        self.unseen: list[str] = []
 
     def _whole_frame_share(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
         """This track's share of the whole-frame LTX foreground."""
@@ -1030,6 +1068,19 @@ def chunk_spans(n: int, chunk: int, overlap: int) -> list[tuple[int, int]]:
     if starts[-1] != n - chunk:
         starts.append(n - chunk)
     return [(s, chunk) for s in starts]
+
+
+def antialiased(hard_stack: np.ndarray) -> np.ndarray:
+    """(T, H, W) hard masks -> float mattes: solid inside, half a pixel of
+    soft edge outside."""
+    import cv2
+
+    out = np.zeros(hard_stack.shape, np.float32)
+    for t in range(hard_stack.shape[0]):
+        if hard_stack[t].any():
+            hard = (hard_stack[t] > 0).astype(np.float32)
+            out[t] = np.maximum(cv2.GaussianBlur(hard, (0, 0), 0.6), hard)
+    return out
 
 
 def single_call_chunk(n: int, chunk: int, chunk_max: int) -> int:

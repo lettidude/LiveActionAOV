@@ -9,8 +9,8 @@ Backend: the vendored VideoDepthAnything model from
 github.com/DepthAnything/Video-Depth-Anything. This is a video-native
 successor to DA-V2 — same DINOv2 + DPT backbone, plus a temporal attention
 module injected into the DPT decoder, trained on video clips to produce
-temporally consistent relative depth. Apache-2.0 for all three variants
-(vits / vitb / vitl), no gating.
+temporally consistent relative depth. The Small model (vits) is Apache-2.0;
+Base and Large are CC-BY-NC-4.0 and this pass refuses them.
 
 Why this pass over DepthCrafter
 -------------------------------
@@ -98,9 +98,10 @@ class VideoDepthAnythingPass(UtilityPass):
         commercial_use=True,
         commercial_tool_resale=True,
         notes=(
-            "Video Depth Anything is Apache-2.0 (Bytedance 2025). No "
-            "license gating. Weights for all three encoders ship on HF "
-            "under the `depth-anything/` org."
+            "Video Depth Anything (Bytedance 2025): the code and the Small "
+            "model (`vits`, the default) are Apache-2.0. The Base and Large "
+            "models are CC-BY-NC-4.0 (the upstream README) and this pass "
+            "refuses them; they were accepted until 2026-11-10, which was wrong."
         ),
     )
     pass_type = PassType.GEOMETRIC
@@ -119,7 +120,7 @@ class VideoDepthAnythingPass(UtilityPass):
     smoothable_channels: list[str] = []
 
     DEFAULT_PARAMS: dict[str, Any] = {
-        "variant": "vits",  # "vits" | "vitb" | "vitl"
+        "variant": "vits",  # the only Apache-2.0 size (vitb / vitl are CC-BY-NC)
         "input_size": 518,  # ViT-14 training size
         "precision": "fp16",  # "fp16" | "fp32" — fp16 only if CUDA
         "depth_space": "relative",
@@ -134,6 +135,11 @@ class VideoDepthAnythingPass(UtilityPass):
         if variant not in _VARIANT_CONFIGS:
             raise ValueError(
                 f"Unknown variant {variant!r}. Choose from {sorted(_VARIANT_CONFIGS)}."
+            )
+        if variant != "vits":
+            raise ValueError(
+                f"VideoDepthAnythingPass refuses variant {variant!r}: the Base and Large "
+                "models are CC-BY-NC-4.0. Use 'vits' (Apache-2.0)."
             )
         self._model: Any = None
         self._device: Any = None

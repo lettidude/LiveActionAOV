@@ -30,6 +30,9 @@ PROXY_STEPS: tuple[int, ...] = (2816, 1920, 1280, 960)
 DEFAULT_CHANNELS = 48
 #: Models, torch, the reader and the Python process itself.
 BASE_RAM_GB = 8.0
+#: On top of the channels: mask stacks, the plate stack of the running pass, copies
+#: made by the post-processors (measured: 55 GB for 100 frames x 50 channels at 2K).
+RAM_OVERHEAD = 1.3
 #: Frames repeated on each side of a window so temporal passes (flow, the
 #: smoother) have their neighbours; the cut is in the middle of it.
 WINDOW_OVERLAP = 16
@@ -114,7 +117,7 @@ def estimate_ram_gb(
     """Peak host RAM of a whole-clip run: every channel of every frame is
     float32 at the working size until the write, plus the fixed cost."""
     w, h = proxy_size(resolution, proxy_long_edge)
-    per_frame = channels * w * h * 4 * 1.15 / 2**30  # 15 %: masks, the plate stack
+    per_frame = channels * w * h * 4 * RAM_OVERHEAD / 2**30
     return BASE_RAM_GB + per_frame * max(int(n_frames), 0)
 
 
@@ -133,7 +136,7 @@ def plan_windows(
     if estimate_ram_gb(resolution, n_frames, proxy_long_edge, channels) <= 0.8 * ram_free_gb:
         return None
     w, h = proxy_size(resolution, proxy_long_edge)
-    per_frame = channels * w * h * 4 * 1.15 / 2**30
+    per_frame = channels * w * h * 4 * RAM_OVERHEAD / 2**30
     budget = 0.6 * ram_free_gb - BASE_RAM_GB
     fit = int(budget / per_frame) - 2 * overlap if per_frame > 0 else n_frames
     win = max(MIN_WINDOW, fit)

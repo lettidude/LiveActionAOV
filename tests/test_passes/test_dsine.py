@@ -46,10 +46,12 @@ class _FakePass(DSINEPass):
         self._dtype = torch.float32
 
 
-def test_license_is_commercial_safe() -> None:
+def test_license_is_non_commercial() -> None:
+    """Imperial College's DSINE licence: research / internal use only. It was
+    declared MIT until 2026-11-10; the CLI gate and the NC mark depend on this."""
     lic = DSINEPass.declared_license()
-    assert lic.spdx == "MIT"
-    assert lic.commercial_use is True
+    assert lic.spdx == "LicenseRef-DSINE-Imperial-NC"
+    assert lic.commercial_use is False
 
 
 def test_normals_are_unit_length_at_plate_resolution() -> None:

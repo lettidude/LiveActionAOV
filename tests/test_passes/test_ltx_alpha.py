@@ -431,6 +431,62 @@ def test_whole_frame_runs_ltx_once_for_every_object() -> None:
     assert fg[10, 10] < 0.05
 
 
+def test_object_ltx_does_not_see_is_matted_without_it(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whole frame: LTX mattes the people, not the parked car. The car's
+    share is empty, so it is matted by ViTMatte (a subject) and a wall in a
+    hero slot keeps SAM's edge (scenery), instead of two empty slots."""
+    n = 9
+    frames, art = _two_actors(n)
+    h, w = art["sam3_hard_masks"][0][1]["stack"].shape[1:]
+    car = np.zeros((n, h, w), np.uint8)
+    car[:, 95:118, 20:80] = 1  # dark in the plate: LTX returns haze there
+    wall = np.zeros((n, h, w), np.uint8)
+    wall[:, 2:20, 150:230] = 1
+    art["sam3_hard_masks"][0][3] = {"label": "car", "frames": list(range(1, n + 1)), "stack": car}
+    art["sam3_hard_masks"][0][4] = {
+        "label": "building",
+        "frames": list(range(1, n + 1)),
+        "stack": wall,
+        "scenery": True,
+    }
+    for tid, slot, lab in ((3, "b", "car"), (4, "a", "building")):
+        art["sam3_instances"][0].append(
+            {
+                "track_id": tid,
+                "slot": slot,
+                "label": lab,
+                "score": 0.5,
+                "frames": list(range(1, n + 1)),
+            }
+        )
+
+    class _Vit:
+        calls = 0
+
+        def _refine_instance(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
+            type(self).calls += 1
+            return (hard_stack > 0).astype(np.float32) * 0.8
+
+    _FakeComfy.calls = []
+    p = _FakeComfy({"whole_long_edge": 256, "whole_chunk": 17, "overlap": 8})
+    monkeypatch.setattr(p, "_vitmatte", lambda: _Vit())
+    p.ingest_artifacts(art)
+    with caplog.at_level("WARNING"):
+        out = p.run_shot(_Reader(frames), frame_range=(1, n))
+    assert len(p.calls) == 1 and _Vit.calls == 1  # one LTX run; ViTMatte for the car only
+    assert out[5]["matte.r"][60, 60] > 0.9  # the actors keep LTX's matte
+    assert abs(float(out[5]["matte.b"][105, 50]) - 0.8) < 0.05  # the car: ViTMatte
+    assert out[5]["matte.a"][10, 190] > 0.9  # the wall: SAM's mask
+    assert sorted(p.unseen) == ["building", "car"]
+    assert "not foreground for LTX" in caplog.text and "ViTMatte" in caplog.text
+    # Off: the empty shares are kept as they are.
+    p2 = _FakeComfy({"whole_long_edge": 256, "whole_chunk": 17, "overlap": 8, "whole_min_cover": 0})
+    p2.ingest_artifacts(art)
+    assert p2.run_shot(_Reader(frames), frame_range=(1, n))[5]["matte.b"][105, 50] < 0.05
+
+
 def test_a_clip_just_over_the_chunk_is_one_call() -> None:
     from live_action_aov.passes.matte.ltx_alpha import single_call_chunk
 

@@ -104,7 +104,6 @@ def main_callback(
 _DEFAULT_PREFETCH = [
     "depth_anything_v2",
     "video_depth_anything",
-    "dsine",
     "moge3",
     "sam3_matte",
     "rvm_refiner",
@@ -306,7 +305,7 @@ def run_shot(
         typer.Option(
             "--normals-backend",
             help="Backend for the semantic `normals` pass. Default: moge3 (MIT; "
-            "sharp, stable). `dsine` is the lighter alternative.",
+            "sharp, stable). `dsine` is lighter but non-commercial.",
         ),
     ] = "moge3",
     matte_detector: Annotated[
