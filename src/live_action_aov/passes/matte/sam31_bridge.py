@@ -15,7 +15,8 @@ its own environment: this module writes the frames as JPEGs, runs
 (one owner per pixel, seams, depth layer order, hero ranking) is unchanged.
 
 The interpreter: the `sam31_python` param, else the `LAOV_SAM31_PYTHON`
-environment variable. Setup: docs/install.md, "SAM 3.1 (optional)".
+environment variable, else the folder `liveaov setup-sam31` installs into
+(`default_dir()`). Setup: docs/install.md, "SAM 3.1".
 """
 
 from __future__ import annotations
@@ -46,18 +47,41 @@ class Sam31Object:
     stack: np.ndarray  # (T, H, W) uint8
 
 
+def default_dir() -> Path:
+    """Where `liveaov setup-sam31` puts the environment when no folder is
+    given: per user, outside the install, so an update never removes it."""
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / ".local" / "share")
+    return Path(base) / "LiveActionAOV" / "sam31"
+
+
+def env_python(root: Path) -> Path:
+    """The interpreter of the environment inside a SAM 3.1 folder."""
+    sub = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    return Path(root, "env", *sub)
+
+
 def find_python(params: dict[str, Any]) -> str:
     """The SAM 3.1 environment's interpreter, or a RuntimeError saying how
     to set it up."""
     exe = str(params.get("sam31_python") or os.environ.get(ENV_PYTHON, "") or "")
     if exe and Path(exe).is_file():
         return exe
-    where = f"'{exe}' does not exist" if exe else "no interpreter is set"
+    if not exe and env_python(default_dir()).is_file():
+        return str(env_python(default_dir()))
+    where = f"'{exe}' does not exist" if exe else "it is not installed"
     raise RuntimeError(
-        f"SAM 3.1 detector: {where}. Install the SAM 3.1 environment (Python 3.12 + "
-        f"facebookresearch/sam3, see docs/install.md 'SAM 3.1') and point the "
-        f"`sam31_python` param or the {ENV_PYTHON} environment variable at its python."
+        f"SAM 3.1 detector: {where}. Run `liveaov setup-sam31` (it builds the Python 3.12 "
+        f"environment, see docs/install.md 'SAM 3.1'), or point the `sam31_python` param / "
+        f"the {ENV_PYTHON} environment variable at an existing one."
     )
+
+
+def available(params: dict[str, Any] | None = None) -> tuple[bool, str]:
+    """(usable, the interpreter or the reason it is not)."""
+    try:
+        return True, find_python(params or {})
+    except RuntimeError as e:
+        return False, str(e)
 
 
 def run_sam31(

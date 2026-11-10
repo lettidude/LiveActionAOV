@@ -498,6 +498,7 @@ class InspectorPanel(QWidget):
 
         # Detector: SAM 3 (built in) or SAM 3.1 Object Multiplex.
         self._detector_combo = QComboBox()
+        self._detector_combo.addItem("Auto - SAM 3.1 when installed, else SAM 3", "auto")
         self._detector_combo.addItem("SAM 3 (built in)", "sam3")
         self._detector_combo.addItem(
             "SAM 3.1 Object Multiplex - many objects, fast motion", "sam3.1"
@@ -505,8 +506,9 @@ class InspectorPanel(QWidget):
         self._detector_combo.setToolTip(
             "SAM 3.1 tracks every instance of a concept together and keeps identities "
             "where SAM 3 can swap two similar objects or lose a part in motion blur. "
-            "It runs in its own Python 3.12 environment: set LAOV_SAM31_PYTHON to its "
-            "python.exe (docs/install.md, SAM 3.1). Clicked objects still use SAM 3."
+            "It runs in its own Python 3.12 environment: `liveaov setup-sam31` builds it "
+            "(docs/install.md, SAM 3.1). Auto uses it when it is installed and the card "
+            "has the memory, else SAM 3. Clicked objects still use SAM 3."
         )
         self._detector_combo.currentIndexChanged.connect(self._on_detector_changed)
         detector_row = QHBoxLayout()
@@ -1015,7 +1017,7 @@ class InspectorPanel(QWidget):
             self._small_objects_combo.setCurrentIndex(max(so, 0))
             self._small_objects_combo.blockSignals(False)
             self._detector_combo.blockSignals(True)
-            di = self._detector_combo.findData(shot.detector or "sam3")
+            di = self._detector_combo.findData(shot.detector or "auto")
             self._detector_combo.setCurrentIndex(max(di, 0))
             self._detector_combo.blockSignals(False)
             self._pnp_check.blockSignals(True)
@@ -1300,7 +1302,7 @@ class InspectorPanel(QWidget):
     def _on_detector_changed(self, idx: int) -> None:
         if self._building or self._current is None:
             return
-        self._current.detector = str(self._detector_combo.itemData(idx) or "sam3")
+        self._current.detector = str(self._detector_combo.itemData(idx) or "auto")
 
     def _on_pnp_toggled(self, checked: bool) -> None:
         if self._building or self._current is None:

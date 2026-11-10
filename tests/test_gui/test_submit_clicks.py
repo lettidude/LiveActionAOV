@@ -155,20 +155,41 @@ def test_per_object_engine_builds_dedicated_pass() -> None:
 
 
 def test_ltx_object_gets_the_ltx_pass_only_for_itself() -> None:
-    """LTX Alpha is chosen per object: only that object goes to ComfyUI,
-    the rest stay on the run engine."""
+    """LTX Alpha crop is chosen per object: with another run engine only
+    that object goes to ComfyUI, the rest stay on the run engine."""
     from live_action_aov.gui.submit_worker import _build_pass_configs
 
     state = _shot()
     state.enabled_models = ["sam3_matte_on"]
+    state.default_engine = "vitmatte"
     state.click_instances = [
         ClickInstance(name="girl", seed_frame=1, points=[(1.0, 2.0, 1)], refiner="ltx"),
         ClickInstance(name="car", seed_frame=1, points=[(3.0, 4.0, 1)]),
     ]
     cfgs = {c.name: c.params for c in _build_pass_configs(state)}
     assert cfgs["ltx_alpha_refiner"]["only_labels"] == ["girl"]
+    assert cfgs["ltx_alpha_refiner"]["mode"] == "per_object"
     assert str(cfgs["ltx_alpha_refiner"]["comfy_url"]).startswith("http")
     assert cfgs["vitmatte_refiner"].get("skip_labels") == ["girl"]
+
+
+def test_ltx_crop_object_inside_a_whole_frame_run() -> None:
+    """The default run engine is LTX on the whole frame; an object given
+    "LTX Alpha crop" gets its own crop run inside the same pass."""
+    from live_action_aov.gui.submit_worker import _build_pass_configs
+
+    state = _shot()
+    state.enabled_models = ["sam3_matte_on"]
+    assert state.default_engine == "ltx_whole"
+    state.click_instances = [
+        ClickInstance(name="girl", seed_frame=1, points=[(1.0, 2.0, 1)], refiner="ltx"),
+        ClickInstance(name="car", seed_frame=1, points=[(3.0, 4.0, 1)]),
+    ]
+    cfgs = [c for c in _build_pass_configs(state) if c.name == "ltx_alpha_refiner"]
+    assert len(cfgs) == 1  # one LTX pass, not a second one for the crop
+    assert cfgs[0].params["mode"] == "whole_frame"
+    assert cfgs[0].params["crop_labels"] == ["girl"]
+    assert "only_labels" not in cfgs[0].params
 
 
 def test_outline_option_reaches_birefnet_only() -> None:

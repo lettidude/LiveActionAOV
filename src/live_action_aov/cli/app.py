@@ -555,6 +555,130 @@ def inspect_cmd(
 
 
 # ---------------------------------------------------------------------------
+# doctor - what this machine can run, and the settings to use
+# ---------------------------------------------------------------------------
+
+
+@app.command("doctor")
+def doctor(
+    plate: Annotated[
+        Path | None,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            help="A plate folder: the suggestion is then made for that shot "
+            "(its size and length). Without it: for a 4K, 100-frame shot.",
+        ),
+    ] = None,
+    comfy_url: Annotated[
+        str,
+        typer.Option("--comfy-url", help="The ComfyUI that runs LTX Alpha."),
+    ] = "http://127.0.0.1:8188",
+) -> None:
+    """Check this machine and propose settings: the card and RAM, SAM 3.1,
+    ComfyUI + the LTX models, gsplat, and the proxy size / detector /
+    long-shot windows that fit."""
+    import importlib.util
+
+    from live_action_aov.core import hardware
+    from live_action_aov.gui.cuda_check import cuda_state
+    from live_action_aov.passes.matte import sam31_bridge
+    from live_action_aov.passes.matte.ltx_alpha import comfy_check
+
+    def line(ok: bool | None, what: str, detail: str) -> None:
+        mark = {
+            True: "[green]OK  [/green]",
+            False: "[red]NO  [/red]",
+            None: "[yellow]--  [/yellow]",
+        }
+        console.print(f"{mark[ok]} [bold]{what}[/bold]: {detail}", highlight=False)
+
+    hw = hardware.detect()
+    cuda = cuda_state()
+    line(cuda.available, "GPU", hw.summary() if cuda.available else cuda.advisory)
+    if hw.ram_free_gb is not None:
+        line(None, "RAM free now", f"{hw.ram_free_gb:.0f} GB")
+    sam31_ok, sam31_why = sam31_bridge.available({})
+    line(
+        sam31_ok or None,
+        "SAM 3.1",
+        sam31_why if sam31_ok else "not installed - `liveaov setup-sam31` builds it",
+    )
+    ltx_ok, ltx_msg = comfy_check({"comfy_url": comfy_url})
+    line(
+        ltx_ok or None,
+        "LTX Alpha (ComfyUI)",
+        f"ready at {comfy_url}" if ltx_ok else f"{ltx_msg} - mattes use ViTMatte until it is",
+    )
+    has_gsplat = importlib.util.find_spec("gsplat") is not None
+    line(
+        has_gsplat or None,
+        "Gaussian-splat clean plate",
+        "gsplat installed" if has_gsplat else "gsplat not installed (see the README)",
+    )
+
+    if plate is not None:
+        try:
+            _, frange, res, _ = _sniff_sequence(plate)
+        except (FileNotFoundError, ValueError) as e:
+            typer.echo(f"doctor: {e}", err=True)
+            raise typer.Exit(code=2) from e
+        n = frange[1] - frange[0] + 1
+        what = f"{plate.name} ({res[0]}x{res[1]}, {n} frames)"
+    else:
+        res, n = (4096, 2160), 100
+        what = "a 4K, 100-frame shot"
+    s = hardware.suggest(hw, res, n, sam31_installed=sam31_ok)
+    console.print(f"\n[bold]Suggested for {what}[/bold] - {s.one_line()}", highlight=False)
+    for note in s.notes:
+        console.print(f"  - {note}", highlight=False)
+    if s.tier != "none":
+        flag = "" if s.proxy_long_edge is None else f" --proxy {s.proxy_long_edge}"
+        console.print(
+            f"  run-shot:{flag or ' (no --proxy)'}; the detector and the windows are automatic.",
+            highlight=False,
+        )
+
+
+# ---------------------------------------------------------------------------
+# setup-sam31 - build the SAM 3.1 environment
+# ---------------------------------------------------------------------------
+
+
+@app.command("setup-sam31")
+def setup_sam31(
+    folder: Annotated[
+        Path | None,
+        typer.Option(
+            "--dir",
+            help="Where to build it (about 8 GB). Default: a per-user folder "
+            "that LiveActionAOV finds by itself.",
+        ),
+    ] = None,
+    torch_backend: Annotated[
+        str,
+        typer.Option("--torch-backend", help="PyTorch build for the card (uv's name)."),
+    ] = "cu128",
+) -> None:
+    """Build the SAM 3.1 environment: a Python 3.12 venv with PyTorch and
+    Meta's sam3 package. Safe to run again: finished steps are skipped.
+    The matte pass then uses SAM 3.1 by itself (`detector: auto`)."""
+    from live_action_aov.core import sam31_setup
+
+    try:
+        python = sam31_setup.setup(folder, torch_backend=torch_backend, echo=typer.echo)
+    except RuntimeError as e:
+        typer.echo(f"setup-sam31: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    sam31_setup.remember(python, echo=typer.echo)
+    typer.echo(
+        f"SAM 3.1 environment ready: {python}\n"
+        "Last step, once: request access to facebook/sam3.1 on huggingface.co and log in "
+        "(`hf auth login`). The checkpoint (~3.5 GB) downloads at the first run."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

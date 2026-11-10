@@ -415,7 +415,7 @@ def test_engine_menu_recommended_first_rest_advanced(qapp: QApplication) -> None
     assert top[0].text().startswith("Auto (recommended)")
     adv = [a for a in top if a.menu() is not None]
     assert len(adv) == 1 and adv[0].text() == "Advanced"
-    assert len(top) == 3  # Auto, Green/blue screen, Advanced
+    assert len(top) == 4  # Auto (LTX whole frame), ViTMatte, Green/blue screen, Advanced
     assert btn.text() == "Auto (recommended)"
     btn.set_current(("birefnet", "ZhengPeng7/BiRefNet"))
     assert btn.text() == "BiRefNet General"
@@ -454,7 +454,9 @@ def test_run_engine_pick_sets_engine_and_weights(qapp: QApplication) -> None:
     assert (shot.default_engine, shot.refiner_model) == ("birefnet", "ZhengPeng7/BiRefNet")
     assert not panel._outline_check.isHidden()  # BiRefNet-only option shows
     panel._default_engine_combo.menu().actions()[0].trigger()
-    assert shot.default_engine == "vitmatte" and panel._outline_check.isHidden()
+    assert shot.default_engine == "ltx_whole" and panel._outline_check.isHidden()
+    panel._default_engine_combo.menu().actions()[1].trigger()
+    assert shot.default_engine == "vitmatte"
 
 
 def test_crop_mode_takes_one_drag_then_ends(qapp: QApplication) -> None:

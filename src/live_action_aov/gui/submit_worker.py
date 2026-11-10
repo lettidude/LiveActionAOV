@@ -288,7 +288,7 @@ def _sam3_matte_params(state: ShotState) -> dict[str, Any]:
     params: dict[str, Any] = {}
     if (state.small_objects or "auto") != "auto":  # "auto" is the pass default
         params["small_objects"] = state.small_objects
-    if (state.detector or "sam3") != "sam3":
+    if (state.detector or "auto") != "auto":
         params["detector"] = state.detector
     concepts = _parse_concepts(state.sam3_concepts)
     if concepts:
@@ -369,8 +369,11 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
                 from live_action_aov.gui.comfy_dialog import comfy_url
 
                 rp["comfy_url"] = comfy_url()
-                if state.default_engine == "ltx_whole":
-                    rp["mode"] = "whole_frame"
+                whole = state.default_engine == "ltx_whole" and not multi_engine
+                rp["mode"] = "whole_frame" if whole else "per_object"
+                # Objects the user gave "LTX Alpha crop": their own crop run.
+                if whole and assigned.get(n):
+                    rp["crop_labels"] = list(assigned[n])
             out.append(PassConfig(name=n, params=rp) if rp else PassConfig(name=n))
         elif n == "camera_pycolmap" and not state.camera_pnp_fallback:
             out.append(PassConfig(name=n, params={"pnp_fallback": False}))
@@ -393,6 +396,7 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
             from live_action_aov.gui.comfy_dialog import comfy_url
 
             params["comfy_url"] = comfy_url()
+            params["mode"] = "per_object"
         out.append(PassConfig(name=eng_plugin, params=params))
     return out
 

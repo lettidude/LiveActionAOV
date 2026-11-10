@@ -36,6 +36,16 @@ def test_plate_1080p(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture(autouse=True)
+def _no_sam31_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`detector: auto` picks SAM 3.1 when its environment is installed on the
+    machine; unit tests must not depend on that (tests that want it patch
+    `sam31_bridge.available` themselves)."""
+    from live_action_aov.passes.matte import sam31_bridge
+
+    monkeypatch.setattr(sam31_bridge, "available", lambda params=None: (False, "not in unit tests"))
+
+
+@pytest.fixture(autouse=True)
 def _no_depth_order(monkeypatch: pytest.MonkeyPatch) -> None:
     """SAM 3's depth-based layer order loads Depth Anything V2; unit tests use
     the area order (tests that need nearness inject it)."""

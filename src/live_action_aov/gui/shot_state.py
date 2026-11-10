@@ -129,7 +129,7 @@ class ShotState:
     # Detector + tracker for the concepts: "sam3" (built in) or "sam3.1"
     # (Meta's SAM 3.1 Object Multiplex in its own Python 3.12 environment,
     # LAOV_SAM31_PYTHON). Injected as the sam3_matte `detector`.
-    detector: str = "sam3"
+    detector: str = "auto"
 
     # Camera track: when COLMAP and the rotation-only fallback both fail,
     # solve from MoGe-3 depth of the middle frame (depth-anchored PnP).
@@ -155,7 +155,7 @@ class ShotState:
     # "birefnet" | "vitmatte" | "chromakey" | "rvm" | "ltx_whole" (LTX Alpha
     # once on the whole frame, split by object). BiRefNet weight variants
     # ride on refiner_model.
-    default_engine: str = "vitmatte"
+    default_engine: str = "ltx_whole"
 
     # Masks-tab PREVIEW override: which refiner engine the seed-frame
     # preview applies, independent of the run choice on the Passes tab —

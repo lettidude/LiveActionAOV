@@ -129,7 +129,16 @@ def _run(n: int, speed: int = 1, **params: object) -> tuple[_FakeComfy, dict]:
         },
     }
     _FakeComfy.calls = []
-    p = _FakeComfy({"long_edge": 128, "chunk": 17, "overlap": 8, "gate": "dilate", **params})
+    p = _FakeComfy(
+        {
+            "mode": "per_object",
+            "long_edge": 128,
+            "chunk": 17,
+            "overlap": 8,
+            "gate": "dilate",
+            **params,
+        }
+    )
     p.ingest_artifacts(art)
     return p, p.run_shot(_Reader(frames), frame_range=(1, n))
 
@@ -413,6 +422,40 @@ def test_whole_frame_runs_ltx_once_for_every_object() -> None:
     assert a[107, 220] < 0.05 and b[107, 220] < 0.05  # far prop: no owner ...
     assert fg[107, 220] > 0.9  # ... but in the foreground layer
     assert fg[10, 10] < 0.05
+
+
+def test_whole_frame_is_the_default_mode() -> None:
+    assert LTXAlphaRefinerPass({}).params["mode"] == "whole_frame"
+    assert LTXAlphaRefinerPass({}).params["crop_labels"] == []
+
+
+def test_crop_label_gets_its_own_run_inside_a_whole_frame_job() -> None:
+    """`crop_labels`: that object is matted on its own rectangle (more
+    pixels), the others keep their share of the whole-frame run."""
+    frames, art = _two_actors(9)
+    art["sam3_hard_masks"][0][2]["label"] = "girl"
+    art["sam3_instances"][0][1]["label"] = "girl"
+    _FakeComfy.calls = []
+    p = _FakeComfy(
+        {
+            "whole_long_edge": 256,
+            "whole_chunk": 17,
+            "long_edge": 128,
+            "chunk": 17,
+            "overlap": 8,
+            "gate": "dilate",
+            "crop_labels": ["girl"],
+        }
+    )
+    p.ingest_artifacts(art)
+    out = p.run_shot(_Reader(frames), frame_range=(1, 9))
+    sizes = sorted((ww, wh) for ww, wh, _ in p.calls)
+    assert len(p.calls) == 2  # the whole frame once + the girl's crop
+    assert (256, 128) in sizes and any(max(s) == 128 for s in sizes)
+    a, b = out[5]["matte.r"], out[5]["matte.g"]
+    assert a[60, 60] > 0.9 and a[60, 110] < 0.05  # whole-frame share
+    assert b[60, 110] > 0.9 and b[60, 60] < 0.05  # the crop run, SAM-gated
+    assert "foreground.a" in out[5]
 
 
 def test_whole_frame_chunks_long_shots_in_8n_plus_1_calls() -> None:

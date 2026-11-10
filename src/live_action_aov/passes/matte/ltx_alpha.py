@@ -5,9 +5,24 @@
 
 """LTX-2.5 Alpha-Gen refiner: SAM 3 finds the object, LTX generates its matte.
 
-A generative video matter, not an edge refiner: it is given only RGB - a
-RECTANGLE around the object with its surroundings - never another model's
-alpha (it needs context to understand what is foreground). Per track:
+A generative video matter, not an edge refiner: it is given only RGB, never
+another model's alpha (it needs context to understand what is foreground).
+
+`mode="whole_frame"` (the default) runs LTX ONCE over the full frame (per
+chunk, not per object) and gives each object the foreground nearest to it:
+every foreground pixel goes to the closest SAM track (distance transforms,
+with a `seam_px` feathered seam where two objects touch); foreground farther
+than `far_frac` of the width from every track belongs to no object and is
+only in the `foreground.a` layer (props, blood, untracked people). No SAM
+gate cuts LTX's outline, so a shoulder SAM missed stays in, and N objects
+cost one LTX run instead of N.
+
+`crop_labels`: objects named here are NOT taken from the whole-frame run.
+Each gets its own LTX run on a RECTANGLE around it (below): for the one
+object that needs more pixels than the whole frame gives it (a small or far
+subject, fine hair on the hero). The others keep the whole-frame matte.
+
+`mode="per_object"` does that crop run for every object. Per track:
 
 1. The shot is cut in chunks of `chunk` frames (8n+1, LTX's frame grid),
    overlapping by `overlap`; each chunk gets its own box, so the crop follows
@@ -28,15 +43,6 @@ alpha (it needs context to understand what is foreground). Per track:
    BiRefNet is unsure (hair, motion blur), tight where it is sure of
    background. (`gate="dilate"`: the SAM mask grown by `gate_frac`, which
    left soft fog over whatever LTX matted next to the object.)
-
-`mode="whole_frame"` instead runs LTX ONCE over the full frame (per chunk,
-not per object) and gives each object the foreground nearest to it: every
-foreground pixel goes to the closest SAM track (distance transforms, with a
-`seam_px` feathered seam where two objects touch); foreground farther than
-`far_frac` of the width from every track belongs to no object and is only in
-the `foreground.a` layer (props, blood, untracked people). No SAM gate cuts
-LTX's outline, so a shoulder SAM missed stays in, and N objects cost one LTX
-run instead of N.
 
 `cache_dir`: each LTX call's raw result is saved there, keyed by a hash of
 the frames sent and the models / settings, so a rerun (a crash later in the
@@ -163,10 +169,12 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         "send_frames": "auto",
         # Dev: save each track's ungated LTX alpha + SAM mask here (npz).
         "debug_dir": "",
-        # "per_object": one LTX run per object on a crop, gated by SAM.
         # "whole_frame": one LTX run on the full frame, split between the
         # objects by nearest track (see the module docstring).
-        "mode": "per_object",
+        # "per_object": one LTX run per object on a crop, gated by SAM.
+        "mode": "whole_frame",
+        # Object names refined on their own crop even in whole-frame mode.
+        "crop_labels": [],
         "whole_long_edge": 1920,  # whole-frame working resolution
         "whole_chunk": 97,  # whole-frame frames per LTX call, 8n+1
         "far_frac": 0.06,  # foreground farther than this x width from every track: no owner
@@ -181,6 +189,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         self._comfy_ok: bool | None = None
         self._models: dict[str, tuple[str, str]] = {}
         self._track_id: int | None = None
+        self._track_label = ""
         self._first = 0
         # Whole-frame mode: LTX foreground at working res (T, wh, ww) and the
         # nearest-owner map (T, wh, ww), -1 = no owner; built once per shot.
@@ -238,6 +247,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         track_id: int,
     ) -> tuple[np.ndarray, list[int]]:
         self._track_id = int(track_id)
+        self._track_label = str(track.get("label", "") or "")
         return super()._refine_track(
             track, frames, frame_to_local, n_frames, plate_h, plate_w, track_id
         )
@@ -249,7 +259,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
     def _refine_instance(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
         if not self._comfy_ready():
             return self._vitmatte()._refine_instance(plate_stack, hard_stack)
-        if str(self.params.get("mode", "per_object")) == "whole_frame":
+        if not self._on_crop():
             return self._whole_frame_share(plate_stack, hard_stack)
         import cv2
 
@@ -333,6 +343,13 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
     # ------------------------------------------------------------------
     # Whole-frame mode
     # ------------------------------------------------------------------
+
+    def _on_crop(self) -> bool:
+        """Is the track being refined matted on its own crop?"""
+        if str(self.params.get("mode", "whole_frame")) != "whole_frame":
+            return True
+        crop = {str(x) for x in (self.params.get("crop_labels") or [])}
+        return bool(self._track_label) and self._track_label in crop
 
     def _reset_whole_frame(self) -> None:
         self._fg_work, self._owner, self._owner_ids = None, None, []
