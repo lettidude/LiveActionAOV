@@ -80,8 +80,8 @@ dev = [
 ]
 
 # Model-specific extras (user installs what they need)
-depthcrafter = ["diffusers>=0.30", "accelerate>=0.30"]
-normalcrafter = ["diffusers>=0.30", "accelerate>=0.30"]
+depthcrafter = ["diffusers>=0.38.0", "accelerate>=0.30"]
+normalcrafter = ["diffusers>=0.38.0", "accelerate>=0.30"]
 # Video-Depth-Anything uses a vendored ViT + temporal DPT backbone. The
 # model's internal resize path uses OpenCV; einops ships with the
 # DINOv2/motion-module blocks; easydict is needed by the temporal head.
