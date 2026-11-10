@@ -7,6 +7,16 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **SAM 3.1 small objects** (`sam31_small_objects`: `follow` = on with *Small objects: Max*, else
+  off; `on` / `off` force it). SAM 3.1 seeded one frame and kept objects of 0.5 % of the frame and up,
+  so small people in a wide shot, late entrances and people hidden on the middle frame were lost. On:
+  the text is seeded on the first, middle and last frame and every `sam31_seed_every` (40) frames, one
+  session each (a failing extra session is logged and skipped); the tracks are merged into one ID
+  per object (`sam31_merge`: IoU link across sessions with a guard against joining two coexisting
+  objects, fragment stitch, duplicate merge only between masks of comparable size so parts stay
+  apart, glitch frames dropped); the floor drops to `sam31_small_min_peak_coverage` (0.03 %) plus
+  `min_object_px` of height, still on `sam31_min_frames` frames. An empty SAM 3.1 result is logged.
+  Off (the default with *Small objects* Auto / Off) runs exactly the single-seed path as before.
 - **The camera as USD.** `camera/<shot>_v###.camera.usda`: the solved camera (one matrix per solved
   frame, the Nuke camera's focal and film back) and the point cloud with colours, for Houdini, Maya,
   Blender, Unreal and Nuke's USD 3D system. Plain text, no USD library needed to write it. Checked

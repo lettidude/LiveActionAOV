@@ -365,6 +365,29 @@ class SAM3MattePass(UtilityPass):
         # much of the frame on its biggest frame, on at least that many frames.
         "sam31_min_peak_coverage": 0.005,
         "sam31_min_frames": 3,
+        # SAM 3.1 small objects (many small people in a wide shot). SAM 3.1
+        # does not tile and seeds one frame, so the 0.5 % floor drops anyone
+        # small and the one seed misses late entrances / people hidden on
+        # that frame. On: a much lower floor (`sam31_small_min_peak_coverage`,
+        # plus `min_object_px` of box height, scaled like SAM 3's), the text
+        # seeded on the first, middle and last frame and every
+        # `sam31_seed_every` frames (one SAM 3.1 session each, so slower),
+        # and the sessions' tracks merged into one ID per object
+        # (`sam31_merge`: link by IoU, stitch fragments, merge duplicates of
+        # comparable size only, so parts stay apart). "follow" = on when
+        # `small_objects` is "max", else off; "on" / "off" force it. Off is
+        # the single-seed path above, unchanged.
+        "sam31_small_objects": "follow",
+        "sam31_small_min_peak_coverage": 0.0003,
+        "sam31_seed_every": 40,  # 0 = first / middle / last only
+        "sam31_link_iou": 0.5,  # same object across seed sessions
+        "sam31_conflict_iou": 0.3,  # coexisting with less = two objects
+        "sam31_stitch_iou": 0.3,  # fragment end / start overlap (dilated)
+        "sam31_stitch_gap": 8,  # frames between fragments; 0 = no stitch
+        "sam31_glitch_factor": 6.0,  # frame area > this x track median: dropped; 0 = off
+        "sam31_dup_containment": 0.6,  # smaller inside bigger by at least this
+        "sam31_dup_size_ratio": 0.5,  # ...and at least this size of it (parts stay apart)
+        "sam31_dup_frames": 0.6,  # ...on this share of shared frames; 0 = no merge
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -920,16 +943,37 @@ class SAM3MattePass(UtilityPass):
 
         python = sam31_bridge.find_python(self.params)
         n, h, w = int(frames.shape[0]), int(frames.shape[1]), int(frames.shape[2])
-        found = sam31_bridge.run_sam31(
-            frames,
-            concepts,
-            seed_local,
-            python,
-            timeout_s=float(self.params.get("sam31_timeout_s", 3600)),
-            checkpoint=str(self.params.get("sam31_checkpoint", "") or ""),
-        )
+        small = self._sam31_small_objects()
         min_cov = float(self.params.get("sam31_min_peak_coverage", 0.005))
         min_frames = int(self.params.get("sam31_min_frames", 3))
+        min_px = 0.0
+        if not small:
+            found = sam31_bridge.run_sam31(
+                frames,
+                concepts,
+                seed_local,
+                python,
+                timeout_s=float(self.params.get("sam31_timeout_s", 3600)),
+                checkpoint=str(self.params.get("sam31_checkpoint", "") or ""),
+            )
+        else:
+            from live_action_aov.passes.matte.sam31_merge import seed_frames
+
+            seeds = seed_frames(n, seed_local, int(self.params.get("sam31_seed_every", 40) or 0))
+            found = sam31_bridge.run_sam31(
+                frames,
+                concepts,
+                seed_local,
+                python,
+                timeout_s=float(self.params.get("sam31_timeout_s", 3600)),
+                checkpoint=str(self.params.get("sam31_checkpoint", "") or ""),
+                extra_seeds=seeds[1:],
+                merge=self._sam31_merge_config(),
+            )
+            min_cov = float(self.params.get("sam31_small_min_peak_coverage", 0.0003))
+            # Box-height floor in plate px, scaled to these frames (proxy).
+            full_h = self._full_hw()[0] or h
+            min_px = max(2.0, float(self.params.get("min_object_px", 10)) * h / float(full_h))
         used = {i.track_id for i in self._instances}
         next_id = 1
         kept = 0
@@ -939,7 +983,9 @@ class SAM3MattePass(UtilityPass):
                 raise ValueError(f"SAM 3.1 returned {st.shape[0]} frames for a {n}-frame shot")
             if st.shape[1:] != (h, w):  # NEAREST keeps the masks binary
                 st = np.stack([cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST) for m in st])
-            if not sam31_bridge.keep_object(st, min_cov, min_frames):
+            if not sam31_bridge.keep_object(st, min_cov, min_frames) or (
+                min_px and sam31_bridge.peak_height(st) < min_px
+            ):
                 _log.info(
                     "SAM 3.1: dropped '%s' object %d (too small / too brief).", o.label, o.obj_id
                 )
@@ -952,6 +998,34 @@ class SAM3MattePass(UtilityPass):
             self._priority[next_id] = 0
             kept += 1
         _log.info("SAM 3.1: %d object(s) kept of %d.", kept, len(found))
+        if not found:
+            _log.warning(
+                "SAM 3.1 found no objects for %s: the matte has no detected objects.", concepts
+            )
+
+    def _sam31_small_objects(self) -> bool:
+        """Whether SAM 3.1 runs in small-objects mode (`sam31_small_objects`)."""
+        mode = str(self.params.get("sam31_small_objects", "follow") or "follow").lower()
+        if mode in ("on", "true", "1", "yes"):
+            return True
+        if mode == "follow":
+            return str(self.params.get("small_objects", "auto")).lower() == "max"
+        return False
+
+    def _sam31_merge_config(self) -> Any:
+        from live_action_aov.passes.matte.sam31_merge import MergeConfig
+
+        g = self.params.get
+        return MergeConfig(
+            link_iou=float(g("sam31_link_iou", 0.5)),
+            conflict_iou=float(g("sam31_conflict_iou", 0.3)),
+            stitch_iou=float(g("sam31_stitch_iou", 0.3)),
+            stitch_gap=int(g("sam31_stitch_gap", 8) or 0),
+            glitch_factor=float(g("sam31_glitch_factor", 6.0) or 0.0),
+            dup_containment=float(g("sam31_dup_containment", 0.6)),
+            dup_frames=float(g("sam31_dup_frames", 0.6) or 0.0),
+            dup_size_ratio=float(g("sam31_dup_size_ratio", 0.5)),
+        )
 
     def _track_objects(
         self,
