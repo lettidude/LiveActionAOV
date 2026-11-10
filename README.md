@@ -26,7 +26,7 @@ From one plate folder, one run writes a version folder next to it:
 | **Depth** | `Z` in metres, plus `P` world position | MoGe-3 (default), Depth Anything V2, Video Depth Anything |
 | **Normals** | Camera-space `N`, steady over the shot | MoGe-3 |
 | **Motion** | Forward and backward vectors in pixels, Nuke VectorBlur names included | RAFT or MegaFlow |
-| **Camera** | A Nuke `Camera2` with its error and coverage in the label, point cloud, COLMAP model | COLMAP, with the masked people kept out of the solve; nodal and depth-anchored fallbacks when parallax is short |
+| **Camera** | A Nuke `Camera2` with its error and coverage in the label, the same camera as **USD** for Houdini, Maya, Blender and Unreal, a coloured point cloud of the set, COLMAP model | COLMAP, with the masked people kept out of the solve; nodal and depth-anchored fallbacks when parallax is short |
 | **Splat background** | The set behind the people, re-rendered through the solved camera: a soft fill to start a patch from, not a finished clean plate | 3D Gaussian splat trained on the plate |
 | **Clean plate** | The plate with the people painted out, frame by frame | *coming soon*, on LTX |
 | **Nuke script** | `<shot>_v001.comp.nk`: Reads, the camera, the point cloud, a ScanlineRender, every layer shuffled out | written at the end of each run |
@@ -93,7 +93,7 @@ plates/sh020_v003/                   your plate, untouched
 plates/sh020_v003_utility/v001/      one folder per run, never overwritten
     sh020_v001.comp.nk               open this in Nuke
     passes/                          the utility EXRs (+ a lossless Cryptomatte sidecar)
-    camera/                          Camera2 .nk, .json, point cloud, COLMAP model
+    camera/                          Camera2 .nk, .usda, .json, point cloud, COLMAP model
     splat/                           the Gaussian splat (.ply)
     logs/
 ```
@@ -142,7 +142,7 @@ The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (
 
 ### Camera track
 
-Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motion, with the SAM 3 masks keeping the moving people out of the solve. You get a Nuke `Camera2`, a point cloud and the COLMAP model. Checked in Nuke 16 by reprojecting the solved points: 0.7-1.3 px on 2K to 6.5K test plates.
+Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motion, with the SAM 3 masks keeping the moving people out of the solve. You get a Nuke `Camera2`, the same camera as a `.usda` for other 3D software, a point cloud and the COLMAP model. With a depth pass in the same run the point cloud is dense and coloured from the plate, so the set is recognisable in the 3D viewer; without one it is the solve's feature points. Checked in Nuke 16 by reprojecting the solved points: 0.7-1.3 px on 2K to 6.5K test plates.
 
 A camera needs parallax. When COLMAP registers only part of a shot, two fallbacks take over: a rotation-only solve for pans and locked-off shots, and a depth-anchored solve (MoGe-3 depth plus tracked corners) for fast handheld action. The depth-anchored camera is judged on held-out points it never saw during the solve and labelled **GOOD**, **WEAK** or **FAILED** in the Nuke node, with the error in pixels at a stated resolution; a FAILED one says "do not use" so it cannot end up in a comp by accident. COLMAP and nodal cameras report their reprojection error and frame coverage in the same label; one independent referee for every camera is the next step. Whatever happens to the camera, the other passes are still written.
 

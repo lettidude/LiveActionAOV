@@ -72,6 +72,7 @@ from live_action_aov.io.camera_schema import (
     ShotRef,
 )
 from live_action_aov.io.writers.nuke_script import render_nuke_camera_script
+from live_action_aov.io.writers.usd import write_usd
 
 _log = logging.getLogger(__name__)
 
@@ -328,9 +329,13 @@ class PyColmapCameraPass(UtilityPass):
         nk_path.write_text(render_nuke_camera_script(self._solve), encoding="utf-8")
         write_points_ply(self._solve, ply_path)
         write_points_obj(self._solve, obj_path)
+        # The same camera for Houdini, Maya, Blender, Unreal: plain-text USD.
+        # The run rewrites it at the end with the cloud made for looking at.
+        usd_path = write_usd(out_dir / file_name(shot, "camera", "usda"), self._solve)
         paths: dict[str, Path] = {
             "camera": json_path,
             "camera_nk": nk_path,
+            "camera_usd": usd_path,
             "camera_points": ply_path,
             "camera_points_obj": obj_path,
         }

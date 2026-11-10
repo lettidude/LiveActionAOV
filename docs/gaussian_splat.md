@@ -4,7 +4,7 @@ Two passes in the **Camera** category of the Passes tab:
 
 | Pass | What you get | Needs |
 |---|---|---|
-| Camera track (`camera_pycolmap`) | `camera/<shot>_v###.camera.nk` (Nuke Camera2), `.camera.json`, `.points.ply`, `_colmap/` | nothing extra (pycolmap is in the normal install) |
+| Camera track (`camera_pycolmap`) | `camera/<shot>_v###.camera.nk` (Nuke Camera2), `.camera.usda` (the same camera and the point cloud for Houdini, Maya, Blender, Unreal), `.camera.json`, `.cloud.obj` + `.cloud.png` (the point cloud Nuke shows), `.points.ply`, `_colmap/` | nothing extra (pycolmap is in the normal install) |
 | Gaussian splat (`splat_gsplat`) | EXR layer `splat` = the splat background (`splat.R/G/B`), coverage (`splat.A`), depth (`splat.Z`) + `splat/<shot>_v###.splat.ply` | the **gsplat wheel** (below), an NVIDIA GPU |
 
 Ticking *Gaussian splat* also runs the camera track (the splat is trained on

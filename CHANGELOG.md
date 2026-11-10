@@ -7,6 +7,18 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The camera as USD.** `camera/<shot>_v###.camera.usda`: the solved camera (one matrix per solved
+  frame, the Nuke camera's focal and film back) and the point cloud with colours, for Houdini, Maya,
+  Blender, Unreal and Nuke's USD 3D system. Plain text, no USD library needed to write it. Checked
+  with Pixar's USD inside Nuke 16: the camera matches the Nuke `Camera2` to 5e-7.
+- **A point cloud you can read.** The cloud in the Nuke script was a few thousand grey feature
+  points, drawn 1 px wide and invisible in a render. With a depth pass in the run it is now the set
+  itself: keyframes of the depth pass pushed back through the solved camera (each brought to the
+  solve's units with the feature points seen in that frame), in the plate's colours, lifted on dark
+  plates, without the tracked objects and without drawing a surface twice. Up to 60,000 points,
+  about 2 s. Without depth: the feature points without the outliers, coloured from the plate. It is
+  written as `camera/<shot>_v###.cloud.obj` (one small quad per point) + `.cloud.png` (their
+  colours), which Nuke's classic 3D shows and renders; the same cloud goes into the USD.
 - **Part of a shot only.** Per shot, a **frame range** (in / out inside the plate) and a **crop**
   box drawn in the viewer (*This shot* tab → *Draw in viewer*; CLI `--first/--last`, `--crop x,y,w,h`).
   Passes run on the box as if it were the plate (a proxy scales the crop); the EXRs carry the box

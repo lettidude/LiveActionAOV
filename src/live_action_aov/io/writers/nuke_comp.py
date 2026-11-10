@@ -244,6 +244,7 @@ def render_comp_script(
     reads: list[CompRead],
     camera_nk: Path | None = None,
     points_obj_rel: str | None = None,
+    points_tex_rel: str | None = None,
     crypto_rel_pattern: str | None = None,
 ) -> str:
     first, last = int(frame_range[0]), int(frame_range[1])
@@ -438,16 +439,33 @@ def render_comp_script(
             s.set_var("Ncam")
             scene_in = 0
             if points_obj_rel:
+                if points_tex_rel:
+                    # The cloud made for looking at: small quads, their colours
+                    # in an atlas the geometry reads as its texture.
+                    s.node(
+                        "Read",
+                        [
+                            f'file "{here}/{_q(points_tex_rel)}"',
+                            "origset true",
+                            "name PointCloud_colours",
+                            'label "colours of the point cloud"',
+                            f"xpos {cx}",
+                            "ypos -520",
+                        ],
+                        inputs=0,
+                    )
                 s.node(
                     "ReadGeo2",
                     [
                         f'file "{here}/{_q(points_obj_rel)}"',
                         "name PointCloud",
-                        'label "camera track points"',
+                        'label "the set as a point cloud\\n(look at it in the 3D viewer)"'
+                        if points_tex_rel
+                        else 'label "camera track points"',
                         f"xpos {cx}",
                         "ypos -400",
                     ],
-                    inputs=0,
+                    inputs=1 if points_tex_rel else 0,
                 )
                 scene_in = 1
             s.node("Scene", ["name Scene_track", f"xpos {cx + 10}", "ypos -280"], inputs=scene_in)
@@ -465,7 +483,33 @@ def render_comp_script(
                 ],
                 inputs=3,
             )
-            backdrops.append(("camera", cx - 20, -460, 340, 380))
+            if points_tex_rel:
+                # A dense cloud hides the plate it is rendered over: half and
+                # half is the view that shows whether the track holds.
+                s.set_var("Ncheck")
+                s.push("Nplate")
+                s.push("Ncheck")
+                s.node(
+                    "Merge2",
+                    [
+                        "operation copy",
+                        "mix 0.5",
+                        "name Track_check_half",
+                        'label "the cloud at 50% over the plate:\\ndoes it stick?"',
+                        f"xpos {cx}",
+                        "ypos -70",
+                    ],
+                    inputs=2,
+                )
+            backdrops.append(
+                (
+                    "camera",
+                    cx - 20,
+                    -580 if points_tex_rel else -460,
+                    340,
+                    600 if points_tex_rel else 380,
+                )
+            )
 
     bd_lines: list[str] = []
     for i, (label, bx, by, bw, bh) in enumerate(backdrops):

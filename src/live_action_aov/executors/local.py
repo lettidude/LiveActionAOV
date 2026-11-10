@@ -698,6 +698,11 @@ class LocalExecutor(Executor):
 
             shot.sidecars["utility"] = first_written or sidecar_dir
             try:
+                _write_display_cloud(shot, sidecar_dir, written_channels, per_pass, reader)
+            except Exception:
+                # The camera, its points and the USD are already on disk.
+                _log.warning("could not write the display point cloud", exc_info=True)
+            try:
                 comp = _write_comp_script(
                     shot,
                     sidecar_dir,
@@ -973,6 +978,76 @@ def _hash_pattern(template: str) -> str:
     return re.sub(r"\{frame:0?(\d+)d\}", lambda m: "#" * int(m.group(1)), template)
 
 
+def _write_display_cloud(
+    shot: Shot,
+    sidecar_dir: Path,
+    written_channels: dict[str, Path],
+    per_pass: bool,
+    reader: Any,
+) -> None:
+    """With a camera: the point cloud made for looking at (dense when the run
+    wrote depth), as an OBJ + colour atlas for Nuke and inside the camera's
+    USD. See `io.writers.display_cloud`."""
+    import numpy as np
+    import OpenImageIO as oiio
+
+    from live_action_aov.core.output_layout import CAMERA_DIR, sub_dir
+    from live_action_aov.io.camera_schema import CameraSolve
+    from live_action_aov.io.writers.display_cloud import build_display_cloud, write_cloud_obj
+    from live_action_aov.io.writers.usd import write_usd
+
+    cam_json = shot.sidecars.get("camera")
+    if cam_json is None or not Path(cam_json).exists():
+        return
+    solve = CameraSolve.model_validate_json(Path(cam_json).read_text(encoding="utf-8"))
+    wanted = [
+        c
+        for c in written_channels
+        if c in ("Z", "depth.confidence") or c.startswith(("mask.", "matte."))
+    ]
+
+    def read_plate(frame: int) -> np.ndarray:
+        return np.asarray(reader.read_frame(frame)[0])[..., :3]
+
+    def read_passes(frame: int) -> dict[str, np.ndarray]:
+        by_file: dict[Path, list[str]] = {}
+        for c in wanted:
+            g = pass_group(c)
+            tmpl = frame_template(shot, g, sub=g) if per_pass else layout_sidecar_template(shot)
+            by_file.setdefault(Path(sidecar_dir) / tmpl.format(frame=frame), []).append(c)
+        out: dict[str, np.ndarray] = {}
+        for path, chans in by_file.items():
+            inp = oiio.ImageInput.open(str(path))
+            if inp is None:
+                continue
+            try:
+                spec = inp.spec()
+                names = list(spec.channelnames)
+                px = np.asarray(inp.read_image(0, 0, 0, spec.nchannels, oiio.FLOAT)).reshape(
+                    spec.height, spec.width, spec.nchannels
+                )
+            finally:
+                inp.close()
+            for c in chans:
+                if c in names:
+                    out[c] = px[..., names.index(c)]
+        return out
+
+    cloud = build_display_cloud(solve, read_plate, read_passes if "Z" in wanted else None)
+    if cloud is None:
+        return
+    face = np.mean([e.translation for e in solve.extrinsics], axis=0)
+    obj, tex = write_cloud_obj(
+        cloud, sub_dir(shot, CAMERA_DIR) / file_name(shot, "cloud", "obj"), face
+    )
+    shot.sidecars["camera_cloud_obj"] = obj
+    shot.sidecars["camera_cloud_tex"] = tex
+    usd = shot.sidecars.get("camera_usd")
+    if usd is not None:
+        write_usd(Path(usd), solve, cloud)
+    _log.info("Display point cloud: %s", cloud.note)
+
+
 def _write_comp_script(
     shot: Shot,
     sidecar_dir: Path,
@@ -1015,13 +1090,16 @@ def _write_comp_script(
             crypto_rel = _hash_pattern(frame_template(shot, "crypto")) if crypto_split else pattern
     plate = (Path(shot.folder) / shot.sequence_pattern).as_posix()
     cam = shot.sidecars.get("camera_nk")
-    pts = shot.sidecars.get("camera_points_obj")
-    pts_rel = None
+    # The cloud made for looking at when there is one, else the solve's points.
+    pts = shot.sidecars.get("camera_cloud_obj") or shot.sidecars.get("camera_points_obj")
+    tex = shot.sidecars.get("camera_cloud_tex") if "camera_cloud_obj" in shot.sidecars else None
+    pts_rel = tex_rel = None
     if pts is not None:
         try:
             pts_rel = Path(pts).relative_to(sidecar_dir).as_posix()
+            tex_rel = Path(tex).relative_to(sidecar_dir).as_posix() if tex is not None else None
         except ValueError:
-            pts_rel = None
+            pts_rel = tex_rel = None
     out = Path(sidecar_dir) / file_name(shot, "comp", "nk")
     return write_comp_script(
         out,
@@ -1033,6 +1111,7 @@ def _write_comp_script(
         reads=reads,
         camera_nk=Path(cam) if cam is not None else None,
         points_obj_rel=pts_rel,
+        points_tex_rel=tex_rel,
         crypto_rel_pattern=crypto_rel,
     )
 

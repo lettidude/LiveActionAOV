@@ -108,7 +108,7 @@ liveaov-gui
     <shot>_v001.comp.nk                       <- open this in Nuke
     passes/<shot>_v001.utility.####.exr      (per-pass layout: passes/<pass>/<shot>_v001.<pass>.####.exr)
     passes/<shot>_v001.crypto.####.exr       (lossy delivery only: Cryptomatte kept lossless)
-    camera/<shot>_v001.camera.nk  .camera.json  .points.obj  .points.ply  _colmap/
+    camera/<shot>_v001.camera.nk  .camera.usda  .camera.json  .cloud.obj  .cloud.png  .points.obj  .points.ply  _colmap/
     splat/<shot>_v001.splat.ply  .splat.json
     logs/submit_<date>_<shot>.log
 <root>/<shot>/v002/ ...                      <- the next run; v001 is never touched
@@ -145,7 +145,7 @@ Every run writes `<shot>_v###.comp.nk` at the top of its version folder. Open it
 |---|---|
 | PLATE | the original plate Read |
 | all passes / one per pass | the utility Read(s), `raw` (data, no colour conversion), and one labelled Shuffle2 per pass: every mask on its own, an "every mask" matte, depth / normals / position / flow to RGB, mattes and the splat background to RGBA |
-| camera | the solved Camera2, the point cloud (ReadGeo2 of `camera/<shot>_v###.points.obj`) in a Scene, and a ScanlineRender over the plate: drop Cards on the points to check the track |
+| camera | the solved Camera2, the point cloud (ReadGeo2 of `camera/<shot>_v###.cloud.obj`, coloured by `.cloud.png`) in a Scene, and a ScanlineRender over the plate: drop Cards on the points to check the track; `Track_check_half` shows the cloud at 50% over the plate, the quickest way to see whether the track sticks. With a depth pass in the run the cloud is the set itself, dense and in the plate's colours (lifted on dark plates), without the tracked people; without depth it is the solve's feature points |
 | example | with a splat and masks: a Keymix that replaces every masked object with the splat background (watch `splat.alpha`: areas the camera never saw are empty) |
 
 Paths are relative to the script, so a whole version folder can be copied to another machine. In Nuke our `mask.*` layer is called `mask_extra.*` (Nuke reserves `mask`); the script already uses the Nuke names.
