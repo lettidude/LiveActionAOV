@@ -17,6 +17,10 @@ liveaov inspect <sidecar.exr>                 # structural QC of a sidecar
 ```
 
 `liveaov run-shot --help` lists every option (passes, backends, output root, proxy, colourspace).
+`liveaov doctor [plate folder]` checks the machine (card, RAM, SAM 3.1, ComfyUI + LTX, gsplat) and
+proposes the settings for that plate; `run-shot --proxy auto` takes the proposed proxy size
+(`--proxy 1920` sets one). A clip that does not fit the free RAM is run in overlapping windows of
+frames by itself (`--window auto`, the default; a number forces the window, `off` never cuts).
 Part of a shot only: `--first 1010 --last 1060` (frames) and `--crop x,y,w,h` (one box of the
 plate, pixels from the top-left). Studio file names: `--naming "{shot}_{pass}_{version}.{frame}.{ext}"`,
 see [File naming](#file-naming).
@@ -79,7 +83,8 @@ liveaov-gui
 
 1. **Load plates** — drag plate folders onto the shot list (or File → Add shot). Each shot auto-detects its colourspace and seeds exposure.
 2. **Passes tab** — pick a model per category. For matte, choose a backend:
-   - **Default engine: Auto (recommended)** - ViTMatte + BiRefNet guide — SAM 3 finds the object, BiRefNet says where it is sure, ViTMatte resolves every unsure pixel (hair, motion blur, a sloppy SAM edge). Works on people and on objects BiRefNet does not understand (it is ignored there). MIT, commercial-safe.
+   - **Default engine: Auto (recommended)** - LTX Alpha on the whole frame in your ComfyUI, else ViTMatte. LTX-2.5 with the alpha-gen IC-LoRA runs once on the whole frame and each tracked object takes the foreground nearest to it: one run whatever the number of objects, hair and motion blur kept, props and untracked people in `foreground.a`. Without ComfyUI (Models > ComfyUI for LTX Alpha > Test) the pass uses ViTMatte and the log says so. The detector is **Auto** too (Advanced): SAM 3.1 when installed (`liveaov setup-sam31`) and the card has the memory, else SAM 3.
+   - **ViTMatte + BiRefNet guide** (no ComfyUI needed) — SAM 3 finds the object, BiRefNet says where it is sure, ViTMatte resolves every unsure pixel (hair, motion blur, a sloppy SAM edge). Works on people and on objects BiRefNet does not understand (it is ignored there). MIT, commercial-safe.
    - **Green / blue screen** (Chroma key) is the second entry; the other engines (BiRefNet Portrait / Matting / General, RVM) are under **Advanced** in the same menu. Non-commercial models are marked **⚠ NC** (tooltip: NOT FOR PRODUCTION USE).
    - The **"SAM 3 detects"** field takes comma-separated concepts (e.g. `person, red car`) driving both the matte and the Cryptomatte.
    - **Whole + parts**: list a whole and its parts together (`person, hair, jacket, trousers`). `mask.person` stays the full body; `mask.hair`, `mask.jacket`, ... are cut from the person's matte, so they share its outer edge (hair strands included), add up to it exactly and never leave it. Parts are recognised by name (clothing, body and vehicle parts) when they sit inside a bigger object; a person inside a car stays a separate object.

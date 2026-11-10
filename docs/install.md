@@ -249,16 +249,31 @@ DSINE, MatAnyone 2, RVM, RAFT) are not currently gated. If a publisher
 adds gating to one of them later, the same three-step flow applies — just
 swap the URL in step 1.
 
-### SAM 3.1 (optional detector)
+### SAM 3.1 (recommended on a 24 GB card or bigger)
 
-The matte pass can use Meta's **SAM 3.1 Object Multiplex** instead of SAM 3
-(`detector: sam3.1`). It tracks every instance of a concept jointly and keeps
-identities apart where SAM 3 can swap two similar objects. It needs
-Python 3.12 and Meta's own `sam3` package, so it lives in a separate
-environment; LiveActionAOV runs it as a subprocess.
+The matte pass uses Meta's **SAM 3.1 Object Multiplex** instead of SAM 3 when
+it is installed (`detector: auto`, the default; `sam3` / `sam3.1` force one).
+It tracks every instance of a concept jointly and keeps identities apart
+where SAM 3 can swap two similar objects. It needs Python 3.12 and Meta's own
+`sam3` package, so it lives in a separate environment; LiveActionAOV runs it
+as a subprocess.
 
 1. Request access to `facebook/sam3.1` on Hugging Face (same flow as above).
-2. Create the environment (PowerShell, one line at a time; any folder):
+2. Build the environment (about 8 GB, needs `git`):
+
+   ```powershell
+   uv run liveaov setup-sam31
+   ```
+
+   It goes to a per-user folder (`%LOCALAPPDATA%\LiveActionAOV\sam31`) that
+   the matte pass finds by itself. `--dir D:\somewhere` puts it elsewhere and
+   stores the path in `LAOV_SAM31_PYTHON`. Running it again skips what is
+   already there. `uv run liveaov doctor` then shows SAM 3.1 as OK.
+
+By hand, the same steps (PowerShell, one line at a time; any folder):
+
+1. Request access as above.
+2. Create the environment:
 
    ```powershell
    uv venv sam31_env --python 3.12

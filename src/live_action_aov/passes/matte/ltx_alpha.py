@@ -188,6 +188,9 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         "crop_labels": [],
         "whole_long_edge": 1920,  # whole-frame working resolution
         "whole_chunk": 97,  # whole-frame frames per LTX call, 8n+1
+        # A clip only a few frames longer than `whole_chunk` goes in ONE call
+        # of up to this many frames instead of two almost identical ones.
+        "whole_chunk_max": 121,
         "far_frac": 0.06,  # foreground farther than this x width from every track: no owner
         "seam_px": 2.0,  # feather of the seam between two objects (working-res px)
         # Folder for the raw LTX results (one .npy per call); "" = no cache.
@@ -420,7 +423,9 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
 
         T, H, W = plate_stack.shape[:3]
         ww, wh = work_size(W, H, int(self.params["whole_long_edge"]))
-        chunk = int(self.params["whole_chunk"])
+        chunk = single_call_chunk(
+            T, int(self.params["whole_chunk"]), int(self.params.get("whole_chunk_max", 0))
+        )
         overlap = int(self.params["overlap"])
         acc = np.zeros((T, wh, ww), np.float32)
         wsum = np.zeros((T, 1, 1), np.float32)
@@ -1025,6 +1030,14 @@ def chunk_spans(n: int, chunk: int, overlap: int) -> list[tuple[int, int]]:
     if starts[-1] != n - chunk:
         starts.append(n - chunk)
     return [(s, chunk) for s in starts]
+
+
+def single_call_chunk(n: int, chunk: int, chunk_max: int) -> int:
+    """The chunk length to use for `n` frames: `chunk`, or `n` rounded up to
+    8k+1 when that fits `chunk_max` (one call instead of two that overlap
+    almost entirely: a 100-frame clip with 97-frame chunks ran LTX twice)."""
+    one = 8 * ((max(n, 1) - 1 + 7) // 8) + 1
+    return one if chunk < n and one <= chunk_max else chunk
 
 
 def crossfade_weight(j: int, length: int, overlap: int, first: bool, last: bool) -> float:

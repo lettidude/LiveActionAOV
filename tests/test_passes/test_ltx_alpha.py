@@ -404,7 +404,14 @@ def _run_whole(n: int, **params: object) -> tuple[_FakeComfy, dict]:
     frames, art = _two_actors(n)
     _FakeComfy.calls = []
     p = _FakeComfy(
-        {"mode": "whole_frame", "whole_long_edge": 256, "whole_chunk": 17, "overlap": 8, **params}
+        {
+            "mode": "whole_frame",
+            "whole_long_edge": 256,
+            "whole_chunk": 17,
+            "whole_chunk_max": 0,
+            "overlap": 8,
+            **params,
+        }
     )
     p.ingest_artifacts(art)
     return p, p.run_shot(_Reader(frames), frame_range=(1, n))
@@ -422,6 +429,19 @@ def test_whole_frame_runs_ltx_once_for_every_object() -> None:
     assert a[107, 220] < 0.05 and b[107, 220] < 0.05  # far prop: no owner ...
     assert fg[107, 220] > 0.9  # ... but in the foreground layer
     assert fg[10, 10] < 0.05
+
+
+def test_a_clip_just_over_the_chunk_is_one_call() -> None:
+    from live_action_aov.passes.matte.ltx_alpha import single_call_chunk
+
+    assert single_call_chunk(100, 97, 121) == 105  # one 8k+1 call, not two of 97
+    assert single_call_chunk(121, 97, 121) == 121
+    assert single_call_chunk(122, 97, 121) == 97  # too long for one call: chunks
+    assert single_call_chunk(60, 97, 121) == 97  # shorter than a chunk: unchanged
+    assert single_call_chunk(100, 97, 0) == 97  # off
+    p, out = _run_whole(20, whole_chunk=17, whole_chunk_max=25)
+    assert [nf for _, _, nf in p.calls] == [25]
+    assert out[20]["matte.r"][60, 60] > 0.9
 
 
 def test_whole_frame_is_the_default_mode() -> None:

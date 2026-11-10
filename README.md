@@ -18,7 +18,7 @@ From one plate folder, one run writes a version folder next to it:
 
 | Output | What it is | How |
 |---|---|---|
-| **Mattes** | Soft, roto-grade alpha per object you clicked, with hair and motion blur | SAM 3 tracks the object, ViTMatte refines the edge; **LTX-2.5 Alpha** optional for the hard ones |
+| **Mattes** | Soft, roto-grade alpha per object, with hair and motion blur | SAM 3.1 (or SAM 3) finds and tracks the objects; **LTX-2.5 Alpha** on the whole frame gives the soft edge when your ComfyUI has it, ViTMatte when it does not |
 | **Cryptomatte** | Every object as a pickable ID, like a CG render | from the same tracks |
 | **Depth** | `Z` in metres, plus `P` world position | MoGe-3 (default), Depth Anything V2, Video Depth Anything |
 | **Normals** | Camera-space `N`, steady over the shot | MoGe-3 (default) or DSINE |
@@ -33,7 +33,7 @@ Everything lands in one multi-layer EXR per frame (or one sequence per pass, you
 
 - **Windows 11** (main platform) or Linux. macOS is best-effort, see [compatibility](#compatibility).
 - **NVIDIA GPU**, RTX 20-series or newer. **16 GB** of VRAM runs everything at proxy resolution; **24 GB** runs 4K; **8 GB** is not enough for the matte and flow models. Driver 570 or newer for the 50-series.
-- **RAM**: 32 GB for short shots at 2K. 64 GB or more for long shots at 4K and above.
+- **RAM**: 32 GB for short shots at 2K, 64 GB or more for 4K. A clip that does not fit is run in overlapping windows of frames by itself, so a long shot is slower, not a crash.
 - **Disk**: about 15 GB for the install, about 10 GB of model weights for the default set, up to 40 GB with every optional model.
 - **Nuke** 11 or newer to open the result (tested on Nuke 16).
 - **Gaussian splat** (clean plate) needs the `gsplat` wheel, which PyPI does not have for this torch/CUDA: download it from the [release](https://github.com/lettidude/LiveActionAOV/releases/latest) into `wheels\` and run `update.bat`, or build it with `scriptsuild_gsplat_wheel.bat`. Every other pass works without it.
@@ -59,9 +59,14 @@ The installer brings its own Python and `uv` (a fast package manager), checks yo
 ```bash
 uv run liveaov-gui      # the app
 uv run liveaov --help   # the command line
+uv run liveaov doctor   # what this machine can run, and the settings to use
 ```
 
 **One thing to do before the first run:** SAM 3 is a gated model on Hugging Face (Meta's terms, not ours). Accept the terms at [huggingface.co/facebook/sam3](https://huggingface.co/facebook/sam3), create a read token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens), then run `uv run hf auth login` and paste it. Every other model downloads on its own the first time a pass needs it, then runs offline.
+
+**Worth five more minutes on a 24 GB card or bigger:** `uv run liveaov setup-sam31` builds the environment for **SAM 3.1** (also gated: [huggingface.co/facebook/sam3.1](https://huggingface.co/facebook/sam3.1)). It tracks every person of a shot together, so two similar people keep their identity where SAM 3 can swap them. Once it is there the matte pass uses it by itself, and falls back to SAM 3 on a smaller card.
+
+`liveaov doctor` reads the card and the RAM and proposes the settings: the proxy size, the detector, and whether a long clip will run in windows. The app shows the same line in the Output tab with a **Use suggested** button.
 
 Updating later: `.\update.bat` or `./update.sh`. Studio machines with no internet: build one portable folder on a machine that is online and copy it, see [docs/install.md](docs/install.md#portable-build-for-studios-without-internet-tpn).
 
@@ -95,15 +100,15 @@ Or pick one root for the whole session in the Output tab (`--out` on the command
 
 ### Mattes: click to a soft-edged Cryptomatte
 
-Click an element in the viewport, or drag a box around it. SAM 3 tracks it through the shot into a named Cryptomatte ID. The refiner (ViTMatte by default, BiRefNet under Advanced) turns the hard mask into a soft alpha with hair, motion blur and fine edges, written to `matte.*`. Green and blue screen keying is one click away in the same menu.
+Tick **Matte** and every person, vehicle and animal in the shot is found and tracked into a named Cryptomatte ID (sky, buildings and trees get an ID too, but never take one of the four `matte.rgba` slots from a subject). For anything else, click it in the viewport or drag a box around it. The soft alpha with hair, motion blur and fine edges is written to `matte.*`. Green and blue screen keying is one click away in the same menu.
 
 <p align="center">
   <img src="docs/img/birefnet-roto.gif" alt="Soft matte over a live-action plate: hair and motion-blur edge detail" width="720">
 </p>
 
-**LTX Alpha** is the engine for the hard objects. Pick it per object in the Masks tab: SAM 3 finds the object, the tool crops a rectangle around it with its surroundings, and **LTX-2.5 with the alpha-gen IC-LoRA** generates the matte in chunks of 49 frames, cross-faded back together. It keeps what trimap matting loses: semi-transparent motion blur, strands of hair, splashes. The result is held to the object with ViTMatte's guided trimap, so whatever else LTX saw in the crop stays out.
+**LTX Alpha** is the default engine for the soft edge. **LTX-2.5 with the alpha-gen IC-LoRA** runs once on the **whole frame** and decides by itself what the foreground is; each tracked object then takes the foreground nearest to it. One run whatever the number of objects, and no mask cuts the outline, so it keeps what trimap matting loses: semi-transparent motion blur, strands of hair, a shoulder the tracker missed. Props and people nobody tracked land in a `foreground.a` layer. For the one object that needs more pixels (small, far away, fine hair on the hero), pick **LTX Alpha crop** on it in the Masks tab: it gets its own run on a rectangle around it.
 
-LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup is in the works). Set its address in **Models > ComfyUI for LTX Alpha** and press **Test**. It checks the server, the nodes and the model files, and finds GGUF builds for smaller cards. If ComfyUI is not running, that object falls back to ViTMatte and the run carries on. About 3-5 minutes per object for 150 frames at 2K on an RTX 5090.
+LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup is in the works). Set its address in **Models > ComfyUI for LTX Alpha** and press **Test**. It checks the server, the nodes and the model files, and finds GGUF builds for smaller cards. Without ComfyUI the mattes come from ViTMatte (SAM finds the object, BiRefNet says where it is sure, ViTMatte resolves hair and blur), the log says so, and the run carries on. About a minute and a half per 100 frames at 2K on an RTX 5090.
 
 ### Geometry: depth in metres, normals, position
 
@@ -138,7 +143,7 @@ Add **Gaussian splat** and the camera plus the plate train a 3D Gaussian splat o
   <img src="docs/img/gui-passes-tab.jpg" alt="LiveActionAOV: Passes tab" width="900">
 </p>
 
-Three panels: shots on the left, the plate in the middle (what the models see, a compare view, or the raw plate), passes, masks, colour and output on the right. Every model shows its licence inline. One engine menu per object, batches run unattended, a failed shot does not stop the queue, and a long shot that crashes a model loses that pass only.
+Three panels: shots on the left, the plate in the middle (what the models see, a compare view, or the raw plate), passes, masks, colour and output on the right. Every model shows its licence inline. The Output tab reads the card and the RAM and proposes the proxy size and the detector. Batches run unattended, a failed shot does not stop the queue, a long shot is cut in windows instead of running out of memory, and a model that crashes loses that pass only.
 
 Prefer scripts? `liveaov run-shot <plate> -p matte,depth,normals,flow_megaflow,camera_pycolmap` does the same from a terminal or a farm.
 
@@ -148,7 +153,7 @@ A companion Nuke node in [`src/live_action_aov/plugins/nuke/UtilityRelight/`](sr
 
 ## Status
 
-Version 0.12, used daily on real production shots at 2K to 6K. What is solid: mattes, Cryptomatte, depth, normals, motion, the Nuke script, the camera on shots with parallax. What is still moving: the camera on fast handheld action, the clean plate on shots with little parallax, long shots (300+ frames at 4K) on machines under 64 GB of RAM, and the LTX setup. The [CHANGELOG](CHANGELOG.md) says what changed in each release; [issues](https://github.com/lettidude/LiveActionAOV/issues) are the place for bugs.
+Version 0.12, used daily on real production shots at 2K to 6K. What is solid: mattes, Cryptomatte, depth, normals, motion, the Nuke script, the camera on shots with parallax. What is still moving: the camera on fast handheld action, the clean plate on shots with little parallax, the windows for long clips (new: whole-clip passes such as the tracker and the camera still need the RAM for the full clip), and the LTX setup. The [CHANGELOG](CHANGELOG.md) says what changed in each release; [issues](https://github.com/lettidude/LiveActionAOV/issues) are the place for bugs.
 
 An early demo video (June 2026, the interface has changed since) is on [YouTube](https://www.youtube.com/watch?v=HnosSnK1MKs).
 
