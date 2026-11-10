@@ -51,7 +51,7 @@ class ExrSidecarWriter(SidecarWriter):
     """Write sidecar EXR files matching the Nuke/VFX channel contract.
 
     Args:
-        compression: OIIO codec string (default ``"zip"``, lossless). Pass
+        compression: OIIO codec string (default ``"zips"``, lossless). Pass
             ``"dwab"`` / ``"dwab:45"`` etc. for compact lossy delivery.
         dtype: ``"float32"`` (default) or ``"float16"`` (half).
         split_crypto: ``"auto"`` (default) splits Cryptomatte to a lossless
@@ -64,7 +64,7 @@ class ExrSidecarWriter(SidecarWriter):
     def __init__(
         self,
         *,
-        compression: str = "zip",
+        compression: str = "zips",
         dtype: str = "float32",
         split_crypto: bool | str = "auto",
     ) -> None:
@@ -121,7 +121,7 @@ class ExrSidecarWriter(SidecarWriter):
             )
         if crypto_path is None:
             crypto_path = out_path.parent / f"{out_path.stem}.crypto{out_path.suffix}"
-        self._write_one(crypto_path, crypto, attrs, pixel_aspect, "zip", "float32", **window)
+        self._write_one(crypto_path, crypto, attrs, pixel_aspect, "zips", "float32", **window)
 
     @staticmethod
     def _write_one(

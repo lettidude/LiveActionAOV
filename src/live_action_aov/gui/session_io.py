@@ -184,7 +184,10 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         output_external_root=(None if ext_root is None else Path(str(ext_root))),
         output_external_name=str(d.get("output_external_name", "")),
         proxy_long_edge=d.get("proxy_long_edge"),
-        delivery_compression=str(d.get("delivery_compression", "zip")),
+        # "zip" sessions move to "zips": same pixels and size, far faster to write.
+        delivery_compression={"zip": "zips"}.get(
+            str(d.get("delivery_compression", "zips")), str(d.get("delivery_compression", "zips"))
+        ),
         delivery_dtype=str(d.get("delivery_dtype", "float32")),
         delivery_layout=str(d.get("delivery_layout", "multilayer")),
         naming=str(d.get("naming", "")),

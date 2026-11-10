@@ -224,8 +224,8 @@ class InspectorPanel(QWidget):
         # float32 sibling by the writer when a lossy/half delivery is chosen,
         # so its hash IDs always survive.
         self._delivery_combo = QComboBox()
-        self._delivery_combo.addItem("Lossless 32-bit (ZIP) - largest", ("zip", "float32"))
-        self._delivery_combo.addItem("Lossless 16-bit half (ZIP)", ("zip", "float16"))
+        self._delivery_combo.addItem("Lossless 32-bit (ZIP) - largest", ("zips", "float32"))
+        self._delivery_combo.addItem("Lossless 16-bit half (ZIP)", ("zips", "float16"))
         self._delivery_combo.addItem(
             "Compact - DWAB 16-bit (recommended for delivery)", ("dwab:45", "float16")
         )

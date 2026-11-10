@@ -215,7 +215,7 @@ class ShotState:
     # (historic output). Bandwidth-bound jobs pick a compact lossy delivery
     # (e.g. dwab:45 + float16) in the Output tab. Cryptomatte is auto-split
     # to a lossless float32 sibling by the writer when needed.
-    delivery_compression: str = "zip"
+    delivery_compression: str = "zips"
     delivery_dtype: str = "float32"
     # "multilayer" (one EXR, every pass a layer) or "per_pass" (one EXR
     # sequence per pass in its own subfolder). A <shot>.comp.nk is written

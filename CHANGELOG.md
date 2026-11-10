@@ -49,6 +49,10 @@ uses [semantic versioning](https://semver.org/).
   Scenery tracks own none of the whole-frame foreground: a wall tracked behind an actor no longer
   takes the hair outside the actor's mask. A clip a few frames longer than one LTX call goes in a
   single call (`whole_chunk_max`) instead of two almost identical ones.
+- **Lossless EXRs are written with ZIP one scanline at a time** (`zips`, was `zip`): the same size
+  and the same read speed, about 8x faster to write on a 4K multi-layer frame (0.7 s against 5.7 s
+  per frame measured, eight minutes on a 100-frame shot), and the flavour Nuke reads fastest. Saved
+  sessions move over by themselves; `zip` can still be asked for by name.
 - **The detector is `auto`** (was `sam3`): SAM 3.1 when its environment is installed and the card
   has the memory (`sam31_min_vram_gb`), else SAM 3, and the log says which and why. If SAM 3.1 fails
   on a shot in `auto` (out of memory on a long clip), the shot is redone with SAM 3 with a warning;

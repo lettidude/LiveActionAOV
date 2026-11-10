@@ -113,7 +113,10 @@ class Shot(BaseModel):
     # delivery (e.g. `dwab:45` + `float16`) in the GUI Output tab — ~5-20x
     # smaller. Cryptomatte is auto-split to a lossless float32 sibling when
     # the delivery would corrupt its exact hash IDs (the writer handles it).
-    delivery_compression: str = "zip"
+    # "zips" = ZIP one scanline at a time: the same size as "zip" (16 scanlines)
+    # but about 8x faster to write on a 4K multi-layer frame, and the flavour
+    # Nuke reads fastest.
+    delivery_compression: str = "zips"
     delivery_dtype: str = "float32"
     # "multilayer": one EXR per frame with every pass as a layer (one Read in
     # Nuke). "per_pass": one EXR sequence per pass, each in its own subfolder
