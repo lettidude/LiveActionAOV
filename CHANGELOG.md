@@ -8,7 +8,7 @@ uses [semantic versioning](https://semver.org/).
 
 ### Added
 - **Part of a shot only.** Per shot, a **frame range** (in / out inside the plate) and a **crop**
-  box drawn in the viewer (Output tab → *Draw crop in viewer*; CLI `--first/--last`, `--crop x,y,w,h`).
+  box drawn in the viewer (*This shot* tab → *Draw in viewer*; CLI `--first/--last`, `--crop x,y,w,h`).
   Passes run on the box as if it were the plate (a proxy scales the crop); the EXRs carry the box
   as data window inside the plate's display window, so Nuke places them, and the output preview
   pads them back over the plate. Click prompts move into crop coordinates. The camera track and
@@ -39,6 +39,13 @@ uses [semantic versioning](https://semver.org/).
 - **`liveaov setup-sam31`** builds the SAM 3.1 environment (Python 3.12 venv, PyTorch, Meta's `sam3`
   at the tested commit, the imports it needs but does not declare) in a per-user folder that the
   matte pass finds by itself; finished steps are skipped on a rerun.
+- **Masks tab rebuilt.** *Found by name*: the names SAM looks for (moved here from Passes >
+  Advanced) with People / People + vehicles / Everything. *Your own objects*: the click and box
+  objects, and a *Selected object* block with its name, its soft-edge engine, its **matte slot**
+  (pin an object to `matte.r/g/b/a` instead of the ranking; prompt spec key `slot`) and *Go to*,
+  which scrubs the viewer to the frame the object was drawn on.
+- **Output tab is for the whole session; a new *This shot* tab** holds what belongs to one shot
+  (frames to process, crop, folder name), so a batch never needs a visit to every shot.
 - **LTX Alpha crop** (`crop_labels`, Masks tab: per-object engine *LTX Alpha crop*): inside a
   whole-frame run, the named objects get their own LTX run on a rectangle around them, for the one
   subject that needs more pixels than the whole frame gives it.

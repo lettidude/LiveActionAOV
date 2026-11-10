@@ -73,13 +73,13 @@ Updating later: `.\update.bat` or `./update.sh`. Studio machines with no interne
 ## First shot, in the app
 
 1. Drop a plate folder on the shot list. The viewport shows what the models will see.
-2. Tick the passes. The defaults are the commercial-safe ones; anything non-commercial is marked **NC** and asks before it runs.
-3. In the **Masks** tab, click the people and things you want mattes for. A box or 2-6 clicks is enough; preview the mask before you commit.
-4. **Submit local**. Watch the log, or go for a coffee.
+2. Press **Use the recommended set**, or tick the passes yourself. The defaults are the commercial-safe ones; anything non-commercial is marked **NC** and asks before it runs.
+3. In the **Masks** tab, say what to find by name (People, People + vehicles, Everything) and add your own objects: a box or 2-6 clicks, preview the mask before you commit. Each object can have its own soft-edge engine and its own `matte.rgba` slot.
+4. **Run**. Watch the log, or go for a coffee. The Output tab is one setting for every shot of the session; a single shot's frame range and crop live in **This shot**.
 5. Right-click the shot, **Preview output**, and scrub every layer over the plate. Or open the `.comp.nk` in Nuke.
 
 <p align="center">
-  <img src="docs/img/click-to-mask.png" alt="Masks tab: click an object, preview the SAM 3 mask, build a named per-object list" width="900">
+  <img src="docs/img/gui-masks-tab.png" alt="Masks tab: what to find by name, your own objects, and the selected object's name, soft-edge engine and matte slot" width="900">
 </p>
 
 ## Where it lands
@@ -103,12 +103,22 @@ Or pick one root for the whole session in the Output tab (`--out` on the command
 Tick **Matte** and every person, vehicle and animal in the shot is found and tracked into a named Cryptomatte ID (sky, buildings and trees get an ID too, but never take one of the four `matte.rgba` slots from a subject). For anything else, click it in the viewport or drag a box around it. The soft alpha with hair, motion blur and fine edges is written to `matte.*`. Green and blue screen keying is one click away in the same menu.
 
 <p align="center">
-  <img src="docs/img/birefnet-roto.gif" alt="Soft matte over a live-action plate: hair and motion-blur edge detail" width="720">
+  <img src="docs/img/ltx-roto-hair.gif" alt="LTX Alpha roto: plate, soft matte with every strand of hair, and the subject over a flat colour" width="900">
 </p>
 
 **LTX Alpha** is the default engine for the soft edge. **LTX-2.5 with the alpha-gen IC-LoRA** runs once on the **whole frame** and decides by itself what the foreground is; each tracked object then takes the foreground nearest to it. One run whatever the number of objects, and no mask cuts the outline, so it keeps what trimap matting loses: semi-transparent motion blur, strands of hair, a shoulder the tracker missed. Props and people nobody tracked land in a `foreground.a` layer. For the one object that needs more pixels (small, far away, fine hair on the hero), pick **LTX Alpha crop** on it in the Masks tab: it gets its own run on a rectangle around it.
 
 LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup is in the works). Set its address in **Models > ComfyUI for LTX Alpha** and press **Test**. It checks the server, the nodes and the model files, and finds GGUF builds for smaller cards. Without ComfyUI the mattes come from ViTMatte (SAM finds the object, BiRefNet says where it is sure, ViTMatte resolves hair and blur), the log says so, and the run carries on. About a minute and a half per 100 frames at 2K on an RTX 5090.
+
+<p align="center">
+  <img src="docs/img/ltx-roto-motion.gif" alt="LTX Alpha roto on a running figure: the motion blur stays soft in the matte" width="900">
+</p>
+
+<p align="center">
+  <img src="docs/img/ltx-roto-water.gif" alt="LTX Alpha roto on two people wading: the splashes come through as semi-transparent matte" width="900">
+</p>
+
+> Three runs with the defaults, nothing painted, nothing clicked: plate, the `foreground.a` matte, and the comp over a flat colour. Hair, motion blur, water. About a minute and a half of LTX per 100 frames on an RTX 5090.
 
 ### Geometry: depth in metres, normals, position
 
@@ -140,7 +150,11 @@ Add **Gaussian splat** and the camera plus the plate train a 3D Gaussian splat o
 ## The app
 
 <p align="center">
-  <img src="docs/img/gui-passes-tab.jpg" alt="LiveActionAOV: Passes tab" width="900">
+  <img src="docs/img/gui-passes-tab.jpg" alt="LiveActionAOV: the Passes tab, grouped by what the comp needs" width="900">
+</p>
+
+<p align="center">
+  <img src="docs/img/gui-output-tab.png" alt="Output tab: one setting for every shot, with the settings proposed for this machine" width="900">
 </p>
 
 Three panels: shots on the left, the plate in the middle (what the models see, a compare view, or the raw plate), passes, masks, colour and output on the right. Every model shows its licence inline. The Output tab reads the card and the RAM and proposes the proxy size and the detector. Batches run unattended, a failed shot does not stop the queue, a long shot is cut in windows instead of running out of memory, and a model that crashes loses that pass only.
