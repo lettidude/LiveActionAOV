@@ -12,7 +12,7 @@ Built by [Leonardo Paolini](#author), a VFX and 2D compositing supervisor, for t
   <img src="docs/img/hero-passes.gif" alt="One plate, every pass, animated: soft matte, Cryptomatte, depth in metres, normals, motion vectors, world position and the splat background" width="900">
 </p>
 
-<p align="center"><sub>One run with the defaults on a 2K plate: nothing clicked, nothing painted.</sub>
+<p align="center"><sub>One run on a 2K plate, the person found by name: nothing clicked, nothing painted.</sub>
 </p>
 
 ## What you get
@@ -106,10 +106,16 @@ Or pick one root for the whole session in the Output tab (`--out` on the command
 Tick **Matte** and every person, vehicle and animal in the shot is found and tracked into a named Cryptomatte ID (sky, buildings and trees get an ID too, but never take one of the four `matte.rgba` slots from a subject). For anything else, click it in the viewport or drag a box around it. The soft alpha with hair, motion blur and fine edges is written to `matte.*`. Green and blue screen keying is one click away in the same menu.
 
 <p align="center">
-  <img src="docs/img/ltx-roto-hair.gif" alt="LTX Alpha roto: plate, soft matte with every strand of hair, and the subject over a flat colour" width="900">
+  <img src="docs/img/two-people-mattes.gif" alt="Two people in one shot: each gets its own matte.rgba slot (red and green) and its own Cryptomatte ID" width="900">
 </p>
 
+> Two people, found by name: one `matte.rgba` slot and one Cryptomatte ID each. The hand in front of the soldier stays with the woman it belongs to.
+
 **LTX Alpha** is the default engine for the soft edge. **LTX-2.5 with the alpha-gen IC-LoRA** runs once on the **whole frame** and decides by itself what the foreground is; each tracked object then takes the foreground nearest to it. One run whatever the number of objects, and no mask cuts the outline, so it keeps what trimap matting loses: semi-transparent motion blur, strands of hair, a shoulder the tracker missed. Props and people nobody tracked land in a `foreground.a` layer. For the one object that needs more pixels (small, far away, fine hair on the hero), pick **LTX Alpha crop** on it in the Masks tab: it gets its own run on a rectangle around it.
+
+<p align="center">
+  <img src="docs/img/ltx-roto-hair.gif" alt="LTX Alpha roto: plate, soft matte with every strand of hair, and the subject over a flat colour" width="900">
+</p>
 
 LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup is in the works). Set its address in **Models > ComfyUI for LTX Alpha** and press **Test**. It checks the server, the nodes and the model files, and finds GGUF builds for smaller cards. Without ComfyUI the mattes come from ViTMatte (SAM finds the object, BiRefNet says where it is sure, ViTMatte resolves hair and blur), the log says so, and the run carries on. About a minute and a half per 100 frames at 2K on an RTX 5090.
 
@@ -130,8 +136,7 @@ LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup
 The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (from the camera track when there is one), a stabilised metric scale, letterbox bars cropped before the model sees them, sky flagged in `depth.confidence`. About 1 s per frame at 2K, 2.6 GB of VRAM at any resolution.
 
 <p align="center">
-  <img src="docs/img/pass-normals.png" alt="Normals pass: camera-space surface normals" width="430">
-  <img src="docs/img/pass-cryptomatte.png" alt="Cryptomatte pass: per-object IDs from live action" width="430">
+  <img src="docs/img/geometry.gif" alt="Depth in metres, camera-space normals and world position on a dark handheld shot with two people" width="900">
 </p>
 
 ### Camera track

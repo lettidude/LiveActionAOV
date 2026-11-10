@@ -73,6 +73,13 @@ uses [semantic versioning](https://semver.org/).
   template like every other file. The comp script points at the new name.
 
 ### Fixed
+- **Gaussian splat: one frame could come out as flat fog.** Every 8th frame is held out of the
+  training to measure quality, so nothing penalised a floater sitting in front of one of those
+  views: that frame of `splat.rgb` was delivered washed out (seen once, on 1 frame of 102, with a
+  held-out mean of 36.7 dB where a clean run reads 39.2). After the measure the splat now gets a
+  short polish on every frame (`holdout_polish_frac`, 10% of the iterations, no densification).
+  The report gains `holdout_psnr_min_db` and `polish_steps`, and the log warns when a held-out
+  frame reads under 20 dB.
 - **Model licences that were declared wrong.** Checked against each model's own repository:
   **DSINE** is under Imperial College London's licence for non-commercial, internal or academic
   use, not MIT: it is now marked NC, asks for `--allow-noncommercial`, and is out of the default
