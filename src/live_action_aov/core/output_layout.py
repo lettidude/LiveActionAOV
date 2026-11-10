@@ -16,13 +16,24 @@ root for the whole session::
 
         <shot>_v001.comp.nk                       <- open this in Nuke
         passes/<shot>_v001.utility.####.exr      (per pass: passes/<group>/...)
-        passes/<shot>_v001.utility.####.crypto.exr
+        passes/<shot>_v001.crypto.####.exr       (only with a lossy delivery)
         camera/<shot>_v001.camera.nk  .camera.json  .points.obj/.ply  _colmap/
         splat/<shot>_v001.splat.ply  .splat.json
         logs/submit_<timestamp>.log
 
-A run dir that is not a `vNNN` folder (library callers, tests) gets the
-same subfolders, named after the bare shot.
+File names come from ONE template (`Shot.naming`), so a studio can match
+its own convention::
+
+    {shot}_{version}.{pass}.{frame}.{ext}        (default, above)
+    {shot}_{pass}_{version}.{frame}.{ext}        SH010_utility_v001.1001.exr
+
+Tokens: `{shot}` the shot name, `{plate}` the plate folder name, `{version}`
+the run's `v###`, `{pass}` what the file holds (`utility`, `crypto`, a pass
+group in the per-pass layout, `camera`, `points`, `splat`, `comp`),
+`{frame}` the frame number padded like the plate, `{ext}`. Files without a
+frame (the comp script, the camera, the splat) drop the `{frame}` token
+and the separator before it; a run dir that is not a `vNNN` folder (library
+callers, tests) drops `{version}` the same way.
 """
 
 from __future__ import annotations
@@ -37,6 +48,52 @@ SPLAT_DIR = "splat"
 LOGS_DIR = "logs"
 
 _VERSION_RE = re.compile(r"^v(\d{3,})$")
+
+#: The historic layout: `<shot>_v001.utility.1001.exr`.
+DEFAULT_NAMING = "{shot}_{version}.{pass}.{frame}.{ext}"
+
+#: (label, template) pairs the GUI offers; any template with the tokens
+#: below is accepted too.
+NAMING_PRESETS: tuple[tuple[str, str], ...] = (
+    ("Default  (shot_v001.utility.1001.exr)", DEFAULT_NAMING),
+    ("Pass before version  (shot_utility_v001.1001.exr)", "{shot}_{pass}_{version}.{frame}.{ext}"),
+    ("Version before pass  (shot_v001_utility.1001.exr)", "{shot}_{version}_{pass}.{frame}.{ext}"),
+    ("Plate folder name  (plate_utility_v001.1001.exr)", "{plate}_{pass}_{version}.{frame}.{ext}"),
+)
+
+NAMING_TOKENS: tuple[str, ...] = ("shot", "plate", "version", "pass", "frame", "ext")
+_REQUIRED_TOKENS: tuple[str, ...] = ("pass", "frame", "ext")
+_FORBIDDEN_CHARS = '\\/:*?"<>|'
+
+
+def validate_naming(template: str) -> str:
+    """The template stripped, or `DEFAULT_NAMING` for an empty one.
+    Raises ValueError with a one-line reason the GUI can show."""
+    t = (template or "").strip()
+    if not t:
+        return DEFAULT_NAMING
+    bad = [ch for ch in _FORBIDDEN_CHARS if ch in t]
+    if bad:
+        raise ValueError(f"naming template: {''.join(bad)!r} not allowed in a file name")
+    try:
+        tokens = [f.group(1) for f in re.finditer(r"\{([^{}]*)\}", t)]
+        if t.count("{") != len(tokens) or t.count("}") != len(tokens):
+            raise ValueError
+    except ValueError:
+        raise ValueError("naming template: unbalanced braces") from None
+    unknown = sorted({tok for tok in tokens if tok not in NAMING_TOKENS})
+    if unknown:
+        raise ValueError(
+            f"naming template: unknown token(s) {', '.join('{' + u + '}' for u in unknown)}; "
+            f"use {', '.join('{' + k + '}' for k in NAMING_TOKENS)}"
+        )
+    missing = [tok for tok in _REQUIRED_TOKENS if tok not in tokens]
+    if missing:
+        raise ValueError(
+            f"naming template: needs {', '.join('{' + m + '}' for m in missing)} "
+            "(every output has a kind and an extension; frame files need a frame number)"
+        )
+    return t
 
 
 def plate_sibling_dir(plate_folder: Path, name: str = "") -> Path:
@@ -78,10 +135,16 @@ def run_dir(shot: Any) -> Path:
     return Path(shot.output_dir or shot.folder)
 
 
+def version_label(shot: Any) -> str:
+    """`v002` when the run dir is a version folder, else ``""``."""
+    d = run_dir(shot)
+    return d.name if _VERSION_RE.match(d.name) else ""
+
+
 def run_stem(shot: Any) -> str:
     """`sh010` in a plain dir, `sh010_v002` inside a `v002` folder."""
-    d = run_dir(shot)
-    return f"{shot.name}_{d.name}" if _VERSION_RE.match(d.name) else str(shot.name)
+    v = version_label(shot)
+    return f"{shot.name}_{v}" if v else str(shot.name)
 
 
 def frame_padding(sequence_pattern: str) -> int:
@@ -95,10 +158,57 @@ def frame_padding(sequence_pattern: str) -> int:
     return 4
 
 
+def _drop_token(template: str, token: str) -> str:
+    """Remove `{token}` and the one separator glued to it (`_` `.` `-`),
+    the one before it when there is one, so `a_{v}.{p}` -> `a.{p}`."""
+    out = re.sub(rf"[._-]\{{{token}\}}", "", template, count=1)
+    if out == template:
+        out = re.sub(rf"\{{{token}\}}[._-]?", "", template, count=1)
+    return out
+
+
+def file_name(shot: Any, kind: str, ext: str, frame: int | str | None = None) -> str:
+    """One output file name from the shot's naming template.
+
+    `kind` fills `{pass}` (`utility`, `crypto`, `camera`, `splat`, `comp`,
+    a pass group...). `frame` is an int (padded like the plate), a literal
+    placeholder string such as ``"{frame:04d}"`` (kept verbatim, for
+    sequence templates), or None for a file without a frame number.
+    """
+    template = validate_naming(getattr(shot, "naming", "") or "")
+    version = version_label(shot)
+    if not version:
+        template = _drop_token(template, "version")
+    if frame is None:
+        template = _drop_token(template, "frame")
+        frame_str = ""
+    elif isinstance(frame, str):
+        frame_str = frame
+    else:
+        frame_str = f"{int(frame):0{frame_padding(shot.sequence_pattern)}d}"
+    fields = {
+        "shot": str(shot.name),
+        "plate": Path(shot.folder).name,
+        "version": version,
+        "pass": kind,
+        "frame": frame_str,
+        "ext": ext.lstrip("."),
+    }
+    return template.format(**fields)
+
+
+def frame_template(shot: Any, kind: str, sub: str = "") -> str:
+    """Run-dir-relative EXR sequence template with a `{frame:0Nd}` slot:
+    `passes/[sub/]<name>`. `kind` = `utility` (multi-layer), `crypto`
+    (the lossless Cryptomatte sibling) or a pass group (per-pass layout)."""
+    pad = frame_padding(shot.sequence_pattern)
+    name = file_name(shot, kind, "exr", frame=f"{{frame:0{pad}d}}")
+    return f"{PASSES_DIR}/{sub}/{name}" if sub else f"{PASSES_DIR}/{name}"
+
+
 def sidecar_template(shot: Any) -> str:
     """Run-dir-relative EXR template: `passes/<stem>.utility.{frame:04d}.exr`."""
-    pad = frame_padding(shot.sequence_pattern)
-    return f"{PASSES_DIR}/{run_stem(shot)}.utility.{{frame:0{pad}d}}.exr"
+    return frame_template(shot, "utility")
 
 
 def sub_dir(shot: Any, name: str) -> Path:
@@ -110,10 +220,15 @@ def sub_dir(shot: Any, name: str) -> Path:
 
 __all__ = [
     "CAMERA_DIR",
+    "DEFAULT_NAMING",
     "LOGS_DIR",
+    "NAMING_PRESETS",
+    "NAMING_TOKENS",
     "PASSES_DIR",
     "SPLAT_DIR",
+    "file_name",
     "frame_padding",
+    "frame_template",
     "latest_version_dir",
     "next_version_dir",
     "plate_sibling_dir",
@@ -121,5 +236,7 @@ __all__ = [
     "run_stem",
     "sidecar_template",
     "sub_dir",
+    "validate_naming",
     "version_dirs",
+    "version_label",
 ]

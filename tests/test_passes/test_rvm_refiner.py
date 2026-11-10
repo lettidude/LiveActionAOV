@@ -99,10 +99,13 @@ def _artifacts_two_heroes(n_frames: int, h: int, w: int):
     }
 
 
-def test_license_is_commercial_safe() -> None:
+def test_license_is_gpl_with_usable_output() -> None:
+    """RVM is GPL-3.0 (declared MIT until 2026-11-10): its mattes may be used
+    in paid work, the model code may not ship inside a closed bundle."""
     lic = RVMRefinerPass.declared_license()
-    assert lic.spdx == "MIT"
+    assert lic.spdx == "GPL-3.0-only"
     assert lic.commercial_use is True
+    assert lic.commercial_tool_resale is False
 
 
 def test_requires_artifacts_declares_sam3_dependencies() -> None:

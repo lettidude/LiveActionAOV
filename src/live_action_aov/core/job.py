@@ -20,7 +20,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from live_action_aov.core.pass_base import DisplayTransformParams
 
@@ -106,13 +113,37 @@ class Shot(BaseModel):
     # delivery (e.g. `dwab:45` + `float16`) in the GUI Output tab — ~5-20x
     # smaller. Cryptomatte is auto-split to a lossless float32 sibling when
     # the delivery would corrupt its exact hash IDs (the writer handles it).
-    delivery_compression: str = "zip"
+    # "zips" = ZIP one scanline at a time: the same size as "zip" (16 scanlines)
+    # but about 8x faster to write on a 4K multi-layer frame, and the flavour
+    # Nuke reads fastest.
+    delivery_compression: str = "zips"
     delivery_dtype: str = "float32"
     # "multilayer": one EXR per frame with every pass as a layer (one Read in
     # Nuke). "per_pass": one EXR sequence per pass, each in its own subfolder
     # (`depth/`, `matte/`, `splat/` ...). Either way a `<shot>.comp.nk`
     # starter script wires everything up.
     delivery_layout: str = "multilayer"
+
+    # File naming template (`core.output_layout`): tokens {shot} {plate}
+    # {version} {pass} {frame} {ext}. "" = the default
+    # `{shot}_{version}.{pass}.{frame}.{ext}`. Studios map their own
+    # convention here; validated at construction.
+    naming: str = ""
+
+    # Process one box of the plate only: (x, y, w, h) in plate pixels,
+    # origin top-left. Passes see the crop as if it were the plate; the
+    # EXRs carry it as data window inside the full plate's display window,
+    # so Nuke places them. None = the whole frame. Passes that need the
+    # whole frame (camera, splat) refuse to run with a crop.
+    crop: tuple[int, int, int, int] | None = None
+
+    # Long clips: host RAM grows with the frame count (every pass's channels
+    # are kept until the write), so a clip that does not fit is run in
+    # overlapping windows of frames. "auto" = sized from the free RAM, one
+    # go when the clip fits; an int = that many frames per window; None =
+    # never. `window_overlap` = context frames on each side of a window.
+    window_frames: int | str | None = "auto"
+    window_overlap: int = 16
 
     status: ShotStatus = "new"
     notes: str = ""
@@ -164,6 +195,44 @@ class Shot(BaseModel):
         if v not in ("float16", "float32"):
             raise ValueError(f"delivery_dtype must be 'float16' or 'float32', got {v!r}")
         return v
+
+    @field_validator("naming")
+    @classmethod
+    def _check_naming(cls, v: str) -> str:
+        from live_action_aov.core.output_layout import DEFAULT_NAMING, validate_naming
+
+        t = validate_naming(v or "")
+        return "" if t == DEFAULT_NAMING else t
+
+    @field_validator("crop", mode="before")
+    @classmethod
+    def _coerce_crop(cls, v: Any) -> tuple[int, int, int, int] | None:
+        if v is None or v == "" or v == []:
+            return None
+        vals = [int(round(float(x))) for x in v]
+        if len(vals) != 4:
+            raise ValueError("crop must be (x, y, w, h) in plate pixels")
+        return (vals[0], vals[1], vals[2], vals[3])
+
+    @field_validator("window_frames", mode="before")
+    @classmethod
+    def _check_window(cls, v: Any) -> int | str | None:
+        if v is None or (isinstance(v, str) and v.strip().lower() in ("", "off", "none")):
+            return None
+        if isinstance(v, str) and v.strip().lower() == "auto":
+            return "auto"
+        n = int(v)
+        if n < 2:
+            raise ValueError("window_frames wants 'auto', nothing, or at least 2 frames")
+        return n
+
+    @model_validator(mode="after")
+    def _check_crop_in_plate(self) -> Shot:
+        if self.crop is not None:
+            from live_action_aov.io.readers.crop import clamp_crop
+
+            self.crop = clamp_crop(self.crop, self.resolution)
+        return self
 
     @field_serializer("folder")
     def _serialize_folder(self, v: Path) -> str:

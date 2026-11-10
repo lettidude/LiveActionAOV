@@ -100,14 +100,14 @@ def main_callback(
 
 
 # Commercial-safe default set a typical run uses - what `prefetch` warms
-# when no explicit list is given.
+# when no explicit list is given, and what the portable build carries.
+# Not in it on purpose: DSINE (non-commercial licence) and RVM (GPL-3.0 code:
+# fetched from its repository at first use, never bundled).
 _DEFAULT_PREFETCH = [
     "depth_anything_v2",
     "video_depth_anything",
-    "dsine",
     "moge3",
     "sam3_matte",
-    "rvm_refiner",
     "birefnet_refiner",
     "vitmatte_refiner",
     "flow",
@@ -129,6 +129,7 @@ _PREFETCH_EXEMPT = {
     "camera_pycolmap",
     "splat_gsplat",
     "ltx_alpha_refiner",  # weights live in the user's ComfyUI
+    "rvm_refiner",  # GPL-3.0: fetched on demand (`prefetch --passes rvm_refiner`), never bundled
 }
 
 
@@ -306,7 +307,7 @@ def run_shot(
         typer.Option(
             "--normals-backend",
             help="Backend for the semantic `normals` pass. Default: moge3 (MIT; "
-            "sharp, stable). `dsine` is the lighter alternative.",
+            "sharp, stable). `dsine` is lighter but non-commercial.",
         ),
     ] = "moge3",
     matte_detector: Annotated[
@@ -356,6 +357,50 @@ def run_shot(
             "trusts whatever the plate's metadata says.",
         ),
     ] = None,
+    first: Annotated[
+        int | None,
+        typer.Option("--first", help="First frame to process (default: the plate's first)."),
+    ] = None,
+    last: Annotated[
+        int | None,
+        typer.Option("--last", help="Last frame to process (default: the plate's last)."),
+    ] = None,
+    crop: Annotated[
+        str | None,
+        typer.Option(
+            "--crop",
+            help="Process one box of the plate only: `x,y,w,h` in plate pixels, origin "
+            "top-left. The EXRs keep the full plate as display window with the crop as "
+            "data window, so Nuke places them. Camera and splat need the whole frame.",
+        ),
+    ] = None,
+    naming: Annotated[
+        str | None,
+        typer.Option(
+            "--naming",
+            help="File naming template, e.g. `{shot}_{pass}_{version}.{frame}.{ext}`. "
+            "Tokens: shot, plate, version, pass, frame, ext. Default "
+            "`{shot}_{version}.{pass}.{frame}.{ext}`.",
+        ),
+    ] = None,
+    proxy: Annotated[
+        str | None,
+        typer.Option(
+            "--proxy",
+            help="Run the models on a smaller copy of the plate: its long edge in "
+            "pixels (1920, 2816 ...), or `auto` = what `liveaov doctor` proposes for "
+            "this card. The EXRs are still written at plate size. Default: full plate.",
+        ),
+    ] = None,
+    window: Annotated[
+        str,
+        typer.Option(
+            "--window",
+            help="Long clips: frames per window. `auto` (default) = one go when the "
+            "clip fits the free RAM, else windows sized from it; a number forces "
+            "that many frames; `off` = always one go.",
+        ),
+    ] = "auto",
 ) -> None:
     """Run passes on the EXR sequence in `folder` and write sidecar EXRs."""
     raw_names = [p.strip() for p in passes.split(",") if p.strip()]
@@ -385,20 +430,69 @@ def run_shot(
 
     # Discover the sequence - find one EXR, derive a `####` pattern.
     pattern, frame_range, resolution, pixel_aspect = _sniff_sequence(folder)
-    shot = Shot(
-        name=folder.name,
-        folder=folder,
-        apply_display_transform=display_transform,
-        colorspace=colorspace or "auto",
-        sequence_pattern=pattern,
-        frame_range=frame_range,
-        resolution=resolution,
-        pixel_aspect=pixel_aspect,
-        passes_enabled=pass_names,
-        output_dir=next_version_dir(
-            out / folder.name if out is not None else plate_sibling_dir(folder)
-        ),
-    )
+    plate_first, plate_last = frame_range
+    work_first = plate_first if first is None else int(first)
+    work_last = plate_last if last is None else int(last)
+    if not (plate_first <= work_first <= work_last <= plate_last):
+        console.print(
+            f"[red]--first/--last {work_first}..{work_last} is outside the plate "
+            f"{plate_first}..{plate_last}.[/red]"
+        )
+        raise typer.Exit(code=2)
+    crop_box: tuple[int, int, int, int] | None = None
+    if crop:
+        try:
+            parts = [int(p) for p in crop.replace(" ", "").split(",")]
+            if len(parts) != 4:
+                raise ValueError
+            crop_box = (parts[0], parts[1], parts[2], parts[3])
+        except ValueError:
+            console.print("[red]--crop wants four integers: x,y,w,h (plate pixels).[/red]")
+            raise typer.Exit(code=2) from None
+    proxy_long_edge: int | None = None
+    if proxy:
+        if proxy.strip().lower() == "auto":
+            from live_action_aov.core import hardware
+            from live_action_aov.passes.matte import sam31_bridge
+
+            suggestion = hardware.suggest(
+                hardware.detect(),
+                (crop_box[2], crop_box[3]) if crop_box else resolution,
+                work_last - work_first + 1,
+                sam31_installed=sam31_bridge.available({})[0],
+            )
+            proxy_long_edge = suggestion.proxy_long_edge
+            console.print(f"[cyan]--proxy auto:[/cyan] {suggestion.one_line()}", highlight=False)
+        else:
+            try:
+                proxy_long_edge = int(proxy)
+                if proxy_long_edge < 64:
+                    raise ValueError
+            except ValueError:
+                console.print("[red]--proxy wants `auto` or a long edge in pixels.[/red]")
+                raise typer.Exit(code=2) from None
+    try:
+        shot = Shot(
+            name=folder.name,
+            folder=folder,
+            proxy_long_edge=proxy_long_edge,
+            window_frames=window,
+            apply_display_transform=display_transform,
+            colorspace=colorspace or "auto",
+            sequence_pattern=pattern,
+            frame_range=(work_first, work_last),
+            resolution=resolution,
+            pixel_aspect=pixel_aspect,
+            passes_enabled=pass_names,
+            output_dir=next_version_dir(
+                out / folder.name if out is not None else plate_sibling_dir(folder)
+            ),
+            naming=naming or "",
+            crop=crop_box,
+        )
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from None
     moge3 = _moge3_outputs(raw_names, depth_backend=depth_backend, normals_backend=normals_backend)
     job = Job(
         shot=shot,
@@ -501,6 +595,130 @@ def inspect_cmd(
         typer.echo(_inspect.format_json_str(report))
     else:
         typer.echo(_inspect.format_text(report))
+
+
+# ---------------------------------------------------------------------------
+# doctor - what this machine can run, and the settings to use
+# ---------------------------------------------------------------------------
+
+
+@app.command("doctor")
+def doctor(
+    plate: Annotated[
+        Path | None,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            help="A plate folder: the suggestion is then made for that shot "
+            "(its size and length). Without it: for a 4K, 100-frame shot.",
+        ),
+    ] = None,
+    comfy_url: Annotated[
+        str,
+        typer.Option("--comfy-url", help="The ComfyUI that runs LTX Alpha."),
+    ] = "http://127.0.0.1:8188",
+) -> None:
+    """Check this machine and propose settings: the card and RAM, SAM 3.1,
+    ComfyUI + the LTX models, gsplat, and the proxy size / detector /
+    long-shot windows that fit."""
+    import importlib.util
+
+    from live_action_aov.core import hardware
+    from live_action_aov.gui.cuda_check import cuda_state
+    from live_action_aov.passes.matte import sam31_bridge
+    from live_action_aov.passes.matte.ltx_alpha import comfy_check
+
+    def line(ok: bool | None, what: str, detail: str) -> None:
+        mark = {
+            True: "[green]OK  [/green]",
+            False: "[red]NO  [/red]",
+            None: "[yellow]--  [/yellow]",
+        }
+        console.print(f"{mark[ok]} [bold]{what}[/bold]: {detail}", highlight=False)
+
+    hw = hardware.detect()
+    cuda = cuda_state()
+    line(cuda.available, "GPU", hw.summary() if cuda.available else cuda.advisory)
+    if hw.ram_free_gb is not None:
+        line(None, "RAM free now", f"{hw.ram_free_gb:.0f} GB")
+    sam31_ok, sam31_why = sam31_bridge.available({})
+    line(
+        sam31_ok or None,
+        "SAM 3.1",
+        sam31_why if sam31_ok else "not installed - `liveaov setup-sam31` builds it",
+    )
+    ltx_ok, ltx_msg = comfy_check({"comfy_url": comfy_url})
+    line(
+        ltx_ok or None,
+        "LTX Alpha (ComfyUI)",
+        f"ready at {comfy_url}" if ltx_ok else f"{ltx_msg} - mattes use ViTMatte until it is",
+    )
+    has_gsplat = importlib.util.find_spec("gsplat") is not None
+    line(
+        has_gsplat or None,
+        "Gaussian splat background",
+        "gsplat installed" if has_gsplat else "gsplat not installed (see the README)",
+    )
+
+    if plate is not None:
+        try:
+            _, frange, res, _ = _sniff_sequence(plate)
+        except (FileNotFoundError, ValueError) as e:
+            typer.echo(f"doctor: {e}", err=True)
+            raise typer.Exit(code=2) from e
+        n = frange[1] - frange[0] + 1
+        what = f"{plate.name} ({res[0]}x{res[1]}, {n} frames)"
+    else:
+        res, n = (4096, 2160), 100
+        what = "a 4K, 100-frame shot"
+    s = hardware.suggest(hw, res, n, sam31_installed=sam31_ok)
+    console.print(f"\n[bold]Suggested for {what}[/bold] - {s.one_line()}", highlight=False)
+    for note in s.notes:
+        console.print(f"  - {note}", highlight=False)
+    if s.tier != "none":
+        flag = "" if s.proxy_long_edge is None else f" --proxy {s.proxy_long_edge}"
+        console.print(
+            f"  run-shot:{flag or ' (no --proxy)'}; the detector and the windows are automatic.",
+            highlight=False,
+        )
+
+
+# ---------------------------------------------------------------------------
+# setup-sam31 - build the SAM 3.1 environment
+# ---------------------------------------------------------------------------
+
+
+@app.command("setup-sam31")
+def setup_sam31(
+    folder: Annotated[
+        Path | None,
+        typer.Option(
+            "--dir",
+            help="Where to build it (about 8 GB). Default: a per-user folder "
+            "that LiveActionAOV finds by itself.",
+        ),
+    ] = None,
+    torch_backend: Annotated[
+        str,
+        typer.Option("--torch-backend", help="PyTorch build for the card (uv's name)."),
+    ] = "cu128",
+) -> None:
+    """Build the SAM 3.1 environment: a Python 3.12 venv with PyTorch and
+    Meta's sam3 package. Safe to run again: finished steps are skipped.
+    The matte pass then uses SAM 3.1 by itself (`detector: auto`)."""
+    from live_action_aov.core import sam31_setup
+
+    try:
+        python = sam31_setup.setup(folder, torch_backend=torch_backend, echo=typer.echo)
+    except RuntimeError as e:
+        typer.echo(f"setup-sam31: {e}", err=True)
+        raise typer.Exit(code=1) from e
+    sam31_setup.remember(python, echo=typer.echo)
+    typer.echo(
+        f"SAM 3.1 environment ready: {python}\n"
+        "Last step, once: request access to facebook/sam3.1 on huggingface.co and log in "
+        "(`hf auth login`). The checkpoint (~3.5 GB) downloads at the first run."
+    )
 
 
 # ---------------------------------------------------------------------------

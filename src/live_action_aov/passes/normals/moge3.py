@@ -80,6 +80,7 @@ class MoGe3Pass(UtilityPass):
     )
     pass_type = PassType.GEOMETRIC
     temporal_mode = TemporalMode.PER_FRAME
+    window_safe = True
     input_colorspace = "srgb_display"
 
     produces_channels = [
@@ -104,6 +105,9 @@ class MoGe3Pass(UtilityPass):
         "emit_depth": True,
         "emit_normals": True,
         "fov_x_deg": None,  # explicit horizontal FOV of the plate; None = auto
+        "fov_note": "",  # where a pinned `fov_x_deg` came from (the log, the header)
+        # Explicit letterbox box (x, y, w, h); None = detect (`crop_letterbox`).
+        "letterbox_box": None,
         "fov_samples": 8,
         "refine_steps": 3,
         "resolution_level": 9,
@@ -226,14 +230,8 @@ class MoGe3Pass(UtilityPass):
         first, last = frame_range
         frames = list(range(first, last + 1))
         self._first = first
-        samples = sample_frames(frames, int(self.params["fov_samples"]))
-        sample_imgs = {f: reader.read_frame(f)[0] for f in samples}
-        h, w = next(iter(sample_imgs.values())).shape[:2]
-        box = (
-            letterbox_box(list(sample_imgs.values()))
-            if self.params["crop_letterbox"]
-            else (0, 0, w, h)
-        )
+        sample_imgs, (h, w), box = self._clip_setup(reader, frames)
+        samples = list(sample_imgs)
         x0, y0, cw, ch = box
         if box != (0, 0, w, h):
             _log.info("MoGe-3: letterbox cropped to %dx%d at (%d, %d)", cw, ch, x0, y0)
@@ -270,6 +268,45 @@ class MoGe3Pass(UtilityPass):
                     )
         return out
 
+    def _clip_setup(
+        self, reader: Any, frames: list[int]
+    ) -> tuple[dict[int, np.ndarray], tuple[int, int], tuple[int, int, int, int]]:
+        """The frames the shot-level decisions are taken on, the frame size
+        and the letterbox box."""
+        samples = sample_frames(frames, int(self.params["fov_samples"]))
+        sample_imgs = {f: reader.read_frame(f)[0] for f in samples}
+        h, w = next(iter(sample_imgs.values())).shape[:2]
+        pinned = self.params.get("letterbox_box")
+        if pinned:
+            box = (int(pinned[0]), int(pinned[1]), int(pinned[2]), int(pinned[3]))
+        elif self.params["crop_letterbox"]:
+            box = letterbox_box(list(sample_imgs.values()))
+        else:
+            box = (0, 0, w, h)
+        return sample_imgs, (h, w), box
+
+    def probe_clip(self, reader: Any, frame_range: tuple[int, int]) -> dict[str, Any]:
+        """One FOV and one letterbox box for the whole clip, so every window
+        of a long shot runs with the same ones."""
+        frames = list(range(frame_range[0], frame_range[1] + 1))
+        sample_imgs, (h, w), box = self._clip_setup(reader, frames)
+        out: dict[str, Any] = {"letterbox_box": list(box)}
+        if self._needs_own_fov():
+            x0, y0, cw, ch = box
+            est = {
+                f: pad_result(
+                    self.infer(self.preprocess(img[None, y0 : y0 + ch, x0 : x0 + cw]), None),
+                    box,
+                    (h, w),
+                )
+                for f, img in sample_imgs.items()
+            }
+            crop_fov = self._shot_fov(cw, w, est)
+            fx = cw / (2.0 * math.tan(math.radians(crop_fov) / 2.0))
+            out["fov_x_deg"] = math.degrees(2.0 * math.atan(w / (2.0 * fx)))
+            out["fov_note"] = self.fov_source
+        return out
+
     def _needs_own_fov(self) -> bool:
         return self.params.get("fov_x_deg") is None and camera_fov(self._camera_solve) is None
 
@@ -281,7 +318,7 @@ class MoGe3Pass(UtilityPass):
             return math.degrees(2.0 * math.atan(crop_w / (2.0 * fx)))
 
         if self.params.get("fov_x_deg") is not None:
-            self.fov_source = "fov_x_deg param"
+            self.fov_source = str(self.params.get("fov_note") or "") or "fov_x_deg param"
             return crop_fov(float(self.params["fov_x_deg"]))
         cam = camera_fov(self._camera_solve)
         if cam is not None:

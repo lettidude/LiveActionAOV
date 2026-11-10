@@ -11,12 +11,12 @@ Open it in Nuke and everything the tool wrote is already there:
   pass folder with the per-pass layout), all relative to the script folder
   so the output folder can be moved or copied to another machine;
 - one Shuffle2 per pass, labelled (each mask on its own, depth/normals/flow
-  to RGB, mattes and the splat clean plate to RGBA), inside a backdrop per
+  to RGB, mattes and the splat background to RGBA), inside a backdrop per
   pass;
 - the camera track (Camera2) with its point cloud (ReadGeo2) in a Scene and
   a ScanlineRender over the plate - the usual matchmove check;
 - with a splat + masks: a Keymix that swaps the first masked object for the
-  splat clean plate, as a ready example of the clean-up.
+  splat background, as a ready example of the clean-up.
 
 Nuke quirks this has to follow (each one verified with Nuke 16 `-t`):
 
@@ -71,7 +71,39 @@ _GROUP_OF_LAYER = {
     "key": "matte",
     "matte": "matte",
     "mask": "matte",
+    "foreground": "matte",  # LTX whole-frame: foreground that belongs to no object
 }
+
+#: Left-to-right order of the pass groups in the DAG.
+_GROUP_ORDER = ("matte", "depth", "normals", "position", "ao", "flow", "splat", "intrinsic")
+
+#: What the Shuffle says under its node (the node NAME keeps the raw layer
+#: so scripts that look nodes up by name keep working).
+_PRETTY_LABEL = {
+    "matte": "matte (hero RGBA)",
+    "foreground": "foreground (no owner)",
+    "depth Z": "Z (depth)",
+    "other Z_raw": "Z raw",
+    "depth_extra confidence": "depth confidence",
+    "N": "N (normals)",
+    "P": "P (world position)",
+    "ao": "ao (SSAO)",
+    "motion_extra": "motion x,y (px)",
+    "back": "back x,y (px)",
+    "forward": "forward u,v",
+    "backward": "backward u,v",
+    "flow confidence": "flow confidence",
+    "flow occlusion": "flow occlusion",
+    "splat": "splat background (RGBA)",
+    "splat Z": "splat background Z",
+    "albedo": "albedo",
+    "irradiance": "irradiance",
+}
+
+
+def _pretty(label: str) -> str:
+    return _PRETTY_LABEL.get(label, label)
+
 
 _GROUP_COLOR = {
     "matte": 0x7F4C4CFF,
@@ -212,6 +244,7 @@ def render_comp_script(
     reads: list[CompRead],
     camera_nk: Path | None = None,
     points_obj_rel: str | None = None,
+    points_tex_rel: str | None = None,
     crypto_rel_pattern: str | None = None,
 ) -> str:
     first, last = int(frame_range[0]), int(frame_range[1])
@@ -281,52 +314,80 @@ def render_comp_script(
         for ch in rd.channels:
             n = nuke_channel(ch)
             order.setdefault(n.split(".", 1)[0], []).append(n)
-        sx = x
-        shuffles = _shuffles_for(rd.channels)
-        for k, (label, layer, pairs) in enumerate(shuffles):
-            if k:
-                s.push(rvar)
-            sname = _node_name(f"{layer}_{label}")
-            s.node(
-                "Shuffle2",
-                [
-                    "fromInput1 {{0} B}",
-                    f"in1 {layer}",
-                    "fromInput2 {{0} B}",
-                    f"mappings {_mappings(pairs, order.get(layer, []))}",
-                    f"name {sname}",
-                    f'label "{_q(label)}"',
-                    f"xpos {sx}",
-                    "ypos -250",
-                ],
-            )
-            if layer == "splat" and any(d == "rgba.alpha" for _, d in pairs) and splat_var is None:
-                splat_var = "Nsplat"
-                s.set_var(splat_var)
-            sx += 110
-        # All objects in one matte (max of every mask): handy on its own and
-        # the mask of the clean-plate example below.
+        # Shuffles grouped per pass (matte | depth | normals | ... | splat),
+        # left to right, one backdrop per group: a multi-layer EXR reads
+        # like the per-pass layout instead of one long strip of nodes.
+        group_of_layer: dict[str, str] = {}
+        for ch in rd.channels:
+            group_of_layer.setdefault(nuke_channel(ch).split(".", 1)[0], pass_group(ch))
+        by_group: dict[str, list[tuple[str, str, list[tuple[str, str]]]]] = {}
+        for sh in _shuffles_for(rd.channels):
+            by_group.setdefault(group_of_layer.get(sh[1], "other"), []).append(sh)
         masks = [n for n in (nuke_channel(c) for c in rd.channels) if n.startswith("mask")]
         if masks and mask_var is None:
-            s.push(rvar)
-            expr = masks[0]
-            for m in masks[1:]:
-                expr = f"max({expr}, {m})"
-            s.node(
-                "Expression",
-                [
-                    *(f'expr{i} "{expr}"' for i in range(4)),
-                    "name All_objects_matte",
-                    'label "every mask (max)"',
-                    f"xpos {sx}",
-                    "ypos -250",
-                ],
-            )
-            mask_var = "Nmask"
-            s.set_var(mask_var)
-            sx += 110
-        width = max(sx - x, 110)
-        backdrops.append((rd.group, x - 20, -460, width + 20, 260))
+            by_group.setdefault("matte", [])
+        groups = sorted(
+            by_group.items(),
+            key=lambda kv: _GROUP_ORDER.index(kv[0]) if kv[0] in _GROUP_ORDER else 99,
+        )
+        sx = x
+        k = 0
+        for g, items in groups:
+            gx = sx
+            for label, layer, pairs in items:
+                if k:
+                    s.push(rvar)
+                k += 1
+                sname = _node_name(f"{layer}_{label}")
+                s.node(
+                    "Shuffle2",
+                    [
+                        "fromInput1 {{0} B}",
+                        f"in1 {layer}",
+                        "fromInput2 {{0} B}",
+                        f"mappings {_mappings(pairs, order.get(layer, []))}",
+                        f"name {sname}",
+                        f'label "{_q(_pretty(label))}"',
+                        f"xpos {sx}",
+                        "ypos -250",
+                    ],
+                )
+                if (
+                    layer == "splat"
+                    and any(d == "rgba.alpha" for _, d in pairs)
+                    and splat_var is None
+                ):
+                    splat_var = "Nsplat"
+                    s.set_var(splat_var)
+                sx += 110
+            # All objects in one matte (max of every mask): handy on its own
+            # and the mask of the splat-fill example below.
+            if g == "matte" and masks and mask_var is None:
+                if k:
+                    s.push(rvar)
+                k += 1
+                expr = masks[0]
+                for m in masks[1:]:
+                    expr = f"max({expr}, {m})"
+                s.node(
+                    "Expression",
+                    [
+                        *(f'expr{i} "{expr}"' for i in range(4)),
+                        "name All_objects_matte",
+                        'label "every mask (max)"',
+                        f"xpos {sx}",
+                        "ypos -250",
+                    ],
+                )
+                mask_var = "Nmask"
+                s.set_var(mask_var)
+                sx += 110
+            gw = max(sx - gx, 110)
+            # The backdrop of the first group also covers the Read above it.
+            top = -460 if gx == x else -310
+            backdrops.append((g, gx - 20, top, gw + 20, 260 if gx == x else 110))
+            sx += 50
+        width = max(sx - 50 - x, 110)
         x += width + 60
 
     # --- cryptomatte (lossless sibling file, or inside the multi-layer EXR) ---
@@ -348,7 +409,7 @@ def render_comp_script(
         x += 190
 
     # --- splat clean-up example: plate with the first masked object swapped
-    # for the splat clean plate ---
+    # for the splat background ---
     if splat_var and mask_var:
         s.push(mask_var)
         s.push(splat_var)
@@ -357,8 +418,8 @@ def render_comp_script(
             "Keymix",
             [
                 "channels rgba",
-                "name CleanPlate_example",
-                'label "plate with every masked object\\nreplaced by the splat clean plate\\n(check splat.alpha: unseen areas are empty)"',
+                "name SplatFill_example",
+                'label "plate with every masked object\\nreplaced by the splat background\\n(check splat.alpha: unseen areas are empty)"',
                 "xpos 0",
                 "ypos -50",
             ],
@@ -378,16 +439,33 @@ def render_comp_script(
             s.set_var("Ncam")
             scene_in = 0
             if points_obj_rel:
+                if points_tex_rel:
+                    # The cloud made for looking at: small quads, their colours
+                    # in an atlas the geometry reads as its texture.
+                    s.node(
+                        "Read",
+                        [
+                            f'file "{here}/{_q(points_tex_rel)}"',
+                            "origset true",
+                            "name PointCloud_colours",
+                            'label "colours of the point cloud"',
+                            f"xpos {cx}",
+                            "ypos -520",
+                        ],
+                        inputs=0,
+                    )
                 s.node(
                     "ReadGeo2",
                     [
                         f'file "{here}/{_q(points_obj_rel)}"',
                         "name PointCloud",
-                        'label "camera track points"',
+                        'label "the set as a point cloud\\n(look at it in the 3D viewer)"'
+                        if points_tex_rel
+                        else 'label "camera track points"',
                         f"xpos {cx}",
                         "ypos -400",
                     ],
-                    inputs=0,
+                    inputs=1 if points_tex_rel else 0,
                 )
                 scene_in = 1
             s.node("Scene", ["name Scene_track", f"xpos {cx + 10}", "ypos -280"], inputs=scene_in)
@@ -405,7 +483,33 @@ def render_comp_script(
                 ],
                 inputs=3,
             )
-            backdrops.append(("camera", cx - 20, -460, 340, 380))
+            if points_tex_rel:
+                # A dense cloud hides the plate it is rendered over: half and
+                # half is the view that shows whether the track holds.
+                s.set_var("Ncheck")
+                s.push("Nplate")
+                s.push("Ncheck")
+                s.node(
+                    "Merge2",
+                    [
+                        "operation copy",
+                        "mix 0.5",
+                        "name Track_check_half",
+                        'label "the cloud at 50% over the plate:\\ndoes it stick?"',
+                        f"xpos {cx}",
+                        "ypos -70",
+                    ],
+                    inputs=2,
+                )
+            backdrops.append(
+                (
+                    "camera",
+                    cx - 20,
+                    -580 if points_tex_rel else -460,
+                    340,
+                    600 if points_tex_rel else 380,
+                )
+            )
 
     bd_lines: list[str] = []
     for i, (label, bx, by, bw, bh) in enumerate(backdrops):

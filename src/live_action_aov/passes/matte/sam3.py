@@ -74,6 +74,7 @@ from live_action_aov.passes.matte.rank import (
     HeroOverride,
     Instance,
     RankWeights,
+    is_scenery_label,
     rank_and_assign,
 )
 
@@ -91,6 +92,18 @@ def _available_ram_bytes() -> int | None:
         import psutil
 
         return int(psutil.virtual_memory().available)
+    except Exception:
+        return None
+
+
+def _total_vram_gb() -> float | None:
+    """The first CUDA card's memory in GB, or None when it can't be read."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        return float(torch.cuda.get_device_properties(0).total_memory) / 2**30
     except Exception:
         return None
 
@@ -304,6 +317,14 @@ class SAM3MattePass(UtilityPass):
         # "auto" = clothing / body / vehicle-part words (see _PART_WORDS), or
         # a list of labels. A person inside a car is NOT a part of the car.
         "part_labels": "auto",
+        # SCENERY labels (sky, building, tree, water, …): tracked and given
+        # their `mask.<label>` + Cryptomatte id like any object, but never a
+        # hero slot while a subject (person, animal, vehicle, a click) is
+        # still unslotted, and the LTX refiner keeps SAM's edge for them (no
+        # hair / motion blur to recover) and never grows a subject's crop to
+        # take them in. "auto" = the scenery words in rank.SCENERY_WORDS, or
+        # a list of labels. A user click is never scenery.
+        "scenery_labels": "auto",
         # Ranking weights (RankWeights schema).
         "ranking": {
             "area": 0.4,
@@ -317,7 +338,9 @@ class SAM3MattePass(UtilityPass):
         # Interactive click-to-mask prompts (GUI viewport, v0.3). Each entry:
         # {"name": str, "seed_frame": int (plate numbering), "points":
         # [[x, y, label], ...] (label 1=fg, 0=bg), "box": [x1, y1, x2, y2] |
-        # None, "ref_size": [w, h] (resolution the clicks were captured at —
+        # None, "slot": "r" | "g" | "b" | "a" (optional: this object's
+        # `matte.rgba` slot, instead of the ranking), "ref_size": [w, h]
+        # (resolution the clicks were captured at —
         # we rescale to the frames the pass actually sees, so proxy mode
         # doesn't shift the clicks)}. ADDITIVE to text concepts: empty list =
         # concept detection only.
@@ -329,7 +352,12 @@ class SAM3MattePass(UtilityPass):
         # keeps identities apart where SAM 3 can swap two similar
         # objects. Clicks still use SAM 3's tracker; re-detection is skipped
         # (SAM 3.1 propagates from the seed frame both ways).
-        "detector": "sam3",
+        # "auto" = SAM 3.1 when its environment is installed and the card has
+        # `sam31_min_vram_gb`, else SAM 3; if SAM 3.1 then fails (out of
+        # memory on a long clip), the shot is redone with SAM 3 and the log
+        # says so. Asking for "sam3.1" by name never falls back.
+        "detector": "auto",
+        "sam31_min_vram_gb": 22.0,
         "sam31_python": "",  # its python.exe; "" = $LAOV_SAM31_PYTHON
         "sam31_checkpoint": "",  # "" = sam3.1_multiplex.pt from the HF cache
         "sam31_timeout_s": 3600,
@@ -353,6 +381,11 @@ class SAM3MattePass(UtilityPass):
         self._dtype: Any = None
         # Populated by `run_shot`; consumed by `emit_artifacts`.
         self._instances: list[_DetectedInstance] = []
+        # Click objects the user pinned to a matte.rgba slot: track id -> slot.
+        self._click_slots: dict[int, str] = {}
+        # Which detector the last run used and why (log + run report).
+        self.detector_used = ""
+        self.detector_reason = ""
         self._priority: dict[int, int] = {}  # track_id -> 1 = user click, 0 = detector
         # track_id -> depth rank, 0 = front. Published in sam3_hard_masks so
         # the matte layering post knows whose edge defines a shared seam.
@@ -856,7 +889,25 @@ class SAM3MattePass(UtilityPass):
         return out
 
     def _use_sam31(self) -> bool:
-        return str(self.params.get("detector", "sam3")).lower().replace(".", "") == "sam31"
+        return self._resolve_detector()[0] == "sam3.1"
+
+    def _resolve_detector(self) -> tuple[str, str]:
+        """(the detector this run uses, why)."""
+        asked = str(self.params.get("detector", "auto")).lower().replace(".", "")
+        if asked == "sam31":
+            return "sam3.1", "asked for"
+        if asked != "auto":
+            return "sam3", "asked for"
+        from live_action_aov.passes.matte import sam31_bridge
+
+        ok, _ = sam31_bridge.available(self.params)
+        if not ok:
+            return "sam3", "SAM 3.1 is not installed: `liveaov setup-sam31`"
+        need = float(self.params.get("sam31_min_vram_gb", 22.0))
+        vram = _total_vram_gb()
+        if vram is not None and vram < need:
+            return "sam3", f"SAM 3.1 wants a {need:.0f} GB card, this one has {vram:.0f} GB"
+        return "sam3.1", "installed"
 
     def _add_sam31(
         self, frames: np.ndarray, concepts: list[str], seed_local: int, first: int
@@ -1366,7 +1417,11 @@ class SAM3MattePass(UtilityPass):
             str(self.params.get("small_objects", "auto")).lower() != "off"
         )
         self._det_hw = self._full_hw() if on_plate else (plate_h, plate_w)
-        use31 = self._use_sam31()
+        detector, why = self._resolve_detector()
+        self.detector_used, self.detector_reason = detector, why
+        use31 = detector == "sam3.1"
+        if concepts:
+            _log.info("SAM3 matte: detector %s (%s).", "SAM 3.1" if use31 else "SAM 3", why)
         seeds = [] if use31 else self._detect_frame(frames, seed_local, concepts)
 
         # Pre-flight host-RAM check (fail fast, before the minutes-long track).
@@ -1408,32 +1463,48 @@ class SAM3MattePass(UtilityPass):
         # --- Everything to track: concept seeds + user clicks -------------
         # Size floor: `_size_ok` (box height with tiles on, area fraction off).
         area_floor = None
-        objs: list[dict[str, Any]] = []
-        for track_id, label, seed_mask in seeds:
-            if seed_mask.shape != (plate_h, plate_w):
-                raise ValueError(
-                    f"Seed mask for track {track_id} has shape {seed_mask.shape}, "
-                    f"expected plate shape {(plate_h, plate_w)}"
+
+        def seed_objs(found: list[Any]) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for track_id, label, seed_mask in found:
+                if seed_mask.shape != (plate_h, plate_w):
+                    raise ValueError(
+                        f"Seed mask for track {track_id} has shape {seed_mask.shape}, "
+                        f"expected plate shape {(plate_h, plate_w)}"
+                    )
+                out.append(
+                    {
+                        "obj_id": track_id,
+                        "label": label,
+                        "seed_local": seed_local,
+                        "mask": seed_mask,
+                        "priority": 0,
+                    }
                 )
-            objs.append(
-                {
-                    "obj_id": track_id,
-                    "label": label,
-                    "seed_local": seed_local,
-                    "mask": seed_mask,
-                    "priority": 0,
-                }
-            )
+            return out
+
+        objs: list[dict[str, Any]] = seed_objs(seeds)
 
         # Interactive click prompts (click-to-mask). Coordinates are rescaled
         # from the resolution they were captured at (`ref_size`) to the frames
         # this pass sees, so proxy mode doesn't shift the clicks. Track ids
         # live in a 1000+ block so they never collide with detector ids.
         next_click_id = 1001
+        self._click_slots = {}
         for idx, spec in enumerate(self.params.get("prompt_instances") or []):
             name = str(spec.get("name") or f"click_{idx + 1}")
             seed_plate = int(spec.get("seed_frame", first))
             seed_local_i = min(max(seed_plate - first, 0), n_frames - 1)
+            if not first <= seed_plate <= last:
+                _log.warning(
+                    "SAM3 matte: '%s' was drawn on frame %d, outside this run (%d-%d): seeded on "
+                    "frame %d instead, with points made for another image - check its mask",
+                    name,
+                    seed_plate,
+                    first,
+                    last,
+                    first + seed_local_i,
+                )
             ref = spec.get("ref_size") or None
             sx = plate_w / float(ref[0]) if ref and float(ref[0]) > 0 else 1.0
             sy = plate_h / float(ref[1]) if ref and float(ref[1]) > 0 else 1.0
@@ -1474,6 +1545,9 @@ class SAM3MattePass(UtilityPass):
                         name,
                         zoomed.height,
                     )
+            slot = str(spec.get("slot") or "").lower()
+            if slot in ("r", "g", "b", "a"):
+                self._click_slots[next_click_id] = slot
             objs.append(obj)
             next_click_id += 1
 
@@ -1482,7 +1556,19 @@ class SAM3MattePass(UtilityPass):
         self._parent = {}
         self._track_objects(frames, objs, first, area_floor)
         if use31 and concepts:
-            self._add_sam31(frames, concepts, seed_local, first)
+            try:
+                self._add_sam31(frames, concepts, seed_local, first)
+            except RuntimeError as e:
+                if str(self.params.get("detector", "auto")).lower() != "auto":
+                    raise
+                # "auto" promised a result: redo the concepts with SAM 3.
+                _log.warning("SAM 3.1 failed, using SAM 3 for this shot: %s", str(e)[-400:])
+                use31 = False
+                self.detector_used = "sam3"
+                self.detector_reason = "SAM 3.1 failed on this shot"
+                fallback = seed_objs(self._detect_frame(frames, seed_local, concepts))
+                if fallback:
+                    self._track_objects(frames, fallback, first, area_floor)
 
         # --- Re-detection: objects that enter later / the tracker lost ---
         stride = self.params.get("redetect_stride")
@@ -1576,6 +1662,13 @@ class SAM3MattePass(UtilityPass):
             for h in (self.params.get("heroes") or [])
             if "track_id" in h and "slot" in h
         ]
+        # A click object the user gave a slot to (GUI Masks tab).
+        live = {i.track_id for i in self._instances}
+        taken: set[str] = {str(o.slot) for o in overrides}
+        for tid, slot in self._click_slots.items():
+            if tid in live and slot not in taken:
+                overrides.append(HeroOverride(track_id=tid, slot=slot))  # type: ignore[arg-type]
+                taken.add(slot)
         ranked_input = [
             self._to_rank_instance(inst, n_frames, plate_h, plate_w, first)
             for inst in self._instances
@@ -1587,6 +1680,15 @@ class SAM3MattePass(UtilityPass):
             max_heroes=int(self.params["max_heroes"]),
             overrides=overrides,
         )
+        hero_ids = {h.track_id for h in self._heroes}
+        held = [i for i in ranked_input if i.scenery and i.track_id not in hero_ids]
+        if held and len(self._heroes) == int(self.params["max_heroes"]):
+            _log.info(
+                "SAM3 matte: %d scenery track(s) kept out of the hero slots (%s); "
+                "they keep their mask.<label> channel and Cryptomatte id.",
+                len(held),
+                ", ".join(f"{i.label}_{i.track_id}" for i in held),
+            )
         return per_frame
 
     def _to_rank_instance(
@@ -1637,7 +1739,14 @@ class SAM3MattePass(UtilityPass):
             centrality=_mean_or_zero(centralities),
             motion_energy=_mean_or_zero(motion_energies),
             user_priority=0.0,
+            scenery=self._is_scenery(inst.track_id, inst.label),
         )
+
+    def _is_scenery(self, track_id: int, label: str) -> bool:
+        """Scenery = a `scenery_labels` label that is NOT a user click."""
+        if self._priority.get(track_id) == 1:
+            return False
+        return _scenery_label_test(self.params.get("scenery_labels", "auto"))(label)
 
     # ------------------------------------------------------------------
     # Artifact emission
@@ -1669,6 +1778,9 @@ class SAM3MattePass(UtilityPass):
                     "layer": self._layer.get(inst.track_id, len(hard_masks)),
                     # Whole this track is a part of (None = independent).
                     "parent": self._parent.get(inst.track_id),
+                    # Scenery (sky, building, …): refiners keep SAM's edge
+                    # and never grow another object's crop to take it in.
+                    "scenery": self._is_scenery(inst.track_id, inst.label),
                 }
         except MemoryError as exc:
             # The pre-flight in run_shot should catch this first, but if the
@@ -2003,6 +2115,14 @@ def _part_label_test(spec: Any) -> Callable[[str], bool]:
     return lambda label: any(
         w in _PART_WORDS for w in label.lower().replace("-", " ").replace("_", " ").split()
     )
+
+
+def _scenery_label_test(spec: Any) -> Callable[[str], bool]:
+    """`scenery_labels`: "auto" = rank.is_scenery_label, or an explicit list."""
+    if isinstance(spec, (list, tuple, set)):
+        allowed = {str(x).strip().lower() for x in spec}
+        return lambda label: label.strip().lower() in allowed
+    return is_scenery_label
 
 
 def _seed_parents(

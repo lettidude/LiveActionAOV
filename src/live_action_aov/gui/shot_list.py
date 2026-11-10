@@ -152,7 +152,7 @@ class ShotListPanel(QWidget):
         root = shot.resolve_output_dir()
         versions = version_dirs(root) if root is not None else []
         latest = versions[0] if versions else None
-        comps = sorted(latest.glob("*.comp.nk")) if latest is not None else []
+        comps = sorted(latest.glob("*.nk")) if latest is not None else []  # top level = the comp
 
         menu = QMenu(self)
         preview = menu.addAction("Preview output…")

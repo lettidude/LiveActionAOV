@@ -46,7 +46,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         # than RAFT and ~6 GB VRAM at 952 px. Bench: see passes/flow/megaflow.py.
         ModelEntry(
             "flow_megaflow",
-            "MegaFlow (large displacement, slower)",
+            "MegaFlow (large motion, slower)",
             "Apache-2.0",
             True,
             ("flow_megaflow",),
@@ -65,7 +65,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         # to write (so it never overwrites another depth/normals backend).
         ModelEntry(
             "moge3_depth",
-            "MoGe-3 (metric depth in metres + P, sharp)",
+            "MoGe-3 (metres + P, sharp)",
             "MIT",
             True,
             ("moge3",),
@@ -95,7 +95,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         # image, ~17 GB VRAM at 1024. Sees THROUGH glass/water.
         ModelEntry(
             "marigold_v2_depth_seethrough",
-            "Marigold V2 see-through (external env, heavy)",
+            "Marigold V2 see-through (heavy)",
             "Apache-2.0",
             True,
             ("marigold_v2_depth_seethrough",),
@@ -104,7 +104,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
     "Albedo": [
         ModelEntry(
             "marigold_v2_albedo",
-            "Marigold V2 albedo (external env, heavy)",
+            "Marigold V2 albedo (heavy)",
             "Apache-2.0",
             True,
             ("marigold_v2_albedo",),
@@ -112,7 +112,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
     ],
     "Normals": [
         ModelEntry("moge3_normals", "MoGe-3 (sharp, stable)", "MIT", True, ("moge3",)),
-        ModelEntry("dsine", "DSINE", "MIT", True, ("dsine",)),
+        ModelEntry("dsine", "DSINE", "Imperial-NC", False, ("dsine",)),
         ModelEntry(
             "normalcrafter",
             "NormalCrafter",
@@ -128,7 +128,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         # the submit worker appends the engine passes.
         ModelEntry(
             "sam3_matte_on",
-            "Matte (SAM 3 - engines per object on the Masks tab)",
+            "Matte (SAM + soft-edge engine)",
             "SAM-License / MIT",
             True,
             ("sam3_matte",),
@@ -197,7 +197,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         # no SAM, no models; auto-detects green vs blue.
         ModelEntry(
             "screen_pull",
-            "Screen Pull (premult RGBA + despill)",
+            "Screen pull (RGBA + despill)",
             "MIT",
             True,
             ("screen_pull",),
@@ -210,18 +210,18 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
     "Camera": [
         ModelEntry(
             "camera_pycolmap",
-            "Camera track (SfM -> Nuke camera; needs parallax)",
+            "Camera track (Nuke camera)",
             "BSD-3-Clause",
             True,
             ("camera_pycolmap",),
         ),
         # Gaussian splat of the static scene on top of the camera solve:
-        # clean plate (SAM 3 objects excluded) + multi-view depth. Expands
+        # background (SAM 3 objects excluded) + multi-view depth. Expands
         # to the camera track too, so ticking it alone is enough. Needs the
         # gsplat wheel (docs/gaussian_splat.md).
         ModelEntry(
             "splat_gsplat",
-            "Camera track + Gaussian splat (clean plate + depth; minutes)",
+            "Camera + Gaussian splat (background)",
             "Apache-2.0",
             True,
             ("camera_pycolmap", "splat_gsplat"),
@@ -230,7 +230,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
     "Cryptomatte": [
         ModelEntry(
             "cryptomatte",
-            "Cryptomatte (SAM3 object IDs)",
+            "Cryptomatte (object IDs)",
             "SAM-License / MIT",
             True,
             ("sam3_matte", "cryptomatte"),
@@ -278,10 +278,22 @@ def has_noncommercial(keys: list[str]) -> list[ModelEntry]:
     return out
 
 
+def recommended_models() -> list[str]:
+    """The set we run daily: mattes + Cryptomatte, MoGe-3 depth and normals,
+    RAFT motion, camera track with the Gaussian splat background. Falls back
+    to the camera alone when gsplat is not installed (it needs a compiled
+    wheel), so the click never selects a pass that cannot run."""
+    import importlib.util
+
+    camera = "splat_gsplat" if importlib.util.find_spec("gsplat") else "camera_pycolmap"
+    return ["sam3_matte_on", "cryptomatte", "moge3_depth", "moge3_normals", "flow", camera]
+
+
 __all__ = [
     "PASS_CATALOG",
     "ModelEntry",
     "expand_models",
     "find_entry",
     "has_noncommercial",
+    "recommended_models",
 ]

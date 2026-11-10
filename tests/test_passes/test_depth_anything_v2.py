@@ -151,6 +151,19 @@ def test_refuses_noncommercial_variants() -> None:
         DepthAnythingV2Pass({"variant": "large"})
     with pytest.raises(ValueError, match="CC-BY-NC"):
         DepthAnythingV2Pass({"variant": "giant"})
+    # Base is CC-BY-NC too (upstream README); it was accepted until 2026-11-10.
+    with pytest.raises(ValueError, match="CC-BY-NC"):
+        DepthAnythingV2Pass({"variant": "base"})
+    assert DepthAnythingV2Pass({}).params["variant"] == "small"
+
+
+def test_video_depth_anything_runs_only_the_apache_size() -> None:
+    from live_action_aov.passes.depth.video_depth_anything import VideoDepthAnythingPass
+
+    assert VideoDepthAnythingPass({}).params["variant"] == "vits"
+    for nc in ("vitb", "vitl"):
+        with pytest.raises(ValueError, match="CC-BY-NC"):
+            VideoDepthAnythingPass({"variant": nc})
 
 
 def test_rejects_unknown_variant() -> None:

@@ -68,6 +68,9 @@ def _full_shot(folder: Path) -> ShotState:
         proxy_long_edge=1280,
         delivery_compression="dwab:45",
         delivery_dtype="float16",
+        naming="{shot}_{pass}_{version}.{frame}.{ext}",
+        work_range=(1010, 1100),
+        crop=(100, 50, 1200, 700),
         queued=False,
         # Runtime fields — must NOT survive the round-trip.
         status="failed",
@@ -107,6 +110,9 @@ def test_shot_dict_roundtrip_preserves_everything(tmp_path: Path) -> None:
     assert restored.proxy_long_edge == 1280
     assert restored.delivery_compression == "dwab:45"
     assert restored.delivery_dtype == "float16"
+    assert restored.naming == "{shot}_{pass}_{version}.{frame}.{ext}"
+    assert restored.work_range == (1010, 1100)
+    assert restored.crop == (100, 50, 1200, 700)
     assert restored.queued is False
     # Click instances survive with exact coordinates and labels.
     hero = restored.click_instances[0]

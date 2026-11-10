@@ -6,8 +6,8 @@
 """Robust Video Matting refiner (spec §13.1 Phase 3).
 
 Backend: `PeterL1n/RobustVideoMatting` — a light recurrent network that
-turns a hard mask + RGB plate into a soft alpha matte. MIT-licensed and
-commercial-safe, which is why it's the default refiner for Phase 3 round 1.
+turns a hard mask + RGB plate into a soft alpha matte. GPL-3.0 (code and
+weights, fetched by torch.hub, never bundled); its mattes may be used in paid work.
 The non-commercial MatAnyone 2 refiner (Round 2) will drop in behind the
 same contract (same `requires_artifacts`, same emitted channels).
 
@@ -197,13 +197,16 @@ class RVMRefinerPass(UtilityPass):
     name = "rvm_refiner"
     version = "0.1.0"
     license = License(
-        spdx="MIT",
+        spdx="GPL-3.0-only",
         commercial_use=True,
-        commercial_tool_resale=True,
+        commercial_tool_resale=False,
         notes=(
-            "Robust Video Matting (PeterL1n/RobustVideoMatting) is MIT-"
-            "licensed. No usage gate needed — both inference and outputs "
-            "are commercial-safe. Sidecars stamp "
+            "Robust Video Matting (PeterL1n/RobustVideoMatting) code and weights "
+            "are GPL-3.0 (declared MIT here until 2026-11-10, which was wrong). "
+            "Running it and delivering its mattes in paid work is allowed; the GPL "
+            "is about redistributing the model code. It is fetched from its own "
+            "repository by torch.hub at first use and is not part of "
+            "LiveActionAOV: do not ship it inside a closed bundle. Sidecars stamp "
             "`liveaov/matte/commercial = true` so downstream QC can "
             "distinguish them from MatAnyone 2 (NTU-S-Lab-1.0, NC) deliverables."
         ),
@@ -223,6 +226,12 @@ class RVMRefinerPass(UtilityPass):
     # artifact schema) must run first.
     requires_artifacts = ["sam3_hard_masks", "sam3_instances"]
     provides_artifacts = ["matte_heroes"]
+    # Objects, hero slots and layer order come from the whole-clip SAM
+    # artifact; the refine itself is local in time. What still differs
+    # between two windows (a recurrent state, a per-call level) is
+    # cross-faded after each cut.
+    window_safe = True
+    window_crossfade = True
 
     # RVM's recurrent state already blends across frames; extra smoothing
     # would just soften edges. No smoothable channels.
@@ -442,6 +451,12 @@ class RVMRefinerPass(UtilityPass):
         """True when this engine decides the outline itself (not SAM's edge):
         the edge guardrail is then skipped. Subclasses override."""
         return str(self.params.get("outline", "sam")) == "refiner"
+
+    def _skip_refine(self, track_id: int, track: dict[str, Any]) -> bool:
+        """Engine hook, all-masks mode: True = do not refine this (non-hero,
+        non-part) track, keep SAM's mask with a light anti-alias instead.
+        The engine logs why. Default: refine everything."""
+        return False
 
     def _refine_track(
         self,
@@ -689,26 +704,34 @@ class RVMRefinerPass(UtilityPass):
         rmp = self.params.get("refine_min_px", "auto")
         refine_min = max(96, round(0.08 * plate_h)) if str(rmp) == "auto" else int(rmp)
         n_small = 0
+        n_skipped = 0
         for track_id in order:
             track = self._hard_masks.get(track_id)
             if track is None or not _wanted(track_id):
                 continue
+            # All-masks mode only, never a hero / a part / a whole: SAM's
+            # edge, lightly anti-aliased, instead of a refine - for an object
+            # too small to have an edge worth saving, or one the engine says
+            # it should not touch (`_skip_refine`: LTX skips scenery).
             if (
                 refine_all
-                and refine_min > 0
                 and track_id not in hero_slot
                 and track_id not in parent_of
                 and track_id not in set(parent_of.values())
-                and _median_height(track) < refine_min
             ):
-                label = str(track.get("label", "") or "")
-                if label:
-                    acc = label_soft.setdefault(
-                        label, np.zeros((n_frames, plate_h, plate_w), np.float32)
-                    )
-                    _paint_antialiased(acc, track, frame_to_local)
-                    n_small += 1
-                continue
+                small = refine_min > 0 and _median_height(track) < refine_min
+                if small or self._skip_refine(track_id, track):
+                    label = str(track.get("label", "") or "")
+                    if label:
+                        acc = label_soft.setdefault(
+                            label, np.zeros((n_frames, plate_h, plate_w), np.float32)
+                        )
+                        _paint_antialiased(acc, track, frame_to_local)
+                        if small:
+                            n_small += 1
+                        else:
+                            n_skipped += 1
+                    continue
             if track_id in cut_parts and parent_of[track_id] in whole_soft:
                 soft, refined_frames = self._cut_part(
                     track_id, parent_of, whole_soft, frame_to_local, n_frames, plate_h, plate_w
@@ -775,6 +798,10 @@ class RVMRefinerPass(UtilityPass):
                 "refiner: %d small object(s) under %d px kept SAM's edge (anti-aliased).",
                 n_small,
                 refine_min,
+            )
+        if n_skipped:
+            _log.info(
+                "refiner: %d object(s) kept SAM's edge (anti-aliased) by engine rule.", n_skipped
             )
 
         # --- Seam normalisation ------------------------------------------
