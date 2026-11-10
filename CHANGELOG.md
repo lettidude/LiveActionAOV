@@ -7,317 +7,156 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **The camera as USD.** `camera/<shot>_v###.camera.usda`: the solved camera (one matrix per solved
-  frame, the Nuke camera's focal and film back) and the point cloud with colours, for Houdini, Maya,
-  Blender, Unreal and Nuke's USD 3D system. Plain text, no USD library needed to write it. Checked
-  with Pixar's USD inside Nuke 16: the camera matches the Nuke `Camera2` to 5e-7.
-- **A point cloud you can read.** The cloud in the Nuke script was a few thousand grey feature
-  points, drawn 1 px wide and invisible in a render. With a depth pass in the run it is now the set
-  itself: keyframes of the depth pass pushed back through the solved camera (each brought to the
-  solve's units with the feature points seen in that frame), in the plate's colours, lifted on dark
-  plates, without the tracked objects and without drawing a surface twice. Up to 60,000 points,
-  about 2 s. Without depth: the feature points without the outliers, coloured from the plate. It is
-  written as `camera/<shot>_v###.cloud.obj` (one small quad per point) + `.cloud.png` (their
-  colours), which Nuke's classic 3D shows and renders; the same cloud goes into the USD.
-- **Part of a shot only.** Per shot, a **frame range** (in / out inside the plate) and a **crop**
-  box drawn in the viewer (*This shot* tab → *Draw in viewer*; CLI `--first/--last`, `--crop x,y,w,h`).
-  Passes run on the box as if it were the plate (a proxy scales the crop); the EXRs carry the box
-  as data window inside the plate's display window, so Nuke places them, and the output preview
-  pads them back over the plate. Click prompts move into crop coordinates. The camera track and
-  the Gaussian splat need the whole frame (`needs_full_frame`) and refuse a crop with a clear
-  message. Asked for by a studio compositor.
+- **Camera as USD.** Each camera solve also writes `camera/<shot>_v###.camera.usda` with the camera
+  and a coloured point cloud, for Houdini, Maya, Blender, Unreal and Nuke's USD 3D system.
+- **A point cloud you can read.** With a depth pass in the run, the point cloud in the Nuke script
+  is now a dense, coloured cloud of the set instead of a few grey dots, and it shows in a render.
+  It is written as `camera/<shot>_v###.cloud.obj` + `.cloud.png` and goes into the USD too.
+- **Process part of a shot.** Per shot, a **frame range** and a **crop** box drawn in the viewer
+  (*This shot* tab → *Draw in viewer*; CLI `--first/--last`, `--crop x,y,w,h`). The EXRs line up
+  over the plate in Nuke. The camera track and the Gaussian splat need the whole frame and say so.
 - **File naming template** (`Shot.naming`, Output tab → *File naming*, CLI `--naming`): one template
-  for every file of a run with `{shot} {plate} {version} {pass} {frame} {ext}`, presets for the
-  common studio orders (`SH010_utility_v001.1001.exr`, ...). Files without a frame (comp, camera,
-  splat) drop the frame token. The default is unchanged.
+  for every file of a run with `{shot} {plate} {version} {pass} {frame} {ext}`, with presets for the
+  common studio orders. The default naming is unchanged.
+- **Long clips no longer run out of memory.** A clip too long for the machine's RAM is processed in
+  overlapping windows of frames by itself (`Shot.window_frames`: `auto`, a number or off;
+  `window_overlap`; CLI `--window`). The frames written are the same as a whole-clip run.
+  Plugin authors: new pass attributes `window_safe` / `window_crossfade` and a `probe_clip` hook.
+- **`liveaov doctor`**, and the same line in the app's Output tab: what is installed and the settings
+  proposed for a plate (proxy size, detector, windows), with the reason for each. **Use suggested**
+  applies them. `run-shot --proxy` takes a long edge in pixels or `auto`. New proxy size 2816.
+- **`liveaov setup-sam31`** installs the SAM 3.1 environment in a per-user folder that the matte pass
+  finds by itself; a rerun skips the steps already done.
+- **Masks tab rebuilt.** *Found by name* (the names SAM looks for, with People / People + vehicles /
+  Everything presets) and *Your own objects* (clicks and boxes). The selected object has its name,
+  its soft-edge engine, a **matte slot** to pin it to `matte.r/g/b/a` (prompt spec key `slot`) and
+  *Go to*, which jumps to the frame it was drawn on.
+- **A *This shot* tab** for what belongs to one shot (frames, crop, folder name); the Output tab is
+  now for the whole session, so a batch needs no visit to every shot.
+- **LTX Alpha crop** (per-object engine in the Masks tab, `crop_labels`): inside a whole-frame run,
+  chosen objects get their own LTX run on a rectangle around them, for a subject that needs more
+  detail.
 
-- **Long clips run in windows by themselves.** The executor keeps every pass's channels for every
-  frame until the write, so host RAM grows with the frame count and a long shot at a big proxy used
-  to run out of memory half an hour in. Now a clip that does not fit the free RAM is cut in
-  overlapping windows of frames (`Shot.window_frames`: `auto`, a number, or off; `window_overlap`
-  context frames on each side; CLI `--window`). Whole-clip passes (the SAM tracker, the camera, the
-  splat, video models) run once and their channels wait on disk; window-safe passes (MoGe-3, DSINE,
-  the flow passes, the refiners, Cryptomatte) run per window and each window's frames are written
-  before the next starts. The frames are the ones a whole-clip run writes: same pixels, one header
-  on every frame, the Cryptomatte manifest from the whole clip. Clip-level decisions are taken once
-  (`UtilityPass.probe_clip`: MoGe-3 pins its FOV and letterbox box), and a pass whose result differs
-  a little between windows (`window_crossfade`: the generative matte) is cross-faded over the first
-  frames after each cut. New pass attributes `window_safe` / `window_crossfade`; a pass that does
-  not declare `window_safe` runs on the whole clip, as before.
-- **`liveaov doctor`** and the same line in the app's Output tab: the card, the RAM, whether SAM 3.1,
-  ComfyUI + the LTX models and gsplat are there, and the settings proposed for a plate (proxy size,
-  detector, windows) with the reason for each. **Use suggested** applies them. `run-shot --proxy`
-  takes a long edge in pixels or `auto` (the proposal). New proxy size 2816 in the app.
-- **`liveaov setup-sam31`** builds the SAM 3.1 environment (Python 3.12 venv, PyTorch, Meta's `sam3`
-  at the tested commit, the imports it needs but does not declare) in a per-user folder that the
-  matte pass finds by itself; finished steps are skipped on a rerun.
-- **Masks tab rebuilt.** *Found by name*: the names SAM looks for (moved here from Passes >
-  Advanced) with People / People + vehicles / Everything. *Your own objects*: the click and box
-  objects, and a *Selected object* block with its name, its soft-edge engine, its **matte slot**
-  (pin an object to `matte.r/g/b/a` instead of the ranking; prompt spec key `slot`) and *Go to*,
-  which scrubs the viewer to the frame the object was drawn on.
-- **Output tab is for the whole session; a new *This shot* tab** holds what belongs to one shot
-  (frames to process, crop, folder name), so a batch never needs a visit to every shot.
-- **LTX Alpha crop** (`crop_labels`, Masks tab: per-object engine *LTX Alpha crop*): inside a
-  whole-frame run, the named objects get their own LTX run on a rectangle around them, for the one
-  subject that needs more pixels than the whole frame gives it.
 ### Changed
-- **Masks tab: the preview is back in front.** *Preview* sits right under the object buttons, and
-  with *Auto* on (the default) every click or box previews by itself: no more points on a plate with
-  nothing to show for them. *with* switches what the preview is made with (run engine, ViTMatte,
-  BiRefNet, SAM only) and previews again. The names preset in use (People, People + vehicles,
-  Everything) stays lit. The pass is listed as *Matte (SAM + soft-edge engine)*: it may be SAM 3.1.
-- **ComfyUI not running is said in plain words** ("nothing is running there, start ComfyUI or check
-  the port") instead of the raw socket error.
-- **The Gaussian splat output is called *splat background*, no longer *clean plate*** in the app, the
-  docs and the Nuke script (the example node is `SplatFill_example`, was `CleanPlate_example`). It is a
-  soft rebuild of what was behind the masked objects: a base for a patch, not a finished clean
-  plate. The `splat.*` channels and the files are unchanged.
-- **LTX Alpha runs on the whole frame by default** (`mode: whole_frame`, was `per_object`): one run
-  whatever the number of objects, no mask cutting the outline. In the app the default matte engine
-  is now *LTX Alpha whole frame in your ComfyUI, else ViTMatte* (ViTMatte alone is the second entry).
-  Scenery tracks own none of the whole-frame foreground: a wall tracked behind an actor no longer
-  takes the hair outside the actor's mask. A clip a few frames longer than one LTX call goes in a
-  single call (`whole_chunk_max`) instead of two almost identical ones.
-- **Lossless EXRs are written with ZIP one scanline at a time** (`zips`, was `zip`): the same size
-  and the same read speed, about 8x faster to write on a 4K multi-layer frame (0.7 s against 5.7 s
-  per frame measured, eight minutes on a 100-frame shot), and the flavour Nuke reads fastest. Saved
-  sessions move over by themselves; `zip` can still be asked for by name.
-- **The detector is `auto`** (was `sam3`): SAM 3.1 when its environment is installed and the card
-  has the memory (`sam31_min_vram_gb`), else SAM 3, and the log says which and why. If SAM 3.1 fails
-  on a shot in `auto` (out of memory on a long clip), the shot is redone with SAM 3 with a warning;
-  asking for `sam3.1` by name still fails loudly.
-- With a lossy delivery the lossless Cryptomatte sibling is now `<shot>_v001.crypto.####.exr`
+- **Masks tab: the preview is back in front.** *Preview* sits under the object buttons and, with
+  *Auto* on (the default), every click or box previews by itself. *with* picks what the preview is
+  made with. The names preset in use stays lit. The pass is listed as *Matte (SAM + soft-edge engine)*.
+- **ComfyUI not running is said in plain words** instead of a raw socket error.
+- **The Gaussian splat output is called *splat background*, no longer *clean plate*,** in the app,
+  the docs and the Nuke script (the example node is now `SplatFill_example`, was
+  `CleanPlate_example`). The `splat.*` channels and the files are unchanged.
+- **LTX Alpha runs on the whole frame by default** (`mode: whole_frame`, was `per_object`). In the app
+  the default matte engine is *LTX Alpha whole frame in your ComfyUI, else ViTMatte*.
+- **Lossless EXRs are written with ZIP one scanline at a time** (`zips`, was `zip`): same size, much
+  faster to write. Saved sessions move over by themselves; `zip` can still be picked by name.
+- **The detector is `auto`** (was `sam3`): SAM 3.1 when it is installed and the card can run it,
+  else SAM 3, and the log says which. If SAM 3.1 fails on a shot in `auto`, the shot is redone with
+  SAM 3 with a warning; asking for `sam3.1` by name still fails loudly.
+- With a lossy delivery the lossless Cryptomatte file is now `<shot>_v001.crypto.####.exr`
   (`{pass}` = `crypto`) instead of `<shot>_v001.utility.####.crypto.exr`, so it follows the naming
-  template like every other file. The comp script points at the new name.
+  template. The comp script points at the new name.
 
 ### Fixed
-- **Gaussian splat: one frame could come out as flat fog.** Every 8th frame is held out of the
-  training to measure quality, so nothing penalised a floater sitting in front of one of those
-  views: that frame of `splat.rgb` was delivered washed out (seen once, on 1 frame of 102, with a
-  held-out mean of 36.7 dB where a clean run reads 39.2). After the measure the splat now gets a
-  short polish on every frame (`holdout_polish_frac`, 10% of the iterations, no densification).
-  The report gains `holdout_psnr_min_db` and `polish_steps`, and the log warns when a held-out
-  frame reads under 20 dB.
-- **Model licences that were declared wrong.** Checked against each model's own repository:
-  **DSINE** is under Imperial College London's licence for non-commercial, internal or academic
-  use, not MIT: it is now marked NC, asks for `--allow-noncommercial`, and is out of the default
-  prefetch set (MoGe-3 is the normals model for paid work). **Robust Video Matting** is GPL-3.0,
-  not MIT: its mattes may still be delivered, the model code must not ship inside a closed bundle
-  (the portable build should not carry its torch.hub copy). **Depth Anything V2 Base** and
-  **Video Depth Anything Base / Large** are CC-BY-NC-4.0: the passes now load the Apache-2.0 Small
-  models only and refuse the others. The README has the full table.
-- **An object LTX does not see as foreground no longer gets an empty matte.** In whole-frame mode
-  LTX mattes mostly people; a tracked car, a prop or scenery in a hero slot received almost
-  nothing. When an object's share covers under half of its SAM mask (`whole_min_cover`) it is
-  matted with ViTMatte (a subject) or SAM's anti-aliased edge (scenery), with a warning.
-- **Scenery no longer takes a hero slot.** With the default concepts (person, vehicle, tree, building,
-  sky, water, animal) the four `matte.rgba` slots on a car plate went to the car, one person, a
-  building and a tree, and the second person got none (A65 couple-car plate). The ranker now fills
-  the slots with subjects first (person, animal, vehicle, user clicks) and considers scenery labels
-  (`scenery_labels: auto` = sky, building, tree, water, wall, road, ... or an explicit list) only
-  when there are fewer subjects than slots. User overrides and the deterministic tie-break are
-  unchanged; scenery keeps its `mask.<label>` channel and Cryptomatte id, and the SAM artifact marks
-  each track with `scenery`.
-- **LTX per-object crops stop growing to the whole frame.** The crop grew to take in every
-  overlapping neighbour of similar size, and with sky, buildings and trees tracked that chain made
-  every object's box the full 2K proxy; LTX alpha-gen mattes one salient foreground per crop, so
-  each object's gated alpha was somebody else's (matte.rgba at 1.3 / 0.1 / 0.6 / 0.0 % of the frame
-  while `mask.person` was still 10 %). Scenery neighbours never grow the crop, and the size ratio
-  (`neighbour_max_ratio`) is measured against the object's own padded box. In `refine_all_masks`
-  mode scenery tracks are not sent to LTX at all (no hair or motion-blur edge to recover): SAM's
-  mask with the light anti-alias that `refine_min_px` already uses, one log line per skipped track.
+- **Gaussian splat: one frame could come out washed out.** All frames now come out clean; the report
+  gains `holdout_psnr_min_db` and `polish_steps`, and the log warns about a weak frame.
+- **Model licences that were declared wrong.** **DSINE** is non-commercial (Imperial College
+  London licence), not MIT: it now asks for `--allow-noncommercial` and is out of the default
+  download set (MoGe-3 is the normals model for paid work). **Robust Video Matting** is GPL-3.0,
+  not MIT: its mattes can be delivered, its code must not ship inside a closed bundle.
+  **Depth Anything V2 Base** and **Video Depth Anything Base / Large** are CC-BY-NC-4.0: the passes
+  now load the Apache-2.0 Small models only. The README has the full table.
+- **An object LTX does not see as foreground no longer gets an empty matte** (a car, a prop): it falls
+  back to ViTMatte or SAM's edge, with a warning.
+- **Scenery no longer takes a hero slot.** The `matte.rgba` slots go to subjects first (people,
+  animals, vehicles, your clicks); sky, buildings, trees and the like get a slot only when there are
+  fewer subjects than slots (`scenery_labels`). Scenery keeps its `mask.<label>` and Cryptomatte id.
+- **LTX per-object crops no longer grow to the whole frame** on plates with a lot of tracked scenery,
+  which gave each object somebody else's matte.
 
 ## [0.12.0] — 2026-11-08
 
 ### Added
-- **Depth-anchored PnP camera fallback** (`pnp_fallback`, on by default). Fast handheld action often
-  gives COLMAP almost no usable parallax (only a few frames register) while the camera clearly
-  translates, so the rotation-only fallback does not fit either and the run had no camera. Now the
-  camera pass tries a third route: MoGe-3 metric depth of the middle frame gives the 3D points of the
-  static set (SAM 3 objects masked out, corners on depth edges skipped), their corners are tracked
-  through the shot with pyramidal Lucas-Kanade (forward-backward checked, dropped on tracked
-  objects), and each frame is solved with RANSAC EPnP + LM refine. The fit error alone can hide a
-  wrong camera, so every `pnp_holdout_every`-th point is kept out of the solve and the camera is
-  judged on those: **GOOD / WEAK / FAILED** (`pnp_good_frac` / `pnp_weak_frac` of the image width,
-  plus the share of reliable frames), travel measured on reliable frames only, and a NODAL flag when
-  the camera moves less than 2 % of the scene depth. The verdict leads the warnings and the Nuke
-  camera label; a FAILED camera says "DO NOT USE" (`pnp_keep_failed: false` drops it instead) and
-  the splat pass refuses it. Units are declared as metres (MoGe-3's estimate), with `verdict` and
-  `heldout_error_px` in the camera JSON. `pnp_fov_x_deg` overrides MoGe-3's FOV estimate.
-- **Temp folder setting** (`--work-root`, `LAOV_WORK_ROOT`, GUI File > Temp folder). Frames that
-  passes export from the plate (camera solve, LTX crops, Marigold) go there instead of the system
-  temp folder, e.g. a project folder on a local disk under content-security rules. Keep it local:
-  the camera's database does not work reliably on a network share.
-- **LTX Alpha whole-frame mode** (`mode: whole_frame`). LTX-2.5 alpha-gen runs ONCE over the full
-  frame (97-frame 8n+1 chunks, cross-faded) instead of once per object on a SAM-gated crop, and each
-  object gets the foreground nearest to it (distance transforms, 2 px feathered seam where two objects
-  touch). No SAM gate cuts LTX's outline, so an edge SAM missed (a shoulder, motion blur) stays in the
-  matte, and N objects cost one LTX run instead of N. Foreground farther than `far_frac` (6 % of the
-  width) from every object
-  belongs to nobody and is written to a new `foreground.a` layer (props, blood, untracked extras).
-- **LTX call cache** (`cache_dir`). Each LTX call's raw result is saved as `.npy`, keyed by a hash of
-  the frames sent, the working size, the seed and the model files, so a rerun never repeats the
-  diffusion. Works in both modes.
-- **SAM 3.1 detector for the matte pass** (`detector: sam3.1`). Meta's SAM 3.1 Object Multiplex tracks
-  every instance of a concept jointly in one session, so it keeps identities apart where SAM 3 can
-  swap two similar objects or lose a part in motion blur. It needs Python 3.12 and
-  Meta's `sam3` package, so it runs as a subprocess in its own environment (`sam31_python` param or
-  `LAOV_SAM31_PYTHON`; setup in docs/install.md). The worker carries the two Windows fixes for
-  sam3 f1647e8 (no FLASH SDPA kernel on Windows torch; `offload_state_to_cpu` passed to an
-  `init_state` that does not take it) without editing Meta's code. Exclusivity, seams, depth layer
-  order and hero ranking stay LiveActionAOV's own. False hits are dropped by a peak-coverage floor
-  (`sam31_min_peak_coverage` 0.5 %, `sam31_min_frames` 3). Clicks still use SAM 3's tracker; SAM 3
-  is not loaded at all when there are none.
-- **GUI: SAM 3.1 detector, whole-frame LTX engine, PnP camera toggle.** Passes tab: a "Detector"
-  choice (SAM 3 built in / SAM 3.1 Object Multiplex; Submit checks the SAM 3.1 environment up front),
-  "LTX Alpha whole frame" under the default engine's Advanced menu (sent with the ComfyUI URL; the
-  Masks-tab preview uses ViTMatte for it), and "Camera: solve from depth when SfM fails". All three
-  are saved in the session and copied by "Apply passes to all shots".
+- **Camera from depth when the solve fails** (`pnp_fallback`, on by default). Fast handheld shots
+  that gave no camera now get one. Each camera is graded **GOOD / WEAK / FAILED** in the warnings and
+  the Nuke camera label; a FAILED camera is labelled "DO NOT USE" (`pnp_keep_failed: false` drops
+  it) and the splat refuses it. `pnp_fov_x_deg` sets the field of view by hand.
+- **Temp folder setting** (`--work-root`, `LAOV_WORK_ROOT`, GUI File > Temp folder). Frames exported
+  from the plate go there instead of the system temp folder. Keep it on a local disk.
+- **LTX Alpha whole-frame mode** (`mode: whole_frame`): one LTX run for the whole frame instead of one
+  per object, so edges SAM missed stay in the matte and many objects cost one run. Foreground that
+  belongs to no tracked object goes to a new `foreground.a` layer.
+- **LTX call cache** (`cache_dir`): a rerun of the same shot does not repeat the LTX work.
+- **SAM 3.1 detector for the matte pass** (`detector: sam3.1`): keeps similar objects apart better
+  than SAM 3. It runs in its own environment (`sam31_python` param or `LAOV_SAM31_PYTHON`; setup in
+  docs/install.md).
+- **GUI: SAM 3.1 detector, whole-frame LTX engine, camera from depth.** All three are in the Passes
+  tab, saved in the session and copied by "Apply passes to all shots".
 
 ### Fixed
-- **A native crash in COLMAP no longer kills the whole run.** pycolmap can segfault (e.g. in SIFT
-  extraction on long shots); since every pass runs in one process, that lost the mattes, depth and
-  everything else of the run. COLMAP's feature extraction, matching and mapping now run in a child
-  process (`colmap_subprocess`, on by default; `colmap_timeout_s` optional). A crash is reported as
-  an ordinary camera failure with its exit code, the nodal fallback declines cleanly when COLMAP left
-  no database, and the rest of the run carries on. The child's progress (features, matching,
-  mapping seeds) streams to the log live instead of arriving only when it exits.
-- **Temporary folders with plate frames are always cleaned up.** The camera workdir is removed on a
-  failed or crashed solve too, and a workdir kept for debugging (`keep_workdir`, Marigold
-  `keep_temp`) is now a warning with its path, since it holds frames exported from the plate.
-- **Nuke's Cryptomatte node crashed on our sidecars.** The per-pass provenance
-  keys `liveaov/cryptomatte/{model,version,license,commercial}` contain the
-  substring `cryptomatte/`, which Nuke's Cryptomatte plugin scans every header
-  key for (it takes the text before it as a layer id): Nuke 13.2v6 segfaulted
-  the moment the node evaluated, GUI and `-t` alike. Bisected on a production
-  plate: those four keys alone reproduce it, the pixel data, compression and
-  the spec `cryptomatte/<id>/*` keys are fine. The cryptomatte pass is now
-  recorded under `liveaov/cryptomatte_pass/...`; no provenance key may contain
-  `cryptomatte/` (`executors.local.provenance_key`, with a test). Existing
-  files are fixed by dropping those four header keys (no pixel change).
-- **LTX Alpha found nothing on a ComfyUI with its own folder layout.** The pass looked for exact
-  file names (`LTX-2.5\ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors`, the int8 transformer, a GGUF
-  with "22b" in the name), so a server that keeps the LoRA in `ltxv\ltx25\`, has the bf16 distilled
-  transformer instead of the int8 one, or a community GGUF named `LTX-2.5-Distilled-Q4_K_S.gguf`, got
-  "missing" and every object fell back to ViTMatte. `pick_model` now tries: the exact name, the same
-  file in another folder, another precision of the same model (int8 > fp8 > bf16), then the best GGUF
-  whose name holds every token (`ltx-2.5` + `distilled`). LoRA and VAEs are found by file name in any
-  folder, and the graph uses the names the server reported. Tested against a real ComfyUI that failed
-  before with the default settings.
-- **A failed shot stopped an overnight batch.** Shots ticked while a batch runs (Submit is disabled
-  meanwhile) were never added to it; when the last submitted shot failed, the GUI treated it as a
-  single-shot run and showed a blocking error dialog, and the shots ticked later never ran. The
-  batch now picks up shots ticked during the run when its queue drains (same output-root check;
-  non-commercial models still need a Submit to confirm them), and failure dialogs no longer block
-  the queue.
-- **A network-share blip no longer aborts the job.** The sidecar write retry only caught
-  `OSError`, but OIIO reports a vanished share as its own error, so the retry never ran. It now
-  covers both and waits ~40 s in all (longer than an SMB reconnect).
-- **LTX Alpha no longer leaves mattes in ComfyUI's `output/`.** They come back through ComfyUI's
-  temp folder, which ComfyUI wipes when it starts and exits. With a remote ComfyUI, the uploaded
-  crops stay in its `input/` (ComfyUI has no delete endpoint): a warning says so.
-- **The camera's RAM spike no longer takes a long shot down.** SIFT extraction holds ~0.3 GB per
-  megapixel per thread, on every core at once. On a big machine that was +40 GB for a few seconds,
-  enough to crash a long 6K shot. The thread count now fits the free RAM (`sift_num_threads: 0` =
-  auto). The default `max_image_size` is 1920: on handheld tests it gives the same cameras as 2816
-  at a third of the RAM. The log states the actual solve size and thread count.
-- **`max_image_size` above the proxy size now applies.** The camera read its frames through the
-  proxy, so it silently solved at min(proxy, `max_image_size`). It now reads the full-res plate
-  when the proxy is smaller.
+- **A crash in COLMAP no longer kills the whole run.** The camera solve runs on its own
+  (`colmap_subprocess`, on by default; `colmap_timeout_s` optional): a crash is reported as a camera
+  failure and the rest of the run carries on. Its progress shows in the log live.
+- **Temporary folders with plate frames are always cleaned up**, also after a failed solve. A folder
+  kept for debugging (`keep_workdir`, Marigold `keep_temp`) is now a warning with its path.
+- **Nuke's Cryptomatte node crashed on our files.** The provenance keys of the Cryptomatte pass are
+  now under `liveaov/cryptomatte_pass/...`. Existing files are fixed by dropping the
+  `liveaov/cryptomatte/{model,version,license,commercial}` header keys (no pixel change).
+- **LTX Alpha found nothing on a ComfyUI with its own folder layout.** The model files are now found
+  in other folders, in other precisions and as GGUF, and the graph uses the names the server reports.
+- **A failed shot stopped an overnight batch.** Shots ticked while a batch runs are now added to it,
+  and failure dialogs no longer block the queue.
+- **A network-share blip no longer aborts the job**: sidecar writes retry long enough for the share
+  to come back.
+- **LTX Alpha no longer leaves mattes in ComfyUI's `output/`.** With a remote ComfyUI the uploaded
+  crops stay in its `input/` (ComfyUI cannot delete them): a warning says so.
+- **The camera solve no longer runs a long shot out of RAM** (`sift_num_threads: 0` = auto). The
+  log states the solve size and thread count.
+- **`max_image_size` above the proxy size now applies**: the camera reads the full-res plate when the
+  proxy is smaller.
 
 ## [0.11.1] — 2026-11-02
 
 ### Added
-- **LTX Alpha on a smaller or a remote GPU.** The model files are now found
-  on the ComfyUI server: the int8 safetensors when present, otherwise a GGUF
-  of LTX-2.5 22B distilled / its Gemma text encoder (ComfyUI-GGUF, best
-  quantisation first), so a 12-16 GB card only needs a quantised download.
-  A ComfyUI on another machine (e.g. the studio's AI box, `comfy_url`
-  pointing at it) now works: the crops are uploaded to it instead of read
-  from a local folder (`send_frames`: auto / path / upload). Models > ComfyUI
-  for LTX Alpha reports which GGUF it found.
+- **LTX Alpha on a smaller or a remote GPU.** GGUF versions of the LTX models are found on the
+  ComfyUI server, so a 12-16 GB card only needs a quantised download. A ComfyUI on another machine
+  works too (`comfy_url`; `send_frames`: auto / path / upload). Models > ComfyUI for LTX Alpha shows
+  which files it found.
 
 ### Fixed
-- **MoGe-3 normals next to another depth backend** (e.g. Video Depth
-  Anything for Z, MoGe-3 for N): the auto temporal smoother of MoGe-3 also
-  smoothed the other pass's Z. It now touches only the outputs MoGe-3 writes.
-  Measured on PF0071 (48 frames, flow-compensated): smoothing cuts MoGe-3
-  normal flicker by about a third (p90 4.2 -> 2.7 deg).
+- **MoGe-3 normals next to another depth backend**: MoGe-3's smoothing no longer touches the other
+  pass's depth.
 
 ## [0.11.0] — 2026-11-01
 
 ### Added
-- **Portable offline build** (`scripts/build_portable.py`) for studios whose
-  workstations have no internet (TPN): one relocatable folder (Python + every
-  dependency + models), copied to the server, installed/updated per artist
-  with `install_local.bat`. Runs offline by default. See docs/install.md.
-- **Nodal camera for shots with no parallax.** A tripod pan / tilt or a
-  locked-off camera gave COLMAP nothing to triangulate and the shot got no
-  camera. Now the camera track falls back to a rotation-only solve from
-  COLMAP's own verified matches (`passes/camera/nodal.py`, numpy only): one
-  focal, one rotation per frame, camera at the origin, same Nuke camera +
-  points on a far sphere to check the pan. The focal is measured from the
-  pan when the camera turns enough (`nodal_min_motion`, 3% of the frame),
-  otherwise it comes from the lens metadata (ARRI `FocalLength`) or a guess,
-  with a warning. Accepted only if it fits (`nodal_max_error_px` 1.5): a
-  translating camera keeps the old failure. Synthetic 48-frame pan: focal
-  1399.9 / 1400 px, rotations within 0.006 deg, 0.11 px; ALEXA Mini LF
-  workshop (locked-off, was 0/100 frames): 100/100 at 0.97 px. The splat
-  skips a nodal camera with a clear message (no parallax, no clean plate).
-- **MoGe-3 geometry pass (`moge3`), the new default normals engine.**
-  Microsoft MoGe-3 ViT-L (MIT; code vendored in `vendored/moge`, weights
-  `Ruicheng/moge-3-vitl`, 1.5 GB). One pass writes metric `Z` (metres),
-  `N` (OpenGL) and, via PositionFromDepth, `P` built with the same FOV the
-  model used (new `depth_intrinsics` artifact). Shot-level fixes for a
-  per-frame model: one FOV per shot (`fov_x_deg` > camera track unless its
-  focal is a guess > median of MoGe over `fov_samples` frames), metric scale
-  stabilised over `scale_window` frames (`Z_raw` keeps the raw values),
-  letterbox cropped. GUI: "MoGe-3" in both Depth and Normals; it writes only
-  the slots it is picked for. CLI: `--normals-backend` defaults to `moge3`.
-  PF0071, 150 frames: 2.6 GB VRAM at 1K proxy and full HD; 111 s / 205 s;
-  scale jitter 2.6% -> 0.74%; normals 3-8x steadier than DSINE. New
-  `moge3` extra (in `all`): scipy, utils3d-moge and FlexGEMM (git pins,
-  pure Triton) + triton-windows. The camera solve now records where a nodal
-  focal came from (`intrinsics.source`: nodal_pan / lens_metadata / guess).
+- **Portable offline build** (`scripts/build_portable.py`) for workstations with no internet (TPN):
+  one folder with Python, dependencies and models, installed or updated per artist with
+  `install_local.bat`. Runs offline by default. See docs/install.md.
+- **Nodal camera for shots with no parallax.** Tripod pans, tilts and locked-off shots now get a
+  camera (rotation only, camera at the origin), with the focal from the pan, the lens metadata or a
+  guess, with a warning. The splat skips a nodal camera with a clear message.
+- **MoGe-3 geometry pass (`moge3`), the new default normals engine** (MIT). One pass writes metric
+  `Z`, `N` and `P`, steady over the shot. GUI: "MoGe-3" in both Depth and Normals. CLI:
+  `--normals-backend` defaults to `moge3`. New `moge3` extra (in `all`). The camera record notes
+  where a nodal focal came from (`intrinsics.source`).
 
 ### Fixed
-- `liveaov prefetch` skipped MoGe-3 (its refiner cannot load on the CPU-only
-  prefetch); passes can now expose a download-only `prefetch_weights` hook.
-- `--version` / About reported v0.9.0 since the 0.10 releases: the version now
-  comes from the package metadata.
-- **UtilityRelight 1.12: metric sidecars.** With MoGe-3's metric P the
-  node's auto-scale took the sky (Z = 10000 m) and a far background as the
-  scene depth: light radius 3 km, then 23 m, and the 2D picker pushed the
-  light behind the camera. Now it skips pixels flagged in
-  `depth.confidence`, brackets with percentiles, caps the scale by the
-  median depth (PF0071: radius 4 m) and never moves the light past the
-  camera. Normal-convention defaults already fit every engine (MoGe-3,
-  DSINE, NormalCrafter all write OpenGL N). Checked in Nuke 16 headless on
-  PF0071: soldiers lit with clean volume where DA-V2 + DSINE gave faceted
-  blotches.
-- **DSINE normals were inverted.** DSINE's raw output is the negated OpenCV
-  normal ("outward" in its README: a wall facing the camera is +Z), and the
-  pass only flipped Y and Z, so `N` came out pointing into the surface on
-  all three axes. Now it negates first (`negate_raw`), so DSINE matches the
-  spec (OpenGL: +Y up, +Z toward camera) and NormalCrafter. Found against
-  MoGe-2's documented OpenCV normals: before, the two disagreed by 162 deg;
-  after, by 16 deg on the same plate.
+- `liveaov prefetch` skipped MoGe-3; passes can now expose a download-only `prefetch_weights` hook.
+- `--version` / About reported v0.9.0 since the 0.10 releases.
+- **UtilityRelight 1.12: works with metric depth.** With MoGe-3 the light radius came out huge and the
+  2D picker could put the light behind the camera. Fixed.
+- **DSINE normals were inverted.** They now follow the spec (OpenGL: +Y up, +Z toward camera) like
+  the other normals engines.
 
 ## [0.10.1] — 2026-10-31
 
 ### Added
-- **LTX Alpha engine (per object).** Pick "LTX Alpha - generative, hair"
-  as an object's engine in the Masks tab: SAM 3 tracks it, an RGB rectangle
-  around it (with context, never another model's alpha) goes to LTX-2.5 +
-  the alpha-gen IC-LoRA in YOUR ComfyUI, in 49-frame chunks (overlap 16,
-  cross-faded); the matte is put back at plate scale and held to the object
-  by ViTMatte's guided trimap. Neighbours of similar size are kept whole in
-  the crop. Big wins on motion blur, hair strands and splashes. Models >
-  ComfyUI for LTX Alpha sets the URL and tests server, nodes and model
-  files; the Masks tab shows whether it is ready. ComfyUI down or a model
-  missing: the object falls back to ViTMatte with a warning. LTX-2
-  Community License (free under USD 10M revenue), weights not bundled.
+- **LTX Alpha engine (per object).** Pick "LTX Alpha - generative, hair" as an object's engine in the
+  Masks tab: the matte is made by LTX-2.5 + the alpha-gen IC-LoRA in YOUR ComfyUI. Big wins on motion
+  blur, hair strands and splashes. Models > ComfyUI for LTX Alpha sets the URL and tests the server,
+  nodes and model files; the Masks tab shows whether it is ready. If ComfyUI is down or a model is
+  missing, the object falls back to ViTMatte with a warning. LTX-2 Community License, weights not
+  bundled.
 
 ## [0.10.0] — 2026-10-31
 
@@ -328,543 +167,299 @@ uses [semantic versioning](https://semver.org/).
   (COMMERCIAL.md). Each version becomes Apache-2.0 after four years. Code
   published before the change stays MIT; vendored third-party code keeps its
   own license.
-- **A camera solve that fails on the footage no longer kills the run.**
-  On a locked-off or panning shot the camera track (and the splat that
-  needs it) used to raise and throw away every other pass of the job, mattes
-  included. Now they are skipped, the rest is written, and the log ends with
-  "Run finished WITHOUT camera_pycolmap: <reason>" (also in the shot's
-  notes). A solve covering under half the frames (`min_registered_fraction`,
-  0.5) counts as a failure instead of exporting a 10-frame camera. The splat
-  warns when the masked objects cover over 40% of the plate (the clean plate
-  behind them is then mostly guesswork; Preview output shows it too).
-- **Camera solves no longer fail at random.** COLMAP's incremental mapper
-  picked its initial frame pair with a random seed: the same ALEXA 65 plate
-  solved 100/100 frames or 3/100 about half the time. The mapper now runs with
-  fixed seeds and, when a model covers too little, re-maps with the next seed
-  (`mapping_attempts`, 4; only the mapping is redone, not features or
-  matching). The best model is kept. Car plate after the fix: 4/4 runs
-  100/100 frames, 0.76 px (multithreading still moves the focal by ~1%).
-- **Output next to the plate is back, as the default.** Each shot's versions
-  go to a sibling of the plate folder, `<plate folder>_utility/v###/`, so in
-  production the utility stays in the plate's own tree and the plate folder
-  itself stays clean. "One root for every shot" is the other option (Output
-  tab; choosing a root switches to it). CLI: `--out` is optional again,
-  default = next to the plate. Old sessions keep their root.
-- **The front object keeps its alpha.** Each object is refined on its own,
-  and the car's wide refine band reached over the hand resting on it; the
-  overlap step then scaled BOTH mattes to a sum of 1, so the hand (and the
-  jacket over the wheel) came out at 0.5 in mask.person and matte.r. Overlaps
-  are now held out front to back like a comp (SAM 3's layer order): the
-  person keeps its refined alpha, the car gets what is left. PF0052: hand and
-  jacket solid again, with ViTMatte and BiRefNet alike.
-- **A part as big as its whole keeps its mask.** With only an arm in frame,
-  SAM's "person" is the arm and "hand" is nearly the same pixels: the hand
-  was not made a part (the whole had to be 10% bigger), the person won every
-  contested pixel and mask.hand came out as an edge sliver. A non-part whole
-  may now be any size; a part and a non-part are never "duplicates"; and
-  re-detection no longer skips a part because its whole already covers it.
-  PF0081: mask.hand = the full hand, mask.person = arm + hand.
-- **One engine menu.** Run engine (Passes tab) and object engine (Masks
-  tab) are the same kind of menu: the recommended engine first, Green /
-  blue screen second, everything else under Advanced. The Masks tab lost
-  "Preview with" and "Apply engine": picking an object's engine pins it and
-  re-previews it in one step. Licence badges are short (✓ / ⚠ NC, full
-  licence in the tooltip) so the inspector needs no horizontal scroll; the
-  BiRefNet-only "outline" option shows only when BiRefNet is the engine.
-- **Output folders.** Nothing is written inside the plate folder any more,
-  and every run is a new version (next to the plate by default, see above,
-  or under one chosen root):
-  `<shot folder>/v001/` with `<shot>_v001.comp.nk` on top, EXRs in
-  `passes/`, `camera/`, `splat/` (the splat was in `camera_track/`) and
-  `logs/`. Sidecars are named after the shot, so a `name_####.exr` plate no
-  longer gives `name_.utility.####.exr`. A custom shot-folder name stays per
-  shot (it used to be copied to every shot, sending them all to one folder).
-- **Hard masks are stored as box crops** (`BoxMask` / `LazyStack`): the
-  `sam3_hard_masks` `stack` is now a lazy (T, H, W) uint8 stack -
-  `np.asarray(stack)` / `stack[k]` still give dense arrays, `stack.box(k)`
-  the crop. 130 people x 100 frames at 4K went from ~160 GB of host RAM to
-  under 1 GB. Exclusivity, seam closing, layering and Cryptomatte now work
-  per object box (Cryptomatte via `encode_crops`), so crowds stay fast.
-- Objects under `refine_min_px` (auto: 8% of plate height, at least 96 px)
-  are not edge-refined in all-masks mode: SAM's mask goes into
-  `mask.<label>` anti-aliased. Hero slots are always refined. (On a 1K
-  proxy, refining 40-90 px people gave soft halos with the sand between
-  them.)
-- **New default matte engine: "Auto - ViTMatte + BiRefNet guide".** SAM 3
-  now says only WHERE an object is, not where its edge is. A trimap is built
-  per frame: sure-inside deep in SAM's mask (never deeper than half the
-  object's own thickness, so poles and thin shelves keep a core), sure-
-  outside far from it, and a wide unsure zone that ViTMatte resolves.
-  BiRefNet Portrait narrows or widens that zone where it is confident, but
-  only when it agrees with SAM (IoU >= 0.75); on objects it does not
-  understand (a rifle, a steel beam) it is ignored. Before, SAM's eroded
-  shape stayed solid and the refiner only touched a thin band around it, so
-  a blobby SAM mask (hair volume filled in) came out with hard, jagged hair
-  and cut-off strands (field report). Old construction: `trimap="band"`.
-- **Parts are cut from the whole's matte** (`parts_from_whole`, default on):
-  `mask.hair` / `mask.jacket` = `mask.person` x a soft ownership map (each
-  pixel to the nearest part, or to the remainder: face, hands). The outer
-  edge is the person's matte, strands beyond SAM's hair mask land in
-  `mask.hair`, and the parts add up to the whole. Parts are no longer
-  refined on their own (each had its own, disagreeing outline).
-- **Front-to-back order from depth** (`layer_order="depth"`, default): SAM 3
-  orders objects by median Depth Anything V2 Small disparity (Apache-2.0,
-  5 frames) instead of "the smaller object is in front". Thin background
-  shelves were ranked in front of the person standing before them, so the
-  layering post held her hair out and pasted hard chips of SAM's shape onto
-  it. Objects at about the same depth (a rifle in the hands) still fall back
-  to the area rule; no depth weights offline -> area order with a warning.
-- Neighbour exclusion fades a refined edge out over the seam width instead
-  of cutting it: a strand over the wall no longer ends on a straight line.
+- **A camera solve that fails no longer kills the run.** The camera (and the splat) are skipped, the
+  rest is written, and the log ends with "Run finished WITHOUT camera_pycolmap: <reason>" (also in
+  the shot's notes). A solve that covers too few frames counts as a failure
+  (`min_registered_fraction`). The splat warns when the masked objects cover a large part of the
+  plate.
+- **Camera solves no longer fail at random**: the same plate now gives the same camera
+  (`mapping_attempts`).
+- **Output next to the plate is back, as the default.** Each shot's versions go to
+  `<plate folder>_utility/v###/`, so the plate folder stays clean. "One root for every shot" is the
+  other option (Output tab). CLI: `--out` is optional again. Old sessions keep their root.
+- **The front object keeps its alpha.** Overlaps are held out front to back like a comp: a hand on a
+  car stays solid in the person's matte.
+- **A part as big as its whole keeps its mask** (only an arm in frame: `mask.hand` is the full hand).
+- **One engine menu.** Run engine (Passes tab) and object engine (Masks tab) are the same menu:
+  recommended first, Green / blue screen second, the rest under Advanced. Picking an object's engine
+  pins it and re-previews it in one step. Short licence badges (✓ / ⚠ NC, full licence in the
+  tooltip).
+- **Output folders.** Nothing is written inside the plate folder, and every run is a new version:
+  `<shot folder>/v001/` with `<shot>_v001.comp.nk` on top, EXRs in `passes/`, `camera/`, `splat/`
+  (was `camera_track/`) and `logs/`. Files are named after the shot. A custom shot-folder name stays
+  per shot.
+- **Crowds use far less RAM.** Plugin authors: the `sam3_hard_masks` `stack` is now a lazy (T, H, W)
+  uint8 stack (`np.asarray(stack)` / `stack[k]` still give dense arrays, `stack.box(k)` the crop).
+- Small objects in all-masks mode get SAM's anti-aliased mask instead of a soft-edge refine
+  (`refine_min_px`); hero slots are always refined.
+- **New default matte engine: "Auto - ViTMatte + BiRefNet guide".** Better hair and strands where
+  SAM's mask is blobby. The previous behaviour: `trimap="band"`.
+- **Parts are cut from the whole's matte** (`parts_from_whole`, default on): `mask.hair`,
+  `mask.jacket` ... share the person's outer edge and add up to `mask.person`.
+- **Front-to-back order from depth** (`layer_order="depth"`, default) instead of object size, so a
+  shelf behind a person no longer cuts into her hair.
+- A refined edge fades out at a neighbour instead of ending on a straight line.
 
 ### Added
-- **Preview output** (GUI button + right-click on a shot): every layer of
-  any version, frame by frame, masks over the plate, camera / splat solve
-  summary - without opening Nuke. Right-click also opens the output folder,
-  the plate folder and the comp in Nuke.
-- **Small objects / crowds** (`small_objects`, GUI "Small objects: Auto / Max
-  / Off", default Auto). SAM 3 sees ~1008 px, so a 4K plate reaches it 4x
-  smaller, and the 0.5%-of-frame size floor dropped anyone shorter than ~1/5
-  of the frame: the ALEXA 65 beach plate gave 0 people out of ~180. Now the
-  detector also runs on overlapping zoomed tiles (2x2 on 2K+ plates, 3x3 on
-  Max) at the seed frame and every re-detection; detections are merged
-  (tile-border cuts and SAM's multi-person "group" masks dropped) and the
-  floor becomes a box height (`min_object_px`, 10 px). Measured 3x3 recall:
-  ~90% of people 12-96 px tall vs ~10-40% full-frame. Tracking stays on the
-  full frame (IDs survive crossing tiles); a crowd's tracker memory bank
-  moves to host RAM and masks are post-processed in chunks
-  (`tracker_chunk`). A click on a small subject is segmented in a zoomed
-  window around it. **In proxy mode detection reads the original plate**
-  (same colour transform; masks scaled to the proxy for tracking, which
-  runs at ~1008 px inside SAM 3 anyway), and the size floor follows the
-  resolution detection ran on: a 1K proxy of the 4K beach now delivers the
-  same ~130 people as the full-res run (before: none at all). "Auto" tiles
-  any frame from 1200 px up.
-- **VRAM for crowds on ordinary GPUs.** Big groups are tracked in sessions
-  of at most `tracker_max_objects` (32, split by position so neighbours
-  still compete for pixels), the tracker's memory bank moves to host RAM
-  above 8 objects, and detection masks are upsampled at most to 2048 px
-  (`detect_post_px`). 126 people x 100 frames at a 1K proxy: SAM 3 peak
-  21 GB -> ~8-10 GB, same speed. Every pass now logs its peak VRAM.
-- Crowds: a re-detected person standing next to another is a new track, not
-  a "lost part" of them (`redetect_merge_max_ratio`: only pieces up to 60%
-  of the track's area are re-attached), and seam closing reaches at most 6%
-  of each object's height (16 px of sand between two 80 px people at 4K was
-  filled with triangular shards).
-
-- **Whole + parts roto**: concepts like `person, hair, jacket, trousers` now
-  give `mask.person` = the full body and parts that split it among
-  themselves and stay inside it. Before, one-owner-per-pixel left
-  `mask.person` as just face and hands. A track is a part when its label is
-  a clothing / body / vehicle-part word (or listed in `part_labels`) and its
-  mask lies >= 70% inside a bigger object; a person inside a car stays a
-  separate object. SAM 3 joint tracking, the refiners' neighbour exclusion,
-  seam normalisation, the layering post and Cryptomatte (the whole's ID is
-  what its parts leave) all respect it. `sam3_hard_masks` entries gain
-  `parent`.
-- **BiRefNet decides the outline** (Passes tab checkbox; param
-  `outline="refiner"`): BiRefNet draws the whole silhouette and SAM 3 only
-  gates leaks (`gate_px`). Default mode only lets BiRefNet soften the edge
-  of SAM's shape, so a blobby SAM mask (arm gaps filled in) stayed blobby.
-  Safety net: a frame where BiRefNet keeps less than `min_area_ratio`
-  (75%) of SAM's area falls back to the SAM-bounded edge (a pole across the
-  subject). From a field roto on a small, distant person.
+- **Preview output** (GUI button + right-click on a shot): every layer of any version, frame by
+  frame, masks over the plate, camera / splat summary, without opening Nuke. Right-click also opens
+  the output folder, the plate folder and the comp in Nuke.
+- **Small objects / crowds** (`small_objects`, GUI "Small objects: Auto / Max / Off", default Auto):
+  small and distant people in big plates are now found, also in proxy mode (`min_object_px`).
+- **Crowds on ordinary GPUs**: big groups fit in much less VRAM (`tracker_max_objects`). Every pass
+  logs its peak VRAM.
+- Crowds: a person standing next to another is a new track, not part of them, and the gap between
+  two close people is no longer filled with shards.
+- **Whole + parts roto**: concepts like `person, hair, jacket, trousers` give `mask.person` = the full
+  body and parts that split it and stay inside it (`part_labels` to add your own). A person inside a
+  car stays a separate object. `sam3_hard_masks` entries gain `parent`.
+- **BiRefNet decides the outline** (Passes tab checkbox; `outline="refiner"`): BiRefNet draws the
+  whole silhouette and SAM only stops leaks, with a fallback when BiRefNet loses the subject.
 
 ### Fixed
-- A person's hair came out at 0.5 (and the person held out by it) when SAM 3
-  also detected an unrelated "hair" elsewhere in frame: one stray track made
-  the whole label independent, so seam normalisation split hair and person
-  50/50. A label with any part track is now a part label. A part re-detected
-  later on top of an earlier part track also hangs on the whole now.
-- ACEScg plates were detected as lin_rec709: OIIO stamps
-  `oiio:ColorSpace = lin_rec709` on every EXR without colour info, and that
-  tag was read before the file's chromaticities. Chromaticities (AP1 ->
-  ACEScg, AP0 -> ACES2065-1) and `acesImageContainerFlag` now come first,
-  and OIIO's default stamp is reported as a guess, not a confident read.
-- Adding a shot reset the Output settings (destination, proxy, delivery) and
-  the colourspace override. A new shot now inherits them from the session;
-  a plate whose header is confident (ARRI LogC4) keeps its own colourspace.
-- The matte layering post filled SAM's hard shape to 1 next to a touching
-  object even where both refined mattes had rejected it, pasting hard chips
-  onto soft hair edges. It now fills only pixels a matte actually claims.
-- BiRefNet stretched every crop to 1024x1024, so a tall person crop was
-  squashed ~2.5:1. The crop now grows to a square from plate context and
-  is padded only where the frame ends (`keep_aspect`, on by default).
-- Multi-word concepts (`brick wall`) wrote a `mask.brick wall` channel that
-  Nuke reads as `mask_extra.brick_wall`, so the comp script pointed at a
-  missing channel. Mask channels are now channel-safe: `mask.brick_wall`.
-- ViTMatte crawled on multi-object shots (one object ~10 min, PF0093-05 with
-  10 objects did not finish in an hour): every crop has its own size, so the
-  CUDA cache grew to 25 GiB reserved for 5 GiB used and, next to the run's
-  other models, spilled the 32 GB card into shared system memory. The cache
-  is now released when it runs far above real use (0.4 GiB reserved, same
-  0.3 s per object-frame).
+- A person's hair came out at half opacity when SAM also found an unrelated "hair" elsewhere in frame.
+- ACEScg plates were detected as lin_rec709. Chromaticities now come first, and OIIO's default tag is
+  reported as a guess.
+- Adding a shot reset the Output settings and the colourspace override; a new shot now inherits them
+  from the session.
+- Hard chips of SAM's shape no longer appear on soft hair edges next to a touching object.
+- BiRefNet squashed tall crops; the crop keeps its aspect now (`keep_aspect`, on by default).
+- Multi-word concepts (`brick wall`) now write a channel Nuke can read: `mask.brick_wall`.
+- ViTMatte crawled on shots with many objects. Fixed.
 
 ## [0.9.0] — 2026-10-28
 
 ### Added
-- **Camera track** ("Camera" category; plugin `camera_pycolmap`): classical
-  SfM with pycolmap 4 (BSD-3-Clause, PyPI wheels, CPU, no weights). Writes
-  `camera_track/` next to the sidecars: `<shot>.camera.nk` (Nuke Camera2,
-  Y-up, ZXY), `<shot>.camera.json` (record + per-frame reprojection error),
-  `<shot>.points.ply` (sparse cloud) and `<shot>_colmap/` (COLMAP model —
-  what Gaussian-splat trainers read). Frames are CLAHE-normalised before
-  SIFT: on a dark bar interior (ACTIONVFX PF0081) plain SIFT registered
-  2/32 frames, CLAHE + lower peak threshold 64/64. **With Matte on in the
-  same job, every SAM 3 object is dilated and masked out of the features**
-  (matchmove garbage matte for free; `mask_labels` to restrict). Measured on
-  PF0081 (64 frames, 2048x1080 dolly): ~2 min, 0.99 px mean / 0.70 px median
-  reprojection at plate resolution, **verified inside Nuke 16** by projecting
-  the solved points through the imported camera (`scripts/nuke_check_camera.py`).
-  Limits: arbitrary scale, one focal per clip, needs parallax (locked-off /
-  nodal pans cannot triangulate); `SIMPLE_RADIAL` solves k1 but the Nuke
-  camera does not apply it (11 px off at the edges on PF0081 without an
-  undistort), so the default model is `SIMPLE_PINHOLE`.
-- **Gaussian splat** ("Camera" category; plugin `splat_gsplat`, gsplat
-  Apache-2.0): trains a 3DGS of the static scene on the shot's own camera
-  solve and re-renders every frame through it -> EXR layer `splat`
-  (`splat.R/G/B` scene-linear clean plate, `splat.A` coverage, `splat.Z`
-  multi-view depth) + `camera_track/<shot>.splat.ply` in the same world as
-  the Nuke camera. SAM 3 objects (Matte on) are excluded from training, so
-  the re-render is the plate without them. PF0081 (64 frames 2048x1080):
-  61 s training, 33.9 dB PSNR on frames held out of training; the reaching
-  arm disappears from the re-render. gsplat needs a wheel built for the
-  tool's torch 2.11 / cu128 (no upstream one): `wheels/` + 
-  `scripts/build_gsplat_wheel.bat` (all NVIDIA archs RTX 20xx-50xx), and
-  install/update scripts now re-install `wheels/*.whl` after `uv sync`.
-  See docs/gaussian_splat.md.
-- **Nuke comp starter script** `<shot>.comp.nk`, written next to the
-  sidecars on every run: the plate, the utility EXR(s), one labelled
-  Shuffle2 per pass (each mask on its own, an "every mask" matte, depth /
-  normals / flow to RGB, the splat clean plate to RGBA) inside backdrops,
-  the camera track with its point cloud in a Scene + ScanlineRender, and,
-  with a splat and masks, a Keymix that swaps the masked objects for the
-  splat clean plate. Paths are relative to the script, so the output folder
-  can be moved. Verified by loading it in Nuke 16 (`-t`): no node errors,
-  every Shuffle equals its source channel, Keymix/ScanlineRender inputs
-  wired right, 3582 points loaded on PF0081. Nuke quirks handled: our
-  `mask.*` shows up as `mask_extra.*` (collision with Nuke's built-in mask
-  layer), custom layers are declared with `add_layer` (otherwise Shuffle2
-  mappings load black).
-- **Output layout option** (GUI Output tab, `Shot.delivery_layout`): one
-  multi-layer EXR (default, as before) or **one EXR per pass in its own
-  subfolder** (`depth/`, `matte/`, `splat/`, `flow/` ...).
-- Camera track also writes `<shot>.points.obj`: Nuke 16's ReadGeo2 reads
-  neither PLY nor USD points; an OBJ with `p` elements loads as a point
-  cloud.
-- DAG **optional artifacts** (`optional_artifacts`): a pass is ordered after
-  a provider when one is scheduled and runs without it otherwise; and a
-  pass-level `emit_sidecars()` hook for non-EXR outputs.
-
-- **MegaFlow motion backend** ("MegaFlow (large displacement, slower)" in
-  the Motion category; plugin `flow_megaflow`). Vendored Apache-2.0 code
-  (ETH CVG, ECCV 2026) on a frozen DINOv2 ViT-L/14; same channels and
-  artifacts as RAFT. Bench on PF0071 @1024 (RTX 5090): on consecutive
-  frames both are fine (RAFT 68 ms/pair, MegaFlow 320 ms, 1 vs 6 GB VRAM);
-  at 8x frame stride RAFT hallucinates flow on textureless water
-  (forward/backward error 5.2 px) while MegaFlow stays clean (0.67 px).
-  RAFT remains the default; pick MegaFlow for fast action, retimes and
-  textureless plates. Weights: HF Kristen-Z/MegaFlow (prefetch covers it).
-- **Marigold V2 bridge passes** (Apache-2.0 code + weights, Qwen-Image-Edit
-  -2509 Apache-2.0 backbone): `marigold_v2_albedo` (Albedo category) and
-  `marigold_v2_depth_seethrough` (Depth category — depth that sees through
-  glass/water). The 20B model runs in an EXTERNAL environment
-  (`A:/AI/marigold-v2`, one-time setup via `setup_win.sh` + asset download,
-  ~70 GB); the passes shell out once per shot. Measured on a real plate
-  (PF0071, 16 frames @1024): ~40-50 s per shot including model load;
-  see-through depth is temporally very stable (0.2-0.4% of range frame to
-  frame); albedo drifts by a global per-channel gain that the pass
-  neutralises (`stabilize_gain`). Experimental — per-image model.
+- **Camera track** ("Camera" category; plugin `camera_pycolmap`, pycolmap, BSD-3-Clause, CPU, no
+  weights). Writes a Nuke Camera2 (`<shot>.camera.nk`), a camera record (`.camera.json`), a sparse
+  point cloud (`.points.ply`) and the COLMAP model that Gaussian-splat trainers read. With Matte on in
+  the same job, the tracked objects are masked out of the solve (`mask_labels` to restrict).
+  Checked in Nuke 16 (`scripts/nuke_check_camera.py`). Limits: arbitrary scale, one focal per clip,
+  needs parallax; the default lens model is `SIMPLE_PINHOLE`.
+- **Gaussian splat** ("Camera" category; plugin `splat_gsplat`, gsplat Apache-2.0): rebuilds the
+  static scene from the shot's own camera and re-renders every frame -> EXR layer `splat`
+  (`splat.R/G/B` without the masked objects, `splat.A` coverage, `splat.Z` depth) + a `.splat.ply` in
+  the same world as the Nuke camera. gsplat needs a wheel built for the tool's torch: `wheels/` +
+  `scripts/build_gsplat_wheel.bat`; install/update scripts re-install `wheels/*.whl`. See
+  docs/gaussian_splat.md.
+- **Nuke comp starter script** `<shot>.comp.nk` on every run: the plate, the utility EXRs, one
+  labelled Shuffle2 per pass in backdrops, the camera with its point cloud in a Scene +
+  ScanlineRender and, with a splat and masks, a Keymix that swaps the masked objects for the splat.
+  Paths are relative, so the folder can be moved. In Nuke, `mask.*` shows up as `mask_extra.*`.
+- **Output layout option** (GUI Output tab, `Shot.delivery_layout`): one multi-layer EXR (default) or
+  **one EXR per pass in its own subfolder** (`depth/`, `matte/`, `splat/`, `flow/` ...).
+- The camera track also writes `<shot>.points.obj`, which Nuke 16's ReadGeo2 loads as a point cloud.
+- Plugin authors: **optional artifacts** (`optional_artifacts`) and an `emit_sidecars()` hook for
+  non-EXR outputs.
+- **MegaFlow motion backend** ("MegaFlow (large displacement, slower)" in the Motion category; plugin
+  `flow_megaflow`, Apache-2.0). Same channels as RAFT. RAFT stays the default; pick MegaFlow for fast
+  action, retimes and textureless plates.
+- **Marigold V2 bridge passes** (Apache-2.0): `marigold_v2_albedo` (Albedo category) and
+  `marigold_v2_depth_seethrough` (Depth category, depth through glass and water). The model runs in
+  its own environment (~70 GB setup). Experimental.
 
 ### Changed
-- **Roto (SAM 3) is one-owner-per-pixel and re-detects.** Field problem:
-  overlapping mattes and broken edges where objects touch, and objects
-  missed when absent from the seed frame. Root cause: every object was
-  tracked in its OWN session, so masks overlapped freely, and detection ran
-  on one frame only. Now:
-  - objects sharing a seed frame are tracked **jointly** (video encoded
-    once; each pixel goes to the highest-logit object, user clicks get a
-    bias) and every contested pixel has ONE owner across all tracks (click
-    > detector, then the smaller object: rifle over person, person in a car
-    window). `mask.a + mask.b` now adds up instead of overlapping;
-  - **re-detection** every 12 frames (`redetect_stride`) starts tracks for
-    objects that enter later; a same-label detection touching an existing
-    track is re-attached to it (a lost arm), not a new "person";
-  - duplicates (a click on an object the detector also found) collapse to
-    one track; the click wins;
-  - refiners **normalise seams**: where soft alphas of different objects
-    sum above 1, they are scaled to add up to 1.
-  Measured (1024 proxy): PF0048 — the rifle, missed before, is found
-  (frame 1073 re-detection) and tracked 1047-1120; contested pixels 2.0% ->
-  0; alpha-sum>1 pixels after BiRefNet 2.0% -> 0. PF0052 (garage) — the
-  gunman entering at 1082 and the white car, missed before, are tracked.
-  PF0071 — same objects, joint tracking 50 -> 38 s. Cost when re-detection
-  finds more objects: PF0048 full chain 99 -> 108 s, PF0052 73 -> 125 s.
-  Old behaviour: `joint_tracking=False, exclusive_masks=False,
-  redetect_stride=None`.
-- **Roto seams between objects are layered like a comp** (new post
-  `matte_layering`, runs last, automatic with Matte). Field problem: a hard
-  dark line between two mattes that touch (person in front of a car).
-  Cause: each object is refined on its own, so at the contact BOTH alphas
-  fall to ~0.5, and SAM leaves a thin unowned line between the masks. Now
-  SAM closes contact gaps up to 0.4% of the long edge (`seam_close_px`),
-  publishes a front-to-back rank, and after refining the front object keeps
-  its own edge while the back object is filled under it near the contact
-  and held out: `back = max(back, fill) * (1 - front)`. Thin unowned cracks
-  between hair strands count as contact, wide empty areas stay background,
-  edges against background are untouched, sums never exceed 1. Refiners now
-  let an object keep its soft edge 1% of the long edge into a neighbour
-  (`neighbor_exclude_erode: auto`, was 2 px) so hair over a car survives.
-  Measured on the replayed BiRefNet output (alpha sum in the contact zone,
-  1024 proxy): PF0052 person/car mean 0.88 -> 0.997, pixels below 0.9 46%
-  -> 0.6%; PF0048 greenscreen/person 0.77 -> 0.99 (below 0.9: 77% -> 2%).
-  Cost ~6-7 s per shot.
-- SAM 3.1 evaluated, not adopted yet: its gain is speed with many objects
-  (~7x at 128 objects), quality mixed (-2..+2 pts); transformers' SAM 3.1
-  video model is still a draft PR (#46128) and Meta's repo needs Python 3.12.
+- **Roto (SAM 3): one owner per pixel, and objects that enter later are found.** Objects are tracked
+  together, so `mask.a + mask.b` add up instead of overlapping; re-detection (`redetect_stride`)
+  picks up objects that enter mid-shot; a click on an object the detector also found becomes one
+  track. Old behaviour: `joint_tracking=False, exclusive_masks=False, redetect_stride=None`.
+- **Seams between touching objects are layered like a comp** (new post `matte_layering`, automatic
+  with Matte): no more dark line between a person and the car behind. Hair over a neighbour keeps its
+  soft edge (`neighbor_exclude_erode: auto`).
 
 ### Fixed
-- The executor no longer fails when a frame has no EXR channels (e.g. SAM 3
-  found nothing and the only other pass writes non-EXR sidecars).
+- The executor no longer fails when a frame has no EXR channels.
 
 ## [0.8.0] — 2026-08-13
 
 ### Added
-- **Screen Pull keyer** ("Key" category, Passes tab): whole-plate chroma
-  key — `key.rgba` = despilled plate premultiplied by a pulled alpha
-  (screen=0, subject=1, soft in between). Pure colour-difference maths:
-  no models, no weights, MIT-clean, streams frame-by-frame (memory-flat
-  on 1000-frame clips). Auto green/blue detection; keys on the
-  SCENE-LINEAR plate (the display transform's desaturation collapses the
-  chroma discriminant) with a robust two-stage per-frame calibration
-  (works with the screen down to ~2% of frame; a per-shot floor stops
-  frames where the screen leaves view from re-targeting onto foliage).
-  `key.rgb` stays unclamped scene-linear — comp keeps the dynamic range.
-- **Chroma Key per-object engine**: SAM decides WHO, the key does the
-  edge. Auto-calibrated against the measured screen, screen-aware edges
-  (non-screen band pixels follow the SAM edge instead of the key), and a
-  seed-direction guard that warns when the clicked object looks like the
-  screen itself.
-- **Per-object engines**: every mask layer can pin its own soft-edge
-  engine (ViTMatte / BiRefNet / Chroma Key / RVM) — portrait weights on
-  the person, trimap on the car, in one run. The engine picker sits
-  beside the mask list; "Apply engine" pins the current preview engine
-  onto the selected object; the list shows each object's engine.
-- **One Matte switch** (Passes tab): the five per-engine matte combos
-  collapse into Matte Off/On + a "Default engine" dropdown (engine +
-  BiRefNet weight variant in one choice). Old sessions migrate
+- **Screen Pull keyer** ("Key" category, Passes tab): whole-plate chroma key, `key.rgba` = despilled
+  plate premultiplied by the alpha. No models, no weights, MIT. Auto green/blue detection, works on
+  long clips, `key.rgb` stays unclamped scene-linear.
+- **Chroma Key per-object engine**: SAM decides WHO, the key does the edge. Warns when the clicked
+  object looks like the screen itself.
+- **Per-object engines**: every mask layer can pin its own soft-edge engine (ViTMatte / BiRefNet /
+  Chroma Key / RVM) in one run. The list shows each object's engine.
+- **One Matte switch** (Passes tab): Matte Off/On + a "Default engine" dropdown. Old sessions migrate
   automatically.
-- **Viewport zoom + pan**: wheel zooms around the cursor (up to 8x),
-  middle-drag pans, middle double-click resets to fit. Click-to-mask
-  coordinates follow the zoomed view exactly.
-- **Models menu** (menu bar): "Download all models (prefetch)" launches
-  the full prefetch in a console window; a checkable "Offline mode"
-  pins HF_HUB_OFFLINE for TPN-style air-gapped runs. Model loading is
-  local-first everywhere: once weights are cached, no network requests.
-- **Manual pixel-aspect override** (Colour tab) for anamorphic scans
-  whose EXR header carries PixelAspectRatio=1.0.
-- **Zero-match concept warning**: every user-typed SAM 3 concept that
-  matches nothing logs a loud warning naming the missing channel — a
-  typo no longer silently drops a matte from the delivery.
+- **Viewport zoom + pan**: wheel zooms around the cursor, middle-drag pans, middle double-click fits.
+- **Models menu**: "Download all models (prefetch)" and a checkable "Offline mode" for air-gapped
+  (TPN) runs. Once weights are cached, no network requests.
+- **Manual pixel-aspect override** (Colour tab) for anamorphic scans with a wrong header.
+- **Zero-match concept warning**: a typed concept that finds nothing logs a loud warning naming the
+  missing channel.
 
 ### Fixed
-- **Duplicate-track edge ring**: a clicked object duplicated by a default
-  concept (click "ARM" + default "person") made the twin tracks hollow
-  each other out via inter-object exclusion, delivering an edge ring.
-  Exclusion now never fires inside an object's own hard mask — and
-  clicks with an empty concepts field now submit clicks ONLY (no default
-  concepts), removing the duplicate at the source.
-- **Hero mattes came out black** when any object pinned its own engine:
-  the dedicated engine passes emitted empty hero channels that
-  overwrote the main engine's. They now emit only their own
-  `mask.<name>` channels.
-- **Boiling edges + per-frame warning spam**: the edge guardrail decided
-  engine-vs-feather per frame, flip-flopping across the clip. It now
-  decides once per track (>=25% tripped frames -> consistent feather)
-  and logs one aggregated warning.
-- **Refiner band sizing** on thin/holey objects: the band radius now
-  derives from sqrt(mask AREA) instead of the bbox diagonal (a rifle no
-  longer gets a car-sized halo), BiRefNet's core anchor is a small
-  fixed erode independent of the band, and guardrail feathering is a
-  tight 3px instead of band-sized mush.
-- **SAM speck cleanup**: stray specks and pinholes in SAM 3's hard masks
-  (top culprits for refiner blobs) are removed before refinement, with
-  absolute caps so legitimate structures (car windows, arm gaps) are
-  never filled.
-- **TPN compliance**: warm-cache model loads no longer touch the
-  network (HF revalidation skipped; torch.hub validation skipped).
-- Prefetch covered ViTMatte + Video-Depth-Anything (external tester
-  report); a coverage guard now warns when a pass's weights are not in
-  the prefetch list.
+- **Edge ring on a clicked object** that a default concept also found. Clicks with an empty concepts
+  field now submit clicks only.
+- **Hero mattes came out black** when an object pinned its own engine.
+- **Boiling edges and per-frame warning spam** on some tracks.
+- **Halos too wide on thin objects** (a rifle no longer gets a car-sized halo).
+- **Stray specks and pinholes** in SAM's masks are cleaned before refining, without filling car
+  windows or arm gaps.
+- **TPN compliance**: cached model loads no longer touch the network.
+- Prefetch now covers ViTMatte + Video-Depth-Anything and warns when a pass's weights are missing
+  from the list.
 
 ### Changed
-- Masks tab: point placement auto-arms with the tab (the "Place points
-  in viewport" checkbox is gone); preview overlay alpha is gamma-lifted
-  so soft edges read as soft instead of eroded.
-- launch/update scripts pin `--extra all` so a bare `uv run` can no
-  longer prune the refiner extras.
+- Masks tab: point placement is on with the tab; the preview shows soft edges as soft.
+- launch/update scripts pin `--extra all` so a bare `uv run` cannot remove the refiner extras.
 
 ## [0.7.1] — 2026-07-14
 
 ### Fixed
-- **Fast scrubbing no longer hard-crashes the GUI** (Windows access
-  violation). The preview loader started one decode per slider tick on the
-  shared global thread pool — concurrent OIIO/OCIO decodes raced in native
-  code. Decodes are now serialized on a private single-thread pool and
-  superseded queued requests skip their decode entirely.
-- **Anamorphic plates now display desqueezed.** Pixel aspect was detected
-  from the EXR header but the viewer never applied it. Display-only: the
-  pipeline stays in pixel space, and click-to-mask coordinates are
-  unaffected. (If a scan's header carries PixelAspectRatio=1.0 there is
-  nothing to detect — say so and we'll add a manual override.)
+- **Fast scrubbing no longer crashes the GUI** on Windows.
+- **Anamorphic plates now display desqueezed.** Display only; click coordinates are unaffected.
 
 ## [0.7.0] — 2026-07-10
 
 ### Added
-- **ViTMatte trimap-guided refiner** ("SAM3 + ViTMatte" in Passes). MIT code
-  AND weights, native HF transformers loader. The trimap is built per frame
-  from SAM 3's hard mask (erode → fg, dilate band → unknown); the model only
-  estimates alpha inside the band, so known regions are respected **by
-  construction** — interior erosion is structurally impossible. Benchmarked
-  on a real plate vs BiRefNet-portrait with the in-repo harness: **+20%
-  soft-edge detail in the hair band** (25.5% vs 21.3%) and cleaner outside it.
-- **"Preview with" selector** (Masks tab): preview the seed-frame mask with
-  ANY refiner engine — ViTMatte / BiRefNet Portrait-Matting-General /
-  RMBG-2.0 / RVM — independently of the run choice, to eye-compare
-  algorithms per shot before committing. Preview-only; "Same as run"
-  mirrors the Passes choice.
-- **Compare mode** ("SAM3 + ALL refiners"): RVM, BiRefNet and ViTMatte all
-  run on the same SAM 3 tracks, each writing its own layer
-  (`matte_rvm.*` / `matte_birefnet.*` / `matte_vitmatte.*`, plus
-  `mask_<engine>.<name>` in all-masks mode) — pick the best algorithm per
-  shot in Nuke. ~3x refiner time.
+- **ViTMatte trimap-guided refiner** ("SAM3 + ViTMatte" in Passes). MIT code and weights. It only
+  works on the edge, so the inside of a mask is never eroded. More hair detail than BiRefNet Portrait.
+- **"Preview with" selector** (Masks tab): preview the seed-frame mask with any refiner engine,
+  independently of the run choice, to compare per shot.
+- **Compare mode** ("SAM3 + ALL refiners"): RVM, BiRefNet and ViTMatte each write their own layer
+  (`matte_rvm.*` / `matte_birefnet.*` / `matte_vitmatte.*`, plus `mask_<engine>.<name>` in all-masks
+  mode), to pick the best one per shot in Nuke. About 3x the refiner time.
 
 ### Fixed
-- `vitmatte_refiner` was missing from the refiner-params injection set, so
-  the "Refine ALL mask channels" toggle never reached it.
+- The "Refine ALL mask channels" toggle did not reach ViTMatte.
 
 ### Changed
-- Passes tab: the BiRefNet weights dropdown is disabled when the selected
-  matte combo doesn't use it; the all-masks checkbox is relabelled to say
+- Passes tab: the BiRefNet weights dropdown is disabled when not used; the all-masks checkbox says
   what it does. The Masks tab notes which engine the run will use.
 
 ## [0.6.0] — 2026-07-07
 
 ### Added
-- **Compact EXR delivery** (Output tab): per-shot codec + bit depth. The
-  "Compact - DWAB 16-bit" preset measured ~3.5x smaller on a real 6-pass 2K
-  shot — built for moving sidecars between machines on limited bandwidth.
-  **Cryptomatte auto-splits** into a lossless float32 `.crypto.exr` sibling
-  whenever the chosen delivery would corrupt its exact hash IDs (measured:
-  even a lossless float16 cast breaks the id->name match in Nuke). Defaults
-  unchanged (single lossless float32 file).
-- **Soft edges on ALL masks** (Masks tab): the refiner runs on every
-  detected/clicked object — each `mask.<name>` channel becomes roto-grade
-  soft alpha instead of SAM 3's hard edge (union-by-label preserved). Off by
-  default; costs one refinement per object.
-- **Per-shot refiner model choice** (Masks tab), drives BOTH the seed-frame
-  preview and the submit: BiRefNet Portrait (new default — measured visibly
-  softer hair than the general weights), BiRefNet Matting, BiRefNet General
-  (cleanest training-data provenance), RMBG-2.0 (labelled: paid licence for
-  commercial use). Benchmarked reproducibly in
-  `scripts/benchmark_refiner_weights.py`.
-- **Mask preview is always soft** and gamma-lifted, so semi-transparent
-  regions (motion-blurred hands, hair) read correctly instead of looking
-  eroded.
+- **Compact EXR delivery** (Output tab): per-shot codec + bit depth, with a "Compact - DWAB 16-bit"
+  preset for moving files on limited bandwidth. **Cryptomatte splits by itself** into a lossless
+  float32 `.crypto.exr` file when the chosen delivery would break its IDs. Defaults unchanged.
+- **Soft edges on ALL masks** (Masks tab): every `mask.<name>` channel gets a soft alpha instead of
+  SAM's hard edge. Off by default; one refinement per object.
+- **Per-shot refiner model choice** (Masks tab), for the preview and the run: BiRefNet Portrait (new
+  default, softer hair), BiRefNet Matting, BiRefNet General, RMBG-2.0 (paid licence for commercial
+  use). Benchmark script: `scripts/benchmark_refiner_weights.py`.
+- **Mask preview is always soft**, so motion-blurred hands and hair read correctly.
 
 ### Fixed
-- **Refiners can no longer erode the mask interior.** Trimap-style combine:
-  the model only shapes the edge band between erode and dilate; the eroded
-  hard core stays solid 1.0 even if the model under-segments.
-- **Refiner memory: hard-mask stacks stay uint8** end-to-end — the refiner
-  was re-expanding every track's whole-clip stack to float32 on ingest,
-  undoing the v0.5.2 saving (~1.2 GB vs 0.3 GB per 129-frame 1920 track).
+- **Refiners can no longer erode the inside of a mask.**
+- **Refiner memory**: lower RAM use on long tracks.
 
 ### Changed
-- GUI polish: refiner controls consolidated on the Masks tab, "Preview" tab
-  renamed "Colour", Output tab marked session-wide, hint text trimmed.
+- GUI polish: refiner controls on the Masks tab, "Preview" tab renamed "Colour", Output tab marked
+  session-wide.
 
 ## [0.5.2] — 2026-06-23
 
 ### Fixed
-- **SAM 3 matte no longer OOM-crashes the box on long / high-detection
-  clips.** The pass held *every* tracked instance's whole-clip mask stack in
-  host RAM at once, in **float32** — peak scaled `N_instances x frames x H x W
-  x 4 bytes`. A real shot (573 frames, 1080p, ~16 detected instances) peaked
-  ~70 GB and died on a raw `MemoryError` after ~15 min of GPU work. Fixes:
-  - **Hard masks are stored as `uint8` (0/1), not float32** — mattes are
-    binary, so float32 was a 4x waste. The same shot now peaks ~17.5 GB.
-    Consumers (Cryptomatte / RVM / BiRefNet refiner) cast to float32 one
-    instance at a time, where the cost is bounded.
-  - **Pre-flight RAM check (fail fast).** The pass estimates peak host RAM
-    right after detection — *before* the minutes-long track — and aborts at
-    second 0 with an actionable message ("needs ~X GiB for N instances at WxH
-    over F frames; Y GiB free — reduce instances, lower proxy, or shorten the
-    range") instead of crashing late and throwing the work away.
-  - **Graceful `MemoryError`** at artifact emission surfaces the same guidance
-    rather than a raw NumPy traceback, if the estimate was optimistic.
-- **Cryptomatte: stop re-expanding the whole mask stack per frame.** The
-  encoder cast each instance's entire `(T, H, W)` stack to float32 on *every*
-  frame just to read one slice — `O(frames)` wasted work. It now indexes the
-  single frame first, then casts.
+- **The SAM 3 matte no longer runs the machine out of RAM on long clips with many objects.** RAM use
+  is much lower, and a check right after detection stops at once with a clear message (fewer
+  objects, a lower proxy or a shorter range) instead of crashing late.
+- **Cryptomatte is faster on long clips.**
 
 ### Notes
-- The `sam3_hard_masks` artifact's `stack` is now `uint8` (was `float32`).
-  Anything reading it directly should cast as needed; the bundled consumers
-  already do.
+- Plugin authors: the `sam3_hard_masks` artifact's `stack` is now `uint8` (was `float32`); the
+  bundled consumers already cast as needed.
 
 ## [0.5.1] — 2026-06-18
 
 ### Fixed
-- **A transient NAS / network-share blip during sidecar writes no longer
-  throws away a whole multi-pass shot.** Each EXR write now retries a few
-  times (linear backoff) on `OSError` before failing — a momentary share
-  glitch recovers instead of aborting minutes of GPU work. Genuine faults
-  (disk full, permission) still surface after the retries.
+- **A network-share blip during sidecar writes no longer throws away a shot**: each EXR write retries
+  before failing. Real faults (disk full, permission) still show.
 
 ### Docs
-- New **Model cache** section: what's cached, that it lives on `C:`
-  (`%USERPROFILE%\.cache\huggingface` + `\.cache\torch`) by default, rough
-  sizes (~30–40 GB with everything), and how to relocate it to another drive
+- New **Model cache** section: what is cached, where (`C:` by default), rough size, and how to move it
   with `HF_HOME` / `TORCH_HOME`.
 
 ## [0.5.0] — 2026-06-18
 
 ### Added
-- **Offline operation + model prefetch** (reliability: a real batch failed 8
-  shots whose weights were *already cached* when Hugging Face had a ~14-min
-  outage — the tool re-validates the cache over the network on every run).
-  - **`liveaov prefetch`** — a "dummy preload" that loads each pass's model
-    once **on CPU** (no GPU, no VRAM contention) purely to trigger every
-    download, including the secondary repos some passes pull (NormalCrafter /
-    DepthCrafter → `stable-video-diffusion`) and the torch.hub backends.
-    `--passes a,b,c` for a subset, `--all` for every backend.
-  - **`liveaov --offline ...`** — sets `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE`
-    so a run never contacts the network and a blip can't abort it. Workflow:
-    `prefetch` once online → run with `--offline` forever.
-- Default HF timeouts raised (`HF_HUB_DOWNLOAD_TIMEOUT=120`,
-  `HF_HUB_ETAG_TIMEOUT=30`, up from 10 s) at the entry points + `launch.bat`,
-  so cold downloads and brief blips don't fail.
+- **Offline operation + model prefetch.**
+  - **`liveaov prefetch`** downloads every pass's models once, on the CPU, including the extra repos
+    some passes need. `--passes a,b,c` for a subset, `--all` for every backend.
+  - **`liveaov --offline ...`** never contacts the network, so an outage cannot abort a run.
+    Workflow: `prefetch` once online, then run with `--offline`.
+- Longer Hugging Face download timeouts, so cold downloads and brief blips do not fail.
 
 ### Changed
-- Per-run log filename now carries the shot slug (batch triage).
+- The per-run log file name carries the shot name.
 
 ## [0.4.2] — 2026-06-18
 
 ### Fixed
-- **`liveaov --help` crashed on a legacy (cp1252) Windows console / when
-  stdout is piped.** The CLI help and `inspect` output contained non-ASCII
-  glyphs (`—`, `→`, `…`, `⚠`, `±`); Rich raised `UnicodeEncodeError` rendering
-  them on non-UTF-8 stdout. All CLI user-facing strings are now ASCII, so
-  `--help` works everywhere. (`--version` and the GUI were unaffected.)
+- **`liveaov --help` crashed on a legacy Windows console or when piped.** CLI text is now ASCII.
 
 ### Changed
-- `launch.bat` now sets `PYTHONUTF8=1` (defence-in-depth for any future
-  non-ASCII output).
-- `install.bat` / `install.sh` pass `uv sync --python 3.11` explicitly,
-  alongside the `.python-version` pin from 0.4.1 — belt-and-suspenders so the
-  venv is never built against an unsupported system Python.
+- `launch.bat` sets `PYTHONUTF8=1`.
+- `install.bat` / `install.sh` pass `uv sync --python 3.11` explicitly.
 
+## [0.4.1] — 2026-06-18
+
+### Fixed
+- **Install crash on machines with system Python 3.13/3.14** (false "CUDA not available", failed
+  `liveaov --version`). Fixed with a `.python-version` (3.11) pin and `requires-python` capped to
+  `>=3.11,<3.13`.
+
+## [0.4.0] — 2026-06-18
+
+### Added
+- **BiRefNet soft-edge matte refiner**: soft alpha (hair, motion blur, fine edges) in the `matte.*`
+  channels. MIT. Pick **"SAM3 + BiRefNet (soft edges)"** in the Passes tab. RVM stays the default.
+- **Box-drag prompt** for click-to-mask: drag a rectangle around an object, often better than many
+  clicks. Box and points can be combined.
+
+### Notes
+- New `[birefnet]` extra (`timm` / `einops` / `kornia`, MIT), included in `[all]`.
+
+## [0.3.0] — 2026-06-13
+
+### Added
+- **Interactive click-to-mask** (Masks tab). Click an element in the viewport (left = include,
+  right = exclude) and SAM 3 follows it through the shot into a `mask.<name>` channel **and a
+  Cryptomatte ID** with the name you typed. Optional, and it works with the text concepts. Headless:
+  `prompt_instances` param on `sam3_matte`.
+- **Seed-frame mask preview.** "Preview mask (this frame)" shows the mask on one frame so you can
+  adjust points before the full run.
+- **Undo point**: remove the last point without clearing the set.
+- **Session save/load + continuous autosave.** After a crash the next launch offers a one-click
+  restore. `File → Save/Open session` (`*.laov.json`) keeps the whole prep. Shots whose plate folder
+  is gone are skipped with a warning.
+
+### Notes
+- **Few clicks work best**: a few points, preview, one corrective click. The GUI warns when there are
+  many points.
+- Click-to-mask gives selection / ID-grade masks, not roto-grade alpha.
+
+## [0.2.0] — 2026-06-09
+
+### Added
+- **Cryptomatte pass.** SAM 3 tracked objects as a standard Cryptomatte file, read by any
+  Cryptomatte-capable compositor (Nuke / After Effects / Fusion / Resolve) like a CG pass. The masks
+  are hard-edged: good for selections, holdouts and ID grades, not a roto replacement. The `feather`
+  param softens edges.
+- **SAM 3 concepts field** (Inspector → Passes): a comma-separated list of what to find, e.g.
+  `person, red car, dog`, for Matte and Cryptomatte. Empty = the defaults (`person, vehicle, tree,
+  building, sky, water, animal`). SAM 3 only finds what you name.
+
+### Changed
+- **Pinned `transformers` to `>=5.5.4,<6`**: other versions gave an empty matte.
+- **OpenCV is a core dependency** (`opencv-python-headless`): fixes `No module named 'cv2'`.
+- **`geffnet` is a core dependency**, so the default depth / normals / matte run out of the box.
+- **Install docs state the tiers**: `uv tool install live-action-aov` = core;
+  `uv tool install "live-action-aov[all]"` = every pass; `--torch-backend=auto` is needed on Windows.
+
+### Fixed
+- **NaN / Inf pixels in a plate no longer spoil the passes**: they are read as 0 with a warning.
+- **A colourspace the OCIO config cannot decode now warns** instead of giving dark passes.
+- **VRAM**: a multi-pass batch no longer runs out of GPU memory on the second shot.
+- **Ultrawide plates** no longer crop in the viewport.
+- **Inspector horizontal scrollbar** appears when needed.
+- **Clear messages for missing extras**: selecting a pass whose extra is not installed gives the
+  `pip install …[<extra>]` to run.
+
+[Unreleased]: https://github.com/lettidude/LiveActionAOV/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.12.0
 [0.11.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.11.1
 [0.11.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.11.0
 [0.10.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.10.1
@@ -878,136 +473,7 @@ uses [semantic versioning](https://semver.org/).
 [0.5.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.1
 [0.5.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.5.0
 [0.4.2]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.4.2
-
-## [0.4.1] — 2026-06-18
-
-### Fixed
-- **Install crash on machines with system Python 3.13/3.14.** With no
-  `.python-version` pin and an open-ended `requires-python = ">=3.11"`,
-  `uv sync` / `uv tool install` built the venv against the system's newer
-  Python instead of the 3.11 the installer provisions. NumPy (pinned `<2.0`,
-  i.e. 1.26) doesn't support Python 3.13+ and crashed on import with
-  `OverflowError: cannot convert longdouble infinity to integer`, which then
-  broke the torch import (surfacing as a false "CUDA not available" warning
-  and a failed `liveaov --version` smoke test). Fixed by adding a
-  `.python-version` (3.11) pin and capping `requires-python` to `>=3.11,<3.13`.
-  Lift the cap when the project migrates to NumPy 2.x.
-
 [0.4.1]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.4.1
-
-## [0.4.0] — 2026-06-18
-
-### Added
-- **BiRefNet soft-edge matte refiner** — turns SAM 3's hard masks into
-  roto-grade **soft alpha** (hair, motion blur, fine edges) in the `matte.*`
-  channels. MIT-licensed and commercial-clean (production-proven: CorridorKey
-  uses BiRefNet internally). Pick **"SAM3 + BiRefNet (soft edges)"** in the
-  Passes tab. Per-frame, so the `matte.*` channels are declared smoothable —
-  pair with the flow-guided temporal smoother on noisy plates. Reuses the RVM
-  refiner's pipeline; RVM stays the default. Verified end-to-end on a real
-  plate (5-pass batch, hair/edge detail confirmed in Nuke).
-- **Box-drag prompt** for click-to-mask — drag a rectangle around an object
-  for a strong single SAM 3 box prompt (often better than many clicks, and it
-  sidesteps the point-collapse trap). Click/right-click still add include/
-  exclude points; box and points coexist.
-
-### Notes
-- New `[birefnet]` extra (`timm` / `einops` / `kornia`, MIT), included in
-  `[all]`.
-
 [0.4.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.4.0
-
-## [0.3.0] — 2026-06-13
-
-### Added
-- **Interactive click-to-mask** (Masks tab). Click an element in the viewport
-  — left = include, right = exclude — and at submit SAM 3 propagates it across
-  the whole shot into a `mask.<name>` channel **and a Cryptomatte ID** with the
-  name you typed. Entirely optional (an empty object list changes nothing) and
-  complementary to the text-concepts field: text grabs known categories,
-  clicks grab the element text can't name. Fully reproducible headlessly
-  (`prompt_instances` param on `sam3_matte`); proxy-safe coordinates.
-- **Seed-frame mask preview.** "Preview mask (this frame)" runs SAM 3 on the
-  seed frame only and overlays the result — adjust points and re-preview
-  before committing to a full-shot run. The model loads on first use, stays
-  resident for instant re-previews, and is freed automatically at Submit.
-- **Undo point** — remove the last point added without clearing the set.
-- **Session save/load + continuous autosave.** Every change autosaves
-  (debounced, atomic) to a per-user file; after a crash the next launch offers
-  a one-click restore. `File → Save/Open session` (`*.laov.json`) round-trips
-  the entire prep — shots, colour decisions, exposure, models, concepts,
-  click-to-mask points, output routing, proxy, queue flags. Shots whose plate
-  folder vanished are skipped with a warning instead of failing the load.
-
-### Notes
-- **Few clicks work best.** SAM's interactive regime is few-click: measured on
-  a real plate, 3+2 points segmented the full car (34.8% of frame) while 53
-  points collapsed the mask to ~nothing (1.6%). The GUI teaches the
-  2–6-clicks → preview → one-corrective-click workflow and warns past 9 points.
-- Hard-edge scope unchanged: click-to-mask produces selection/ID-grade masks,
-  not roto-grade alpha. A soft-edge refiner stage is the planned next step.
-
 [0.3.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.3.0
-
-## [0.2.0] — 2026-06-09
-
-### Added
-- **Cryptomatte pass.** Turns SAM 3 tracked instances into a spec-correct
-  Cryptomatte sidecar (MurmurHash3 IDs, ranked coverage channels, manifest in
-  the EXR header). Reads in any Cryptomatte-capable compositor (Nuke / After
-  Effects / Fusion / Resolve) exactly like a CG render-engine pass — only the
-  source is a live-action plate. **Scope:** SAM 3 masks are hard-edged, so this
-  is fast per-object *selection* / holdouts / ID-grades, **not** a roto
-  replacement. The `feather` param softens edges.
-- **SAM 3 concepts field** (Inspector → Passes). Free-text, comma-separated
-  list of what SAM 3 should detect, e.g. `person, red car, dog`. Drives both
-  the Matte and Cryptomatte passes (they share the detector). Empty = the
-  built-in defaults (`person, vehicle, tree, building, sky, water, animal`).
-  SAM 3 only finds what you name — an empty/black matte usually means the
-  subject wasn't on the list.
-
-### Changed
-- **Pinned `transformers` to `>=5.5.4,<6`.** SAM 3 only landed in transformers
-  ~5.5 and its checkpoint key layout is version-coupled; an out-of-range build
-  silently random-initialises the SAM 3 text encoder, which produces an empty
-  matte. The old `>=4.45` pin let installs resolve a broken version.
-- **OpenCV promoted to a core dependency** (`opencv-python-headless`) — fixes a
-  `No module named 'cv2'` at submit time on clean installs.
-- **`geffnet` promoted to a core dependency** — DSINE is the default normals
-  backend, so a bare install would otherwise fail on normals with
-  `Missing dependencies: geffnet`. The `core` install now runs the full
-  default trio (depth / normals / matte) out of the box.
-- **Install docs now state the tiers explicitly:** `uv tool install
-  live-action-aov` = core (commercial-safe depth/normals/matte);
-  `uv tool install "live-action-aov[all]"` = every pass. Documents the
-  end-user `uv tool` path (previously only the cloned-repo dev path was
-  covered) and `--torch-backend=auto`, which is required on Windows —
-  otherwise `uv tool install` pulls the CPU-only torch wheel and the GUI
-  refuses to Submit.
-
-### Fixed
-- **Non-finite pixels no longer poison passes.** The reader now sanitises
-  `NaN`/`±Inf` from a plate on read (→ `0.0`) and logs a counted WARNING.
-  Comp-work plates routinely carry such pixels (unpremult divides, expression
-  nodes, render holes); previously they propagated through linearize → display
-  transform → model → every sidecar channel, because `np.clip` does not strip
-  non-finite values.
-- **Silent colourspace-decode failures now warn.** If the active OCIO config
-  can't decode the source colourspace (e.g. a config missing "ARRI LogC4"), the
-  reader logs a WARNING once per shot instead of silently passing the plate
-  through unlinearised (which looked like wrong/dark passes).
-- **VRAM hygiene.** The executor frees each pass's model after `run_shot` and
-  empties the CUDA cache. A multi-pass stack was OOM-crashing on the *second*
-  shot of a batch (shot-1 models never freed); peak VRAM is now the single
-  heaviest pass.
-- **Ultrawide preview crop.** Non-16:9 plates (e.g. 3840×1536) no longer crop
-  on the right/bottom in the viewport.
-- **Inspector horizontal scrollbar** appears as-needed so long labels aren't
-  clipped when the log panel is open.
-- **Friendly pre-flight dependency checks** — selecting a pass whose optional
-  extra isn't installed now gives an actionable `pip install …[<extra>]` hint
-  instead of a raw `ModuleNotFoundError`. Now consistent across Video Depth
-  Anything (`einops`/`easydict`), DSINE (`geffnet`), DepthCrafter and
-  NormalCrafter (`diffusers`).
-
 [0.2.0]: https://github.com/lettidude/LiveActionAOV/releases/tag/v0.2.0
