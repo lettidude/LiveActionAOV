@@ -28,6 +28,7 @@ From one plate folder, one run writes a version folder next to it:
 | **Motion** | Forward and backward vectors in pixels, Nuke VectorBlur names included | RAFT or MegaFlow |
 | **Camera** | A Nuke `Camera2` with its error and coverage in the label, point cloud, COLMAP model | COLMAP, with the masked people kept out of the solve; nodal and depth-anchored fallbacks when parallax is short |
 | **Splat background** | The set behind the people, re-rendered through the solved camera: a soft fill to start a patch from, not a finished clean plate | 3D Gaussian splat trained on the plate |
+| **Clean plate** | The plate with the people painted out, frame by frame | *coming soon*, on LTX |
 | **Nuke script** | `<shot>_v001.comp.nk`: Reads, the camera, the point cloud, a ScanlineRender, every layer shuffled out | written at the end of each run |
 
 Everything lands in one multi-layer EXR per frame (or one sequence per pass, your choice), with the model licences stamped in the header so QC can check what is shippable.
@@ -154,6 +155,10 @@ Add **Gaussian splat** and the camera plus the plate train a 3D Gaussian splat o
 </p>
 
 > Left: the plate. Right: the splat background from the same run, nothing painted and nothing clicked: the woman was found by name and left out of the training. Soft, as said above, and already tracked to the shot camera.
+
+### Clean plate: coming soon
+
+A real clean plate pass, built on LTX like the mattes, is on its way. Until then the splat background above is the starting point for a patch.
 
 ## The app
 
