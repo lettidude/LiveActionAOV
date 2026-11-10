@@ -382,6 +382,24 @@ def run_shot(
             "`{shot}_{version}.{pass}.{frame}.{ext}`.",
         ),
     ] = None,
+    proxy: Annotated[
+        str | None,
+        typer.Option(
+            "--proxy",
+            help="Run the models on a smaller copy of the plate: its long edge in "
+            "pixels (1920, 2816 ...), or `auto` = what `liveaov doctor` proposes for "
+            "this card. The EXRs are still written at plate size. Default: full plate.",
+        ),
+    ] = None,
+    window: Annotated[
+        str,
+        typer.Option(
+            "--window",
+            help="Long clips: frames per window. `auto` (default) = one go when the "
+            "clip fits the free RAM, else windows sized from it; a number forces "
+            "that many frames; `off` = always one go.",
+        ),
+    ] = "auto",
 ) -> None:
     """Run passes on the EXR sequence in `folder` and write sidecar EXRs."""
     raw_names = [p.strip() for p in passes.split(",") if p.strip()]
@@ -430,10 +448,34 @@ def run_shot(
         except ValueError:
             console.print("[red]--crop wants four integers: x,y,w,h (plate pixels).[/red]")
             raise typer.Exit(code=2) from None
+    proxy_long_edge: int | None = None
+    if proxy:
+        if proxy.strip().lower() == "auto":
+            from live_action_aov.core import hardware
+            from live_action_aov.passes.matte import sam31_bridge
+
+            suggestion = hardware.suggest(
+                hardware.detect(),
+                (crop_box[2], crop_box[3]) if crop_box else resolution,
+                work_last - work_first + 1,
+                sam31_installed=sam31_bridge.available({})[0],
+            )
+            proxy_long_edge = suggestion.proxy_long_edge
+            console.print(f"[cyan]--proxy auto:[/cyan] {suggestion.one_line()}", highlight=False)
+        else:
+            try:
+                proxy_long_edge = int(proxy)
+                if proxy_long_edge < 64:
+                    raise ValueError
+            except ValueError:
+                console.print("[red]--proxy wants `auto` or a long edge in pixels.[/red]")
+                raise typer.Exit(code=2) from None
     try:
         shot = Shot(
             name=folder.name,
             folder=folder,
+            proxy_long_edge=proxy_long_edge,
+            window_frames=window,
             apply_display_transform=display_transform,
             colorspace=colorspace or "auto",
             sequence_pattern=pattern,

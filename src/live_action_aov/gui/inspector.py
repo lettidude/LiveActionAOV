@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from live_action_aov.core import hardware
 from live_action_aov.core.output_layout import (
     NAMING_PRESETS,
     file_name,
@@ -192,6 +193,7 @@ class InspectorPanel(QWidget):
         # quick passes before committing to a full-res run.
         self._proxy_combo = QComboBox()
         self._proxy_combo.addItem("Full plate (native)", None)
+        self._proxy_combo.addItem("Large  (long edge 2816)", 2816)
         self._proxy_combo.addItem("1080p  (long edge 1920)", 1920)
         self._proxy_combo.addItem("720p  (long edge 1280)", 1280)
         self._proxy_combo.addItem("540p  (long edge 960)", 960)
@@ -201,6 +203,18 @@ class InspectorPanel(QWidget):
             "for fast iteration; switch back to Full plate for delivery."
         )
         self._proxy_combo.currentIndexChanged.connect(self._on_proxy_changed)
+        # What this machine (card + RAM) can run for the selected shot, and
+        # one click to take it. It proposes; nothing changes until pressed.
+        self._hw_label = QLabel("")
+        self._hw_label.setStyleSheet("color: #aaa; font-size: 9pt;")
+        self._hw_label.setWordWrap(True)
+        self._hw_apply_btn = QPushButton("Use suggested")
+        self._hw_apply_btn.setToolTip(
+            "Set the proxy size and the detector to what this card and the free RAM "
+            "can run for this shot. Long clips are cut in windows by themselves."
+        )
+        self._hw_apply_btn.clicked.connect(self._on_hw_apply)
+        self._hw_suggestion: hardware.Suggestion | None = None
 
         # Delivery: EXR codec + bit depth. Bandwidth-bound jobs (separate
         # machines, limited share) need compact sidecars. Item data is a
@@ -727,6 +741,10 @@ class InspectorPanel(QWidget):
         proxy_hint.setWordWrap(True)
         output_layout.addWidget(proxy_hint)
         output_layout.addWidget(self._proxy_combo)
+        hw_row = QHBoxLayout()
+        hw_row.addWidget(self._hw_label, stretch=1)
+        hw_row.addWidget(self._hw_apply_btn)
+        output_layout.addLayout(hw_row)
         output_layout.addSpacing(16)
         output_layout.addWidget(_section_label("Delivery (size vs fidelity)"))
         delivery_hint = QLabel(
@@ -955,6 +973,7 @@ class InspectorPanel(QWidget):
             self._proxy_combo.blockSignals(True)
             self._proxy_combo.setCurrentIndex(proxy_index)
             self._proxy_combo.blockSignals(False)
+            self._rebuild_hw_suggestion(shot)
             # Match the delivery combo to the shot's (compression, dtype).
             delivery_index = 0
             want = (shot.delivery_compression, shot.delivery_dtype)
@@ -1467,6 +1486,34 @@ class InspectorPanel(QWidget):
             return
         self._current.proxy_long_edge = self._proxy_combo.itemData(idx)
         self._broadcast_output_to_all_shots()
+        self._rebuild_hw_suggestion(self._current)
+
+    def _rebuild_hw_suggestion(self, shot: ShotState) -> None:
+        """ "This machine: ... Suggested: ..." under the proxy menu."""
+        hw, sam31 = _machine()
+        first, last = shot.effective_frame_range()
+        res = (shot.crop[2], shot.crop[3]) if shot.crop else shot.resolution
+        s = hardware.suggest(hw, res, last - first + 1, sam31_installed=sam31)
+        self._hw_suggestion = s
+        applied = shot.proxy_long_edge == s.proxy_long_edge and shot.detector in (
+            "auto",
+            s.detector,
+        )
+        self._hw_label.setText(
+            f"This machine: {hw.summary()}. Suggested - {s.one_line()}"
+            + (" (in use)." if applied else ".")
+        )
+        self._hw_label.setToolTip("\n".join(s.notes))
+        self._hw_apply_btn.setEnabled(s.tier != "none" and not applied)
+
+    def _on_hw_apply(self) -> None:
+        s = self._hw_suggestion
+        if self._current is None or s is None:
+            return
+        self._current.proxy_long_edge = s.proxy_long_edge
+        self._current.detector = "auto"  # the pass picks SAM 3.1 / SAM 3 the same way
+        self._broadcast_output_to_all_shots()
+        self._rebuild_from_shot()
 
     def _on_delivery_changed(self, idx: int) -> None:
         if self._building or self._current is None:
@@ -1748,3 +1795,19 @@ def _block_header(title: str, blurb: str) -> QWidget:
 
 
 __all__ = ["InspectorPanel"]
+
+
+_MACHINE: tuple[hardware.Hardware, bool] | None = None
+
+
+def _machine() -> tuple[hardware.Hardware, bool]:
+    """(the card and RAM, is SAM 3.1 installed), read once per session
+    except the free RAM, which is read every time."""
+    global _MACHINE
+    from live_action_aov.passes.matte import sam31_bridge
+
+    if _MACHINE is None:
+        _MACHINE = (hardware.detect(), sam31_bridge.available({})[0])
+    hw, sam31 = _MACHINE
+    _total, free = hardware.detect_ram()
+    return hardware.Hardware(hw.gpu_name, hw.vram_gb, hw.ram_gb, free), sam31

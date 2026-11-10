@@ -66,6 +66,8 @@ class CryptomattePass(UtilityPass):
     ]
     # Hard DAG dep: a detector emitting `sam3_hard_masks` must run first.
     requires_artifacts = ["sam3_hard_masks"]
+    # Ids and manifest come from the whole-clip SAM artifact, frame by frame.
+    window_safe = True
     provides_artifacts = ["cryptomatte_header"]
     # NEVER smooth — temporally blending hash-id channels would corrupt them.
     smoothable_channels: list[str] = []

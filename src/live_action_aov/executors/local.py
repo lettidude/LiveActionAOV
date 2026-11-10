@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
+import shutil
 import time
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any
 
+from live_action_aov.core import hardware
 from live_action_aov.core.cancel import CancelledError, CancelToken
 from live_action_aov.core.dag import PassNode, topological_sort
 from live_action_aov.core.job import Job, PassConfig, PostConfig, Shot
@@ -34,6 +36,7 @@ from live_action_aov.core.output_layout import LOGS_DIR, file_name, frame_templa
 from live_action_aov.core.output_layout import sidecar_template as layout_sidecar_template
 from live_action_aov.core.pass_base import TemporalMode, UtilityPass
 from live_action_aov.core.registry import get_registry
+from live_action_aov.core.work_dir import make_work_dir
 from live_action_aov.executors.base import Executor
 from live_action_aov.io.oiio_io import OiioError
 from live_action_aov.io.readers.crop import wrap_if_crop
@@ -230,82 +233,109 @@ class LocalExecutor(Executor):
 
         # Shared state published between passes and post-processors.
         artifacts: dict[str, dict[int, Any]] = {}
-        flow_cache = FlowCache()
+        failed_passes: dict[str, str] = {}
+        total_passes = max(1, len(ordered))
+        sidecar_template = layout_sidecar_template(shot)
+        per_pass = getattr(shot, "delivery_layout", "multilayer") == "per_pass"
+        written_channels: dict[str, Path] = {}
+        first_written: Path | None = None
+        attrs_base: dict[str, Any] | None = None
 
-        try:
-            shot.status = "running"
-            per_frame_channels: dict[int, dict[str, Any]] = {}
-            failed_passes: dict[str, str] = {}
-
-            total_passes = max(1, len(ordered))
-            for pass_idx, node in enumerate(ordered):
-                # Cancel checkpoint #1: between passes. This is the
-                # most useful one in practice — a heavy pass like
-                # DepthCrafter or NormalCrafter can run for minutes,
-                # and cancelling between passes lets the user abort
-                # before the next one starts.
-                if cancel is not None:
-                    cancel.raise_if_cancelled()
-                # Passes dominate runtime — split the 0.1 → 0.9 band
-                # evenly across them so the bar moves predictably even
-                # though we can't see inside each pass.
-                pass_fraction_start = 0.1 + 0.8 * (pass_idx / total_passes)
-                report(
-                    pass_fraction_start,
-                    f"Pass {pass_idx + 1}/{total_passes}: {node.name}",
+        def run_node(
+            node: PassNode,
+            frame_range: tuple[int, int],
+            channels_out: dict[int, dict[str, Any]],
+            arts: dict[str, dict[int, Any]],
+            flows: FlowCache,
+            extra_params: dict[str, Any],
+        ) -> set[str]:
+            """Run one pass on `frame_range`; returns the channels it wrote
+            (empty when it failed on this footage or was skipped)."""
+            # Cancel checkpoint #1: between passes. This is the most useful
+            # one in practice — a heavy pass can run for minutes, and
+            # cancelling between passes lets the user abort before the next.
+            if cancel is not None:
+                cancel.raise_if_cancelled()
+            pc, cls = resolved_by_name[node.name]
+            if node.name in failed_passes:
+                return set()  # failed in an earlier window: not retried
+            missing = [a for a in cls.requires_artifacts if not arts.get(a)]
+            if missing and failed_passes:
+                # Its input came from a pass that failed on this footage.
+                _log.warning(
+                    "%s skipped: needs %s (%s failed)",
+                    node.name,
+                    ", ".join(missing),
+                    ", ".join(failed_passes),
                 )
-                pc, cls = resolved_by_name[node.name]
-                missing = [a for a in cls.requires_artifacts if not artifacts.get(a)]
-                if missing and failed_passes:
-                    # Its input came from a pass that failed on this footage.
-                    _log.warning(
-                        "%s skipped: needs %s (%s failed)",
-                        node.name,
-                        ", ".join(missing),
-                        ", ".join(failed_passes),
-                    )
-                    failed_passes[node.name] = f"needs {', '.join(missing)}"
-                    continue
-                pass_params = dict(pc.params)
-                pass_params.update(shot.pass_overrides.get(node.name, {}))
-                instance = cls(pass_params)
-                try:
-                    self._run_pass(
-                        instance,
-                        cls,
-                        node.name,
-                        reader,
-                        shot,
-                        artifacts,
-                        per_frame_channels,
-                        flow_cache,
-                    )
-                except CancelledError:
+                failed_passes[node.name] = f"needs {', '.join(missing)}"
+                return set()
+            pass_params = dict(pc.params)
+            pass_params.update(shot.pass_overrides.get(node.name, {}))
+            pass_params.update(extra_params)
+            instance = cls(pass_params)
+            try:
+                return self._run_pass(
+                    instance, cls, node.name, reader, shot, arts, channels_out, flows, frame_range
+                )
+            except CancelledError:
+                raise
+            except Exception as e:
+                if not cls.footage_dependent:
                     raise
-                except Exception as e:
-                    if not cls.footage_dependent:
-                        raise
-                    _log.error(
-                        "%s failed on this footage, the rest of the run is kept: %s", node.name, e
-                    )
-                    _log.debug("%s traceback", node.name, exc_info=True)
-                    failed_passes[node.name] = str(e)
-                finally:
-                    # Free this pass's GPU model before the next one loads. Peak
-                    # VRAM then tracks the single heaviest pass, not the sum of
-                    # every model.
-                    try:
-                        instance.unload()
-                    except Exception:
-                        _log.debug("unload() failed for %s", node.name, exc_info=True)
-                    del instance
-                    _free_gpu_memory()
+                _log.error(
+                    "%s failed on this footage, the rest of the run is kept: %s", node.name, e
+                )
+                _log.debug("%s traceback", node.name, exc_info=True)
+                failed_passes[node.name] = str(e)
+                return set()
+            finally:
+                # Free this pass's GPU model before the next one loads. Peak
+                # VRAM then tracks the single heaviest pass, not the sum of
+                # every model.
+                try:
+                    instance.unload()
+                except Exception:
+                    _log.debug("unload() failed for %s", node.name, exc_info=True)
+                del instance
+                _free_gpu_memory()
 
+        def probe_node(node: PassNode) -> dict[str, Any]:
+            """The clip-level decisions of a window pass (`probe_clip`)."""
+            pc, cls = resolved_by_name[node.name]
+            if cls.probe_clip is UtilityPass.probe_clip or node.name in failed_passes:
+                return {}
+            pass_params = dict(pc.params)
+            pass_params.update(shot.pass_overrides.get(node.name, {}))
+            instance = cls(pass_params)
+            try:
+                if getattr(cls, "requires_artifacts", None) or getattr(
+                    cls, "optional_artifacts", None
+                ):
+                    instance.ingest_artifacts(artifacts)
+                pinned = dict(instance.probe_clip(reader, shot.frame_range) or {})
+                if pinned:
+                    _log.info("%s: decided once for the whole clip: %s", node.name, pinned)
+                return pinned
+            finally:
+                try:
+                    instance.unload()
+                except Exception:
+                    _log.debug("unload() failed for %s", node.name, exc_info=True)
+                del instance
+                _free_gpu_memory()
+
+        def apply_posts(
+            per_frame_channels: dict[int, dict[str, Any]],
+            arts: dict[str, dict[int, Any]],
+            flows: FlowCache,
+        ) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+            """Auto-wire and run the post-processors on these frames."""
             # --- Auto-wire TemporalSmoother for PER_FRAME passes with
             # `smooth: auto` (spec §13.1 Phase 2). Only runs when a flow pass
             # actually emitted forward_flow — otherwise the smoother would
             # have nothing to consume and the auto-wire is a no-op anyway.
-            flow_available = "forward_flow" in artifacts and bool(artifacts["forward_flow"])
+            flow_available = "forward_flow" in arts and bool(arts["forward_flow"])
             existing_post_names = {p.name for p in job.post}
             auto_post: list[PostConfig] = []
 
@@ -374,7 +404,7 @@ class LocalExecutor(Executor):
             # Matte layering resolves shared seams between per-object soft
             # mattes (front edge + held-out back). It must see the FINAL
             # alphas, so it always runs last - after any smoother.
-            if artifacts.get("sam3_hard_masks") and "matte_layering" not in existing_post_names:
+            if arts.get("sam3_hard_masks") and "matte_layering" not in existing_post_names:
                 auto_post.append(PostConfig(name="matte_layering", params={}))
             posts = list(job.post) + auto_post
             posts = [p for p in posts if p.name != "matte_layering"] + [
@@ -392,9 +422,9 @@ class LocalExecutor(Executor):
                     )
                 post_instance = post_cls(post_cfg.params)
                 if hasattr(post_instance, "ingest_artifacts"):
-                    post_instance.ingest_artifacts(artifacts)
+                    post_instance.ingest_artifacts(arts)
                 per_frame_channels = post_instance.apply(
-                    per_frame_channels, flow_cache, shot.name, shot=shot
+                    per_frame_channels, flows, shot.name, shot=shot
                 )
                 # Capture any resolved state the post left on itself
                 # (e.g. PositionFromDepth stamps intrinsics_source +
@@ -414,13 +444,28 @@ class LocalExecutor(Executor):
                     }
                 )
 
+            return per_frame_channels, applied_post
+
+        def write_frames(
+            per_frame_channels: dict[int, dict[str, Any]],
+            arts: dict[str, dict[int, Any]],
+            applied_post: list[dict[str, Any]],
+            only: set[int] | None,
+            whole: bool,
+        ) -> None:
+            """Write the sidecars of these frames (`only`: just those)."""
+            nonlocal first_written, attrs_base
             # --- Write sidecars ---
             # Output dir was resolved at submit() entry so the per-run
             # log could be placed alongside the outputs; reuse it here.
             sidecar_dir.mkdir(parents=True, exist_ok=True)
-            sidecar_template = layout_sidecar_template(shot)
-            attrs_base = _base_attrs(shot, job, artifacts, applied_post)
-            report(0.9, "Writing sidecars…")
+            if attrs_base is None:
+                # Shot-level header, built once and written identically on
+                # every frame: a run in windows must not change a key from
+                # one window to the next.
+                attrs_base = _base_attrs(shot, job, arts, applied_post)
+            if whole:
+                report(0.9, "Writing sidecars…")
 
             # Identify the matte refiner (if any) for the `matte/commercial`
             # shortcut attr. The refiner is whichever pass declared
@@ -462,18 +507,17 @@ class LocalExecutor(Executor):
                         break
                     break
 
-            first_written: Path | None = None
-            per_pass = getattr(shot, "delivery_layout", "multilayer") == "per_pass"
-            written_channels: dict[str, Path] = {}
             total_frames = max(1, len(per_frame_channels))
             for frame_write_idx, (frame_idx, channels) in enumerate(per_frame_channels.items()):
+                if only is not None and frame_idx not in only:
+                    continue
                 # Cancel checkpoint #2: between sidecar writes. Each
                 # write is ~50ms, so per-frame polling is essentially
                 # free here — the user gets near-instant abort during
                 # the 0.9→1.0 phase of the progress bar.
                 if cancel is not None:
                     cancel.raise_if_cancelled()
-                if frame_write_idx % max(1, total_frames // 20) == 0:
+                if whole and frame_write_idx % max(1, total_frames // 20) == 0:
                     frac = 0.9 + 0.1 * (frame_write_idx / total_frames)
                     report(
                         min(frac, 0.99),
@@ -554,6 +598,104 @@ class LocalExecutor(Executor):
                 if first_written is None:
                     first_written = targets[0][0] if targets else out_path
 
+        try:
+            shot.status = "running"
+            spans = _window_plan(shot, [cls for _pc, cls in resolved])
+            if len(spans) == 1:
+                per_frame_channels: dict[int, dict[str, Any]] = {}
+                flow_cache = FlowCache()
+                for pass_idx, node in enumerate(ordered):
+                    # Passes dominate runtime — split the 0.1 → 0.9 band
+                    # evenly across them so the bar moves predictably even
+                    # though we can't see inside each pass.
+                    report(
+                        0.1 + 0.8 * (pass_idx / total_passes),
+                        f"Pass {pass_idx + 1}/{total_passes}: {node.name}",
+                    )
+                    run_node(node, shot.frame_range, per_frame_channels, artifacts, flow_cache, {})
+                per_frame_channels, applied = apply_posts(per_frame_channels, artifacts, flow_cache)
+                write_frames(per_frame_channels, artifacts, applied, None, True)
+                del per_frame_channels
+            else:
+                # --- A long clip, in windows -------------------------------
+                # Whole-clip passes (trackers, the camera, video models) run
+                # once and their channels go to disk; the window-safe ones
+                # run per window with `window_overlap` frames of context on
+                # each side, and each window's core frames are written
+                # before the next one starts. Host RAM is bounded by the
+                # window, not the clip.
+                clip = _clip_scope(ordered, resolved_by_name)
+                win_nodes = [n for n in ordered if n.name not in clip]
+                _log.info(
+                    "Long clip: %d frames in %d windows of %d (+%d context each side). "
+                    "Whole-clip passes: %s. Per window: %s.",
+                    shot.frame_range[1] - shot.frame_range[0] + 1,
+                    len(spans),
+                    spans[0][3] - spans[0][2] + 1,
+                    int(shot.window_overlap),
+                    ", ".join(n.name for n in ordered if n.name in clip) or "none",
+                    ", ".join(n.name for n in win_nodes),
+                )
+                steps = max(1, len(clip) + len(spans) * len(win_nodes))
+                step = 0
+                spill = make_work_dir("laov_spill_")
+                try:
+                    for node in ordered:
+                        if node.name not in clip:
+                            continue
+                        report(0.1 + 0.8 * step / steps, f"{node.name} (whole clip)")
+                        step += 1
+                        clip_channels: dict[int, dict[str, Any]] = {}
+                        run_node(node, shot.frame_range, clip_channels, artifacts, FlowCache(), {})
+                        _spill_save(spill, node.name, clip_channels)
+                        del clip_channels
+                    pinned = {n.name: probe_node(n) for n in win_nodes}
+                    n_fade = max(0, int(shot.window_overlap) // 2)
+                    tail: dict[int, dict[str, Any]] = {}
+                    for wi, (run_a, run_b, core_a, core_b) in enumerate(spans):
+                        arts_w = dict(artifacts)
+                        flows_w = FlowCache()
+                        win_channels: dict[int, dict[str, Any]] = {}
+                        fade_names: set[str] = set()
+                        # Same order as a whole-clip run, so a later pass
+                        # still overrides an earlier one's channel.
+                        for node in ordered:
+                            if node.name in clip:
+                                _spill_load(spill, node.name, run_a, run_b, win_channels)
+                                continue
+                            report(
+                                0.1 + 0.8 * step / steps,
+                                f"Window {wi + 1}/{len(spans)} ({core_a}-{core_b}): {node.name}",
+                            )
+                            step += 1
+                            names = run_node(
+                                node,
+                                (run_a, run_b),
+                                win_channels,
+                                arts_w,
+                                flows_w,
+                                pinned.get(node.name, {}),
+                            )
+                            if getattr(resolved_by_name[node.name][1], "window_crossfade", False):
+                                fade_names |= names
+                        win_channels, applied = apply_posts(win_channels, arts_w, flows_w)
+                        _crossfade_in(win_channels, tail, core_a, n_fade)
+                        tail = {
+                            fr: {
+                                k: v.copy()
+                                for k, v in win_channels.get(fr, {}).items()
+                                if k in fade_names
+                            }
+                            for fr in range(core_b + 1, min(core_b + n_fade, run_b) + 1)
+                        }
+                        write_frames(
+                            win_channels, arts_w, applied, set(range(core_a, core_b + 1)), False
+                        )
+                        del win_channels, arts_w, flows_w
+                        _free_gpu_memory()
+                finally:
+                    shutil.rmtree(spill, ignore_errors=True)
+
             shot.sidecars["utility"] = first_written or sidecar_dir
             try:
                 comp = _write_comp_script(
@@ -602,9 +744,11 @@ class LocalExecutor(Executor):
         artifacts: dict[str, dict[int, Any]],
         per_frame_channels: dict[int, dict[str, Any]],
         flow_cache: FlowCache,
-    ) -> None:
-        """One pass: feed artifacts in, run it, collect its channels,
-        artifacts and sidecars."""
+        frame_range: tuple[int, int] | None = None,
+    ) -> set[str]:
+        """One pass: feed artifacts in, run it on `frame_range` (default:
+        the shot's), collect its channels, artifacts and sidecars. Returns
+        the names of the channels it wrote."""
         # Pipe upstream artifacts into passes that declare requires.
         # Default `ingest_artifacts` is a no-op so flow/depth/normals
         # pay nothing; refiner passes read sam3_hard_masks etc. here.
@@ -621,13 +765,15 @@ class LocalExecutor(Executor):
         ):
             pass_reader = LinearizedReader(reader)
         _reset_vram_peak()
-        frame_outputs = instance.run_shot(pass_reader, shot.frame_range)
+        frame_outputs = instance.run_shot(pass_reader, frame_range or shot.frame_range)
         peak = _vram_peak_gib()
         if peak is not None:
             # Which pass decides the GPU a job needs (small cards).
             _log.info("%s: peak VRAM %.1f GB", name, peak)
+        wrote: set[str] = set()
         for frame_idx, channels in frame_outputs.items():
             per_frame_channels.setdefault(frame_idx, {}).update(channels)
+            wrote.update(channels)
 
         emitted = instance.emit_artifacts()
         for art_name, per_frame in emitted.items():
@@ -646,6 +792,106 @@ class LocalExecutor(Executor):
         # emit_sidecars is a no-op, so EXR-only passes pay nothing.
         for tag, path in (instance.emit_sidecars(shot) or {}).items():
             shot.sidecars[tag] = Path(path)
+        return wrote
+
+
+def _window_plan(shot: Shot, classes: list[type[UtilityPass]]) -> list[tuple[int, int, int, int]]:
+    """The frame windows of this run: (run_first, run_last, core_first,
+    core_last) in plate frame numbers, ends inclusive. One entry = the whole
+    clip in one go (the clip fits, windows are off, or no pass of the job
+    can run in windows)."""
+    first, last = shot.frame_range
+    n = last - first + 1
+    whole = [(first, last, first, last)]
+    want = shot.window_frames
+    if want is None or not any(getattr(c, "window_safe", False) for c in classes):
+        return whole
+    overlap = max(0, int(shot.window_overlap))
+    if want == "auto":
+        res = (shot.crop[2], shot.crop[3]) if shot.crop is not None else shot.resolution
+        channels = min(hardware.DEFAULT_CHANNELS, 6 + 8 * len(classes))
+        free = hardware.detect_ram()[1]
+        win = hardware.plan_windows(res, n, free, shot.proxy_long_edge, channels, overlap)
+        if win is None:
+            return whole
+        _log.info(
+            "This clip needs about %.0f GB of RAM in one go (%.0f GB free): running it in windows.",
+            hardware.estimate_ram_gb(res, n, shot.proxy_long_edge, channels),
+            free or 0.0,
+        )
+    else:
+        win = int(want)
+    spans = hardware.window_spans(n, win, overlap)
+    return [(first + ra, first + rb - 1, first + ca, first + cb - 1) for ra, rb, ca, cb in spans]
+
+
+def _clip_scope(
+    ordered: list[PassNode], resolved_by_name: dict[str, tuple[PassConfig, type[UtilityPass]]]
+) -> set[str]:
+    """Passes that run once on the whole clip: those that are not
+    window-safe, and whatever a whole-clip pass REQUIRES (its input has to
+    exist for the whole clip before it runs)."""
+    clip = {
+        n.name for n in ordered if not getattr(resolved_by_name[n.name][1], "window_safe", False)
+    }
+    provider = {a: n.name for n in ordered for a in n.provides}
+    changed = True
+    while changed:
+        changed = False
+        for n in ordered:
+            if n.name not in clip:
+                continue
+            for a in n.requires:
+                p = provider.get(a)
+                if p is not None and p not in clip:
+                    clip.add(p)
+                    changed = True
+    return clip
+
+
+def _spill_save(folder: Path, node: str, channels: dict[int, dict[str, Any]]) -> None:
+    """A whole-clip pass's channels, one file per frame, out of RAM."""
+    import numpy as np
+
+    for frame, chans in channels.items():
+        if chans:
+            np.savez(folder / f"{node}.{frame}.npz", **chans)
+
+
+def _spill_load(
+    folder: Path, node: str, first: int, last: int, out: dict[int, dict[str, Any]]
+) -> None:
+    import numpy as np
+
+    for frame in range(first, last + 1):
+        p = folder / f"{node}.{frame}.npz"
+        if p.is_file():
+            with np.load(p) as z:
+                out.setdefault(frame, {}).update({k: z[k] for k in z.files})
+
+
+def _crossfade_in(
+    channels: dict[int, dict[str, Any]], tail: dict[int, dict[str, Any]], core_first: int, n: int
+) -> None:
+    """Blend the previous window's result into this window's first `n`
+    frames (mostly the old one on the first frame, all the new one after
+    the last), so a result that differs between two windows changes over a
+    few frames instead of popping at the cut. Pixels the two windows agree
+    on are left exactly as they are."""
+    import numpy as np
+
+    for i in range(n):
+        frame = core_first + i
+        old, new = tail.get(frame), channels.get(frame)
+        if not old or not new:
+            continue
+        w_old = 1.0 - (i + 1) / (n + 1)
+        for name, a in old.items():
+            b = new.get(name)
+            if b is None or b.shape != a.shape:
+                continue
+            mixed = (w_old * a + (1.0 - w_old) * b).astype(b.dtype, copy=False)
+            new[name] = np.where(a == b, b, mixed)
 
 
 def _reset_vram_peak() -> None:

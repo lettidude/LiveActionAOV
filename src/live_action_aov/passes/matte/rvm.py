@@ -223,6 +223,12 @@ class RVMRefinerPass(UtilityPass):
     # artifact schema) must run first.
     requires_artifacts = ["sam3_hard_masks", "sam3_instances"]
     provides_artifacts = ["matte_heroes"]
+    # Objects, hero slots and layer order come from the whole-clip SAM
+    # artifact; the refine itself is local in time. What still differs
+    # between two windows (a recurrent state, a per-call level) is
+    # cross-faded after each cut.
+    window_safe = True
+    window_crossfade = True
 
     # RVM's recurrent state already blends across frames; extra smoothing
     # would just soften edges. No smoothable channels.

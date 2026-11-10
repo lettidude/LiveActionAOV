@@ -69,7 +69,7 @@ class Suggestion:
         return f"{self.title}: {proxy}, {det}{win}"
 
 
-def _ram_gb() -> tuple[float | None, float | None]:
+def detect_ram() -> tuple[float | None, float | None]:
     """(installed, available) host RAM in GB."""
     try:
         import psutil
@@ -92,7 +92,7 @@ def detect() -> Hardware:
             vram = float(torch.cuda.get_device_properties(0).total_memory) / 2**30
     except Exception:
         pass
-    total, free = _ram_gb()
+    total, free = detect_ram()
     return Hardware(gpu_name=name, vram_gb=vram, ram_gb=total, ram_free_gb=free)
 
 
@@ -124,6 +124,7 @@ def plan_windows(
     ram_free_gb: float | None,
     proxy_long_edge: int | None = None,
     channels: int = DEFAULT_CHANNELS,
+    overlap: int = WINDOW_OVERLAP,
 ) -> int | None:
     """Frames per window so the run fits in the free RAM, or None when the
     whole clip fits (or the RAM cannot be read)."""
@@ -134,7 +135,7 @@ def plan_windows(
     w, h = proxy_size(resolution, proxy_long_edge)
     per_frame = channels * w * h * 4 * 1.15 / 2**30
     budget = 0.6 * ram_free_gb - BASE_RAM_GB
-    fit = int(budget / per_frame) - 2 * WINDOW_OVERLAP if per_frame > 0 else n_frames
+    fit = int(budget / per_frame) - 2 * overlap if per_frame > 0 else n_frames
     win = max(MIN_WINDOW, fit)
     return None if win >= n_frames else win
 
@@ -239,6 +240,7 @@ __all__ = [
     "Hardware",
     "Suggestion",
     "detect",
+    "detect_ram",
     "estimate_ram_gb",
     "plan_windows",
     "proxy_size",

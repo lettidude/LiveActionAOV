@@ -63,6 +63,7 @@ class DSINEPass(UtilityPass):
     )
     pass_type = PassType.GEOMETRIC
     temporal_mode = TemporalMode.PER_FRAME
+    window_safe = True
     input_colorspace = "srgb_display"
 
     produces_channels = [

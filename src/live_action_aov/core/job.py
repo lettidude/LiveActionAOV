@@ -134,6 +134,14 @@ class Shot(BaseModel):
     # whole frame (camera, splat) refuse to run with a crop.
     crop: tuple[int, int, int, int] | None = None
 
+    # Long clips: host RAM grows with the frame count (every pass's channels
+    # are kept until the write), so a clip that does not fit is run in
+    # overlapping windows of frames. "auto" = sized from the free RAM, one
+    # go when the clip fits; an int = that many frames per window; None =
+    # never. `window_overlap` = context frames on each side of a window.
+    window_frames: int | str | None = "auto"
+    window_overlap: int = 16
+
     status: ShotStatus = "new"
     notes: str = ""
 
@@ -202,6 +210,18 @@ class Shot(BaseModel):
         if len(vals) != 4:
             raise ValueError("crop must be (x, y, w, h) in plate pixels")
         return (vals[0], vals[1], vals[2], vals[3])
+
+    @field_validator("window_frames", mode="before")
+    @classmethod
+    def _check_window(cls, v: Any) -> int | str | None:
+        if v is None or (isinstance(v, str) and v.strip().lower() in ("", "off", "none")):
+            return None
+        if isinstance(v, str) and v.strip().lower() == "auto":
+            return "auto"
+        n = int(v)
+        if n < 2:
+            raise ValueError("window_frames wants 'auto', nothing, or at least 2 frames")
+        return n
 
     @model_validator(mode="after")
     def _check_crop_in_plate(self) -> Shot:
