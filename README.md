@@ -118,7 +118,7 @@ Tick **Matte** and every person, vehicle and animal in the shot is found and tra
   <img src="docs/img/ltx-roto-hair.gif" alt="LTX Alpha roto: plate, soft matte with every strand of hair, and the subject over a flat colour" width="900">
 </p>
 
-LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup is in the works). Set its address in **Models > ComfyUI for LTX Alpha** and press **Test**. It checks the server, the nodes and the model files, and finds GGUF builds for smaller cards. Without ComfyUI the mattes come from ViTMatte (SAM finds the object, BiRefNet says where it is sure, ViTMatte resolves hair and blur), the log says so, and the run carries on. About a minute and a half per 100 frames at 2K on an RTX 5090.
+LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup is in the works). Set its address in **Models > ComfyUI for LTX Alpha** and press **Test**. It checks the server, the nodes and the model files, and finds GGUF builds for smaller cards. Without ComfyUI the mattes come from ViTMatte (SAM finds the object, BiRefNet says where it is sure, ViTMatte resolves hair and blur), the log says so, and the run carries on.
 
 <p align="center">
   <img src="docs/img/ltx-roto-motion.gif" alt="LTX Alpha roto on a running figure: the motion blur stays soft in the matte" width="900">
@@ -128,13 +128,13 @@ LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup
   <img src="docs/img/ltx-roto-water.gif" alt="LTX Alpha roto on two people wading: the splashes come through as semi-transparent matte" width="900">
 </p>
 
-> Three runs with the defaults, nothing painted, nothing clicked: plate, the `foreground.a` matte, and the comp over a flat colour. Hair, motion blur, water. About a minute and a half of LTX per 100 frames on an RTX 5090.
+> Three runs with the defaults, nothing painted, nothing clicked: plate, the `foreground.a` matte, and the comp over a flat colour. Hair, motion blur, water.
 
 ### Geometry: depth in metres, normals, position
 
 **MoGe-3** (Microsoft, MIT) is the default for normals and the best choice for depth. One pass gives depth in metres, camera-space normals and a `P` world-position pass you can drop into PositionToPoints or a relight. No halo around people, real structure in hair and faces, and normals much steadier frame to frame than DSINE's.
 
-The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (from the camera track when there is one), a stabilised metric scale, letterbox bars cropped before the model sees them, sky flagged in `depth.confidence`. About 1 s per frame at 2K, 2.6 GB of VRAM at any resolution.
+The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (from the camera track when there is one), a stabilised metric scale, letterbox bars cropped before the model sees them, sky flagged in `depth.confidence`.
 
 <p align="center">
   <img src="docs/img/geometry.gif" alt="Depth in metres, camera-space normals and world position on a dark handheld shot with two people" width="900">
