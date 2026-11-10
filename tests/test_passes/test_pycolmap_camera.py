@@ -346,7 +346,7 @@ def test_an_sfm_solve_without_a_verdict_is_impossible():
 def test_sfm_verdict_leads_the_warnings_in_plate_pixels():
     s = _build(_verdict("GOOD", heldout_px=0.3))
     q = s.quality
-    assert q.verdict == "GOOD"
+    assert q.verdict == "GOOD" and q.nodal is False
     assert q.heldout_error_px == pytest.approx(0.6)  # solve 1024 wide -> plate 2048
     assert q.warnings[0].startswith("GOOD CANDIDATE - translated: held-out error 0.6 px")
     assert "3/4 reliable frames" in q.warnings[0] and " m " not in q.warnings[0]  # no scale in SfM

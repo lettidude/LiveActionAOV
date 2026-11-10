@@ -17,7 +17,8 @@ uses [semantic versioning](https://semver.org/).
   reliable-frame count and the NODAL flag leading its warnings and the Nuke label. The verdict is
   not optional: `build_solve_from_reconstruction` refuses to build a camera without one. Schema
   version unchanged (the two fields keep their meaning; the SfM line states the parallax instead of
-  metres, since an SfM solve has no scale).
+  metres, since an SfM solve has no scale). The referee's parallax call is also machine-readable
+  (`quality.nodal`), and the splat pass refuses a camera it called NODAL, not only the nodal mapper.
 
 ## [0.12.0] — 2026-11-08
 

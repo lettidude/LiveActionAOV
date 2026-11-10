@@ -139,6 +139,11 @@ class Quality(BaseModel):
     # COLMAP's poses (SfM); "" only for solvers without one (nodal).
     verdict: str = ""
     heldout_error_px: float | None = None
+    # The referee's parallax call: True = the camera travels less than 2 % of
+    # the scene depth (a pan, or a plate with no parallax), so depth, scale
+    # and a splat are off the table whatever `backend.mapper` says. None =
+    # no referee ran.
+    nodal: bool | None = None
 
 
 class CameraSolve(BaseModel):

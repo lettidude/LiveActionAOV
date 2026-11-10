@@ -1623,8 +1623,9 @@ def _apply_verdict(
     quality: Quality, verdict: Any, scale: float, n_frames: int, *, metric: bool
 ) -> None:
     """Write a `pnp.PnPVerdict` into `quality`: the verdict line leads the
-    warnings (hence the Nuke label), `verdict` and `heldout_error_px` (plate
-    px = solve px x `scale`) feed the GUI light and `liveaov qc`. `metric`
+    warnings (hence the Nuke label), `verdict`, `heldout_error_px` (plate
+    px = solve px x `scale`) and `nodal` feed the GUI light, `liveaov qc`
+    and the splat gate. `metric`
     solves (PnP, metres from MoGe-3) state the travel in metres; an SfM
     solve has no scale, so only the parallax (travel over depth) is said."""
     held_plate: float | None = float(verdict.heldout_px) * scale
@@ -1654,6 +1655,7 @@ def _apply_verdict(
     quality.warnings.insert(0, line)
     quality.verdict = verdict.verdict
     quality.heldout_error_px = held_plate
+    quality.nodal = bool(verdict.nodal)
 
 
 def _quality(
