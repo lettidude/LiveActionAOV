@@ -100,13 +100,14 @@ def main_callback(
 
 
 # Commercial-safe default set a typical run uses - what `prefetch` warms
-# when no explicit list is given.
+# when no explicit list is given, and what the portable build carries.
+# Not in it on purpose: DSINE (non-commercial licence) and RVM (GPL-3.0 code:
+# fetched from its repository at first use, never bundled).
 _DEFAULT_PREFETCH = [
     "depth_anything_v2",
     "video_depth_anything",
     "moge3",
     "sam3_matte",
-    "rvm_refiner",
     "birefnet_refiner",
     "vitmatte_refiner",
     "flow",
@@ -128,6 +129,7 @@ _PREFETCH_EXEMPT = {
     "camera_pycolmap",
     "splat_gsplat",
     "ltx_alpha_refiner",  # weights live in the user's ComfyUI
+    "rvm_refiner",  # GPL-3.0: fetched on demand (`prefetch --passes rvm_refiner`), never bundled
 }
 
 
