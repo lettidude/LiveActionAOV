@@ -133,6 +133,7 @@ def test_nodal_camera_solve_sits_at_the_origin_at_plate_res() -> None:
     # The referee's verdict is in the JSON, plate px, and leads the warnings.
     assert solve.quality.verdict == "GOOD"
     assert solve.quality.heldout_error_px == pytest.approx(2 * verdict.heldout_px)
+    assert solve.quality.nodal is True  # the splat gate reads this, not the mapper
     assert solve.quality.warnings[0].startswith("GOOD CANDIDATE - NODAL: held-out error")
 
 
