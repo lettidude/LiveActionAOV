@@ -787,7 +787,8 @@ class PyColmapCameraPass(UtilityPass):
         )
         anchor = min(poses, key=lambda k: (abs(k - n // 2), k))
         gray, static = self._load_solve_frames(frame_list, solve_wh, image_dir, mask_dir)
-        usable = static[anchor] if static[anchor] is not None else np.ones(gray[anchor].shape, bool)
+        anchor_static = static[anchor]
+        usable = anchor_static if anchor_static is not None else np.ones(gray[anchor].shape, bool)
         uv = pnp.anchor_corners(
             gray[anchor], usable, int(self.params.get("pnp_max_corners", 6000)), max(4, sw // 400)
         )
