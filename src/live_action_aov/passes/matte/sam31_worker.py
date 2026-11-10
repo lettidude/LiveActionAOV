@@ -15,6 +15,19 @@ on the seed frame, masks propagated both ways. Writes one
 `obj_<concept index>_<object id>.npz` (`mask`: (T, H, W) uint8) per object
 and `result.json` into the output folder.
 
+Small objects (the matte pass's `small_objects` on). Every flag below is
+optional; left out, the run above is unchanged:
+- `--max-objects N`: the model's object cap (left out: the builder's own
+  default); detections over the cap are dropped.
+- `--seeds '[0, 50, 99]'`: one session per seed frame instead of `--seed`
+  (someone hidden or not yet in frame at one seed is prompted at another).
+- `--tiles '["dir1", ...]'`: more JPEG folders (crops of the plate), run
+  with the same concepts and seeds after `--frames`; `src` in result.json
+  says which folder an object came from (0 = `--frames`, 1.. = the tiles).
+- `--crops`: masks stored as per-frame boxes + crops (`boxes` (T, 4) as
+  y0 x0 y1 x1, `data` the crops flattened, `hw`) instead of (T, H, W)
+  stacks, which grow with objects x frames x resolution.
+
 Two Windows shims, applied here instead of patching Meta's repo:
 - `sam3.model.decoder` forces the FLASH_ATTENTION SDPA kernel, which the
   Windows torch wheels do not ship ("No available kernel"): it may now fall
@@ -24,6 +37,7 @@ Two Windows shims, applied here instead of patching Meta's repo:
 
 Usage: python sam31_worker.py --frames DIR --out DIR --concepts '["person"]'
        --seed N [--checkpoint FILE] [--repo facebook/sam3.1]
+       [--max-objects N] [--seeds JSON] [--tiles JSON] [--crops]
 """
 
 from __future__ import annotations
@@ -62,6 +76,90 @@ def _collect(pred, sid: str, direction: str, masks: dict) -> None:  # type: igno
             masks.setdefault(int(oid), {})[int(fi)] = np.asarray(m, dtype=np.uint8)
 
 
+def _collect_crops(pred, sid: str, direction: str, masks: dict) -> None:  # type: ignore[no-untyped-def]
+    """`_collect`, each frame kept as (y0, x0, crop, h, w); empty frames
+    skipped (the object id is still recorded)."""
+    import numpy as np
+
+    req = {"type": "propagate_in_video", "session_id": sid, "propagation_direction": direction}
+    for resp in pred.handle_stream_request(req):
+        fi, o = resp["frame_index"], resp["outputs"]
+        for oid, m in zip(o["out_obj_ids"], o["out_binary_masks"], strict=True):
+            a = np.asarray(m, dtype=np.uint8)
+            fm = masks.setdefault(int(oid), {})
+            rows, cols = np.flatnonzero(a.any(1)), np.flatnonzero(a.any(0))
+            if rows.size:
+                y0, y1, x0, x1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+                fm[int(fi)] = (y0, x0, a[y0:y1, x0:x1].copy(), a.shape[0], a.shape[1])
+
+
+def _save_crops(path: str, fm: dict, n: int) -> None:
+    """One object's box crops -> npz: `boxes` (n, 4) y0 x0 y1 x1 (zeros on
+    empty frames), `data` the crops flattened in frame order, `hw`."""
+    import numpy as np
+
+    boxes = np.zeros((n, 4), np.int32)
+    parts, hw = [], (0, 0)
+    for fi in sorted(fm):
+        y0, x0, c, h, w = fm[fi]
+        hw = (h, w)
+        if 0 <= fi < n:
+            boxes[fi] = (y0, x0, y0 + c.shape[0], x0 + c.shape[1])
+            parts.append(c.reshape(-1))
+    data = np.concatenate(parts) if parts else np.zeros(0, np.uint8)
+    np.savez_compressed(path, boxes=boxes, data=data, hw=np.asarray(hw, np.int32))
+
+
+def _run_small(pred, a, n: int) -> list:  # type: ignore[no-untyped-def]
+    """The small-objects run: every folder (plate, then tiles) x concept x
+    seed frame is one session; masks kept as box crops."""
+    seeds = [int(s) for s in json.loads(a.seeds)] if a.seeds else [a.seed]
+    seeds = sorted({min(max(s, 0), n - 1) for s in seeds})
+    dirs = [a.frames, *(json.loads(a.tiles) if a.tiles else [])]
+    objects = []
+    for src, fdir in enumerate(dirs):
+        for ci, concept in enumerate(json.loads(a.concepts)):
+            for si, seed in enumerate(seeds):
+                t1 = time.time()
+                sid = pred.handle_request({"type": "start_session", "resource_path": fdir})[
+                    "session_id"
+                ]
+                r = pred.handle_request(
+                    {"type": "add_prompt", "session_id": sid, "frame_index": seed, "text": concept}
+                )
+                n_seed = len(r["outputs"]["out_obj_ids"])
+                masks: dict = {}
+                try:
+                    _collect_crops(pred, sid, "both", masks)
+                except TypeError:
+                    _collect_crops(pred, sid, "forward", masks)
+                    _collect_crops(pred, sid, "backward", masks)
+                pred.handle_request({"type": "close_session", "session_id": sid})
+                kept = 0
+                for oid, fm in sorted(masks.items()):
+                    if not fm:
+                        continue
+                    name = f"obj_s{src:02d}_k{si:02d}_c{ci:02d}_{oid:04d}.npz"
+                    _save_crops(os.path.join(a.out, name), fm, n)
+                    objects.append(
+                        {
+                            "file": name,
+                            "concept": concept,
+                            "obj_id": oid,
+                            "src": src,
+                            "seed": seed,
+                            "format": "crops",
+                        }
+                    )
+                    kept += 1
+                print(
+                    f"src {src} '{concept}' seed {seed}: {n_seed} seeded, {kept} tracked "
+                    f"in {time.time() - t1:.0f}s",
+                    flush=True,
+                )
+    return objects
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", required=True)
@@ -70,6 +168,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, required=True, help="seed frame index (0-based)")
     ap.add_argument("--checkpoint", default="")
     ap.add_argument("--repo", default="facebook/sam3.1")
+    ap.add_argument("--max-objects", type=int, default=0, help="0 = the builder's default")
+    ap.add_argument("--seeds", default="", help="JSON list of seed frames (overrides --seed)")
+    ap.add_argument("--tiles", default="", help="JSON list of more JPEG folders")
+    ap.add_argument("--crops", action="store_true", help="store box crops, not stacks")
     a = ap.parse_args(argv)
 
     import numpy as np
@@ -87,13 +189,15 @@ def main(argv: list[str] | None = None) -> int:
 
         ckpt = hf_hub_download(a.repo, "sam3.1_multiplex.pt")
     t0 = time.time()
-    pred = build_sam3_multiplex_video_predictor(checkpoint_path=ckpt, use_fa3=False)
+    build_kw = {"max_num_objects": a.max_objects} if a.max_objects > 0 else {}
+    pred = build_sam3_multiplex_video_predictor(checkpoint_path=ckpt, use_fa3=False, **build_kw)
     _drop_unknown_kwargs(pred)
     print(f"SAM 3.1 built in {time.time() - t0:.0f}s; {n} frames, seed {a.seed}", flush=True)
 
     os.makedirs(a.out, exist_ok=True)
-    objects = []
-    for ci, concept in enumerate(json.loads(a.concepts)):
+    small = bool(a.seeds or a.tiles or a.crops)
+    objects = _run_small(pred, a, n) if small else []
+    for ci, concept in enumerate([] if small else json.loads(a.concepts)):
         t1 = time.time()
         sid = pred.handle_request({"type": "start_session", "resource_path": a.frames})[
             "session_id"

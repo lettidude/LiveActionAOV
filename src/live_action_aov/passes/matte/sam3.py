@@ -365,6 +365,27 @@ class SAM3MattePass(UtilityPass):
         # much of the frame on its biggest frame, on at least that many frames.
         "sam31_min_peak_coverage": 0.005,
         "sam31_min_frames": 3,
+        # SAM 3.1 with `small_objects` on ("off" = the run above, unchanged).
+        # Objects per session: `sam31_max_objects` (the model's own default
+        # is lower than a crowd). One session per seed frame in
+        # `sam31_seed_frames` ("multi" = first, middle, last, plus every
+        # `sam31_seed_every` frames if > 0; "single" = `sample_frame` only).
+        # `sam31_tiles` "auto" = the plate's `small_objects` tiles each tracked
+        # as their own zoomed clip, "off" = whole frame only. Floor: present
+        # on `sam31_min_frames` frames, `min_object_px` tall and
+        # `sam31_small_min_peak_coverage` of the frame. The same object found
+        # by two sessions / tiles is merged when the smaller lies
+        # `sam31_merge_containment` inside the other on `sam31_merge_frames`
+        # of their shared frames and is at least `sam31_merge_size_ratio` of
+        # its size (a person inside a group mask is not merged).
+        "sam31_max_objects": 64,
+        "sam31_seed_frames": "multi",
+        "sam31_seed_every": 0,
+        "sam31_tiles": "auto",
+        "sam31_small_min_peak_coverage": 0.0003,
+        "sam31_merge_containment": 0.6,
+        "sam31_merge_frames": 0.6,
+        "sam31_merge_size_ratio": 0.5,
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -952,6 +973,101 @@ class SAM3MattePass(UtilityPass):
             self._priority[next_id] = 0
             kept += 1
         _log.info("SAM 3.1: %d object(s) kept of %d.", kept, len(found))
+
+    def _sam31_seeds(self, n: int, seed_local: int) -> list[int]:
+        """Local seed frames of the small-objects SAM 3.1 run."""
+        if str(self.params.get("sam31_seed_frames", "multi")).lower() != "multi":
+            return [seed_local]
+        seeds = {0, seed_local, n - 1}
+        every = int(self.params.get("sam31_seed_every", 0) or 0)
+        if every > 0:
+            seeds.update(range(0, n, every))
+        return sorted(s for s in seeds if 0 <= s < n)
+
+    def _add_sam31_small(
+        self, frames: np.ndarray, concepts: list[str], seed_local: int, first: int
+    ) -> None:
+        """`_add_sam31` with `small_objects` on: object cap lifted, several
+        seed frames, the plate's tiles tracked as zoomed clips, a relative
+        size floor and a duplicate merge across sessions (see DEFAULT_PARAMS)."""
+        from live_action_aov.passes.matte import sam31_bridge
+
+        python = sam31_bridge.find_python(self.params)
+        n, h, w = int(frames.shape[0]), int(frames.shape[1]), int(frames.shape[2])
+        dh, dw = getattr(self, "_det_hw", None) or (h, w)
+        tiles: list[tuple[int, int, int, int]] = []
+        plate_frame: Any = None
+        if str(self.params.get("sam31_tiles", "auto")).lower() != "off":
+            g = self._tile_grid(dh, dw)
+            tiles = sam31_bridge.tile_windows(
+                dh, dw, g, float(self.params.get("tile_overlap", 0.2))
+            )
+            # Proxy mode: tiles are cut from the original plate, which shows
+            # the small people the proxy has already lost.
+            full = getattr(getattr(self, "_reader", None), "read_frame_full_res", None)
+            if tiles and (dh, dw) != (h, w):
+                if full is None:
+                    tiles = []
+                else:
+                    plate_frame = lambda k: np.asarray(full(first + k)[0], dtype=np.float32)  # noqa: E731
+        seeds = self._sam31_seeds(n, seed_local)
+        found = sam31_bridge.run_sam31_small(
+            frames,
+            concepts,
+            seeds,
+            python,
+            max_objects=int(self.params.get("sam31_max_objects", 64) or 0),
+            tiles=tiles,
+            plate_frame=plate_frame,
+            plate_hw=(dh, dw),
+            timeout_s=float(self.params.get("sam31_timeout_s", 3600)),
+            checkpoint=str(self.params.get("sam31_checkpoint", "") or ""),
+        )
+        min_frames = int(self.params.get("sam31_min_frames", 3))
+        min_cov = float(self.params.get("sam31_small_min_peak_coverage", 0.0003))
+        # `min_object_px` is plate px: scaled to these frames (1K proxy of 4K).
+        min_px = max(2.0, float(self.params.get("min_object_px", 10)) * h / float(dh))
+        small = [t for t in found if sam31_bridge.keep_small(t, min_px, min_cov, min_frames)]
+        _log.info(
+            "SAM 3.1: %d object(s) over the floor (%d frames, %.1f px tall, %.2f%% of frame) of %d.",
+            len(small),
+            min_frames,
+            min_px,
+            100 * min_cov,
+            len(found),
+        )
+        kept, merged = sam31_bridge.merge_duplicates(
+            small,
+            contain=float(self.params.get("sam31_merge_containment", 0.6)),
+            frames_frac=float(self.params.get("sam31_merge_frames", 0.6)),
+            size_ratio=float(self.params.get("sam31_merge_size_ratio", 0.5)),
+        )
+        for a, b in merged:
+            _log.info(
+                "SAM 3.1: '%s' (src %d seed %d obj %d) is the same as src %d seed %d obj %d - merged.",
+                small[a].label,
+                small[a].src,
+                small[a].seed,
+                small[a].obj_id,
+                small[b].src,
+                small[b].seed,
+                small[b].obj_id,
+            )
+        used = {i.track_id for i in self._instances}
+        next_id = 1
+        for t in kept:
+            while next_id in used:
+                next_id += 1
+            used.add(next_id)
+            masks = MaskDict((first + k, t.masks[k]) for k in range(n))
+            self._instances.append(_DetectedInstance(next_id, t.label, masks))
+            self._priority[next_id] = 0
+        _log.info(
+            "SAM 3.1: %d object(s) kept (%d duplicate(s) merged) from %d session(s).",
+            len(kept),
+            len(merged),
+            len(seeds) * len(concepts) * (1 + len(tiles)),
+        )
 
     def _track_objects(
         self,
@@ -1557,7 +1673,10 @@ class SAM3MattePass(UtilityPass):
         self._track_objects(frames, objs, first, area_floor)
         if use31 and concepts:
             try:
-                self._add_sam31(frames, concepts, seed_local, first)
+                if str(self.params.get("small_objects", "auto")).lower() == "off":
+                    self._add_sam31(frames, concepts, seed_local, first)
+                else:
+                    self._add_sam31_small(frames, concepts, seed_local, first)
             except RuntimeError as e:
                 if str(self.params.get("detector", "auto")).lower() != "auto":
                     raise
