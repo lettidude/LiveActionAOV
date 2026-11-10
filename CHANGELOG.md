@@ -50,6 +50,10 @@ uses [semantic versioning](https://semver.org/).
   whole-frame run, the named objects get their own LTX run on a rectangle around them, for the one
   subject that needs more pixels than the whole frame gives it.
 ### Changed
+- **The Gaussian splat output is called *splat background*, no longer *clean plate*** in the app, the
+  docs and the Nuke script (the example node is `SplatFill_example`, was `CleanPlate_example`). It is a
+  soft rebuild of what was behind the masked objects: a base for a patch, not a finished clean
+  plate. The `splat.*` channels and the files are unchanged.
 - **LTX Alpha runs on the whole frame by default** (`mode: whole_frame`, was `per_object`): one run
   whatever the number of objects, no mask cutting the outline. In the app the default matte engine
   is now *LTX Alpha whole frame in your ComfyUI, else ViTMatte* (ViTMatte alone is the second entry).

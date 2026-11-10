@@ -216,12 +216,12 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             ("camera_pycolmap",),
         ),
         # Gaussian splat of the static scene on top of the camera solve:
-        # clean plate (SAM 3 objects excluded) + multi-view depth. Expands
+        # background (SAM 3 objects excluded) + multi-view depth. Expands
         # to the camera track too, so ticking it alone is enough. Needs the
         # gsplat wheel (docs/gaussian_splat.md).
         ModelEntry(
             "splat_gsplat",
-            "Camera + Gaussian splat (clean plate)",
+            "Camera + Gaussian splat (background)",
             "Apache-2.0",
             True,
             ("camera_pycolmap", "splat_gsplat"),
@@ -280,7 +280,7 @@ def has_noncommercial(keys: list[str]) -> list[ModelEntry]:
 
 def recommended_models() -> list[str]:
     """The set we run daily: mattes + Cryptomatte, MoGe-3 depth and normals,
-    RAFT motion, camera track with the Gaussian-splat clean plate. Falls back
+    RAFT motion, camera track with the Gaussian splat background. Falls back
     to the camera alone when gsplat is not installed (it needs a compiled
     wheel), so the click never selects a pass that cannot run."""
     import importlib.util

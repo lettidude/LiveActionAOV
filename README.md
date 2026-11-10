@@ -4,12 +4,15 @@
 
 # LiveActionAOV
 
-**Live-action plates in, Nuke-ready AOVs out.** Point it at an EXR sequence and you get per-object mattes and a Cryptomatte, depth in metres, normals, motion vectors, a solved camera, a clean plate, and a Nuke script with all of it wired up. It runs on your own machine; the only thing that ever goes over the network is the optional LTX Alpha step, and only if you point it at a ComfyUI on another box.
+**Live-action plates in, Nuke-ready AOVs out.** Point it at an EXR sequence and you get per-object mattes and a Cryptomatte, depth in metres, normals, motion vectors, a solved camera, a 3D splat of the set, and a Nuke script with all of it wired up. It runs on your own machine; the only thing that ever goes over the network is the optional LTX Alpha step, and only if you point it at a ComfyUI on another box.
 
 Built by [Leonardo Paolini](#author), a VFX and 2D compositing supervisor, for the prep work that eats the first days of every shot. In development since April 2026 and in daily use on real shots; some parts are still moving, see [Status](#status).
 
 <p align="center">
-  <img src="docs/img/aov-contact-sheet.png" alt="One plate, every pass: matte, Cryptomatte, depth, normals, motion, position, camera, clean plate" width="900">
+  <img src="docs/img/hero-passes.gif" alt="One plate, every pass, animated: soft matte, Cryptomatte, depth in metres, normals, motion vectors, world position and the splat background" width="900">
+</p>
+
+<p align="center"><sub>One run with the defaults on a 2K plate: nothing clicked, nothing painted.</sub>
 </p>
 
 ## What you get
@@ -24,7 +27,7 @@ From one plate folder, one run writes a version folder next to it:
 | **Normals** | Camera-space `N`, steady over the shot | MoGe-3 |
 | **Motion** | Forward and backward vectors in pixels, Nuke VectorBlur names included | RAFT or MegaFlow |
 | **Camera** | A Nuke `Camera2` with its error and coverage in the label, point cloud, COLMAP model | COLMAP, with the masked people kept out of the solve; nodal and depth-anchored fallbacks when parallax is short |
-| **Clean plate** | The set without the people, re-rendered through the solved camera | 3D Gaussian splat trained on the plate |
+| **Splat background** | The set behind the people, re-rendered through the solved camera: a soft fill to start a patch from, not a finished clean plate | 3D Gaussian splat trained on the plate |
 | **Nuke script** | `<shot>_v001.comp.nk`: Reads, the camera, the point cloud, a ScanlineRender, every layer shuffled out | written at the end of each run |
 
 Everything lands in one multi-layer EXR per frame (or one sequence per pass, your choice), with the model licences stamped in the header so QC can check what is shippable.
@@ -36,7 +39,7 @@ Everything lands in one multi-layer EXR per frame (or one sequence per pass, you
 - **RAM**: 32 GB for short shots at 2K, 64 GB or more for 4K. A clip that does not fit is run in overlapping windows of frames by itself, so a long shot is slower, not a crash.
 - **Disk**: about 15 GB for the install, about 10 GB of model weights for the default set, up to 40 GB with every optional model.
 - **Nuke** 11 or newer to open the result (tested on Nuke 16).
-- **Gaussian splat** (clean plate) needs the `gsplat` wheel, which PyPI does not have for this torch/CUDA: download it from the [release](https://github.com/lettidude/LiveActionAOV/releases/latest) into `wheels\` and run `update.bat`, or build it with `scriptsuild_gsplat_wheel.bat`. Every other pass works without it.
+- **Gaussian splat** (the splat background) needs the `gsplat` wheel, which PyPI does not have for this torch/CUDA: download it from the [release](https://github.com/lettidude/LiveActionAOV/releases/latest) into `wheels\` and run `update.bat`, or build it with `scriptsuild_gsplat_wheel.bat`. Every other pass works without it.
 
 ## Quick start
 
@@ -90,7 +93,7 @@ plates/sh020_v003_utility/v001/      one folder per run, never overwritten
     sh020_v001.comp.nk               open this in Nuke
     passes/                          the utility EXRs (+ a lossless Cryptomatte sidecar)
     camera/                          Camera2 .nk, .json, point cloud, COLMAP model
-    splat/                           clean plate + the splat
+    splat/                           the Gaussian splat (.ply)
     logs/
 ```
 
@@ -137,15 +140,15 @@ Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motio
 
 A camera needs parallax. When COLMAP registers only part of a shot, two fallbacks take over: a rotation-only solve for pans and locked-off shots, and a depth-anchored solve (MoGe-3 depth plus tracked corners) for fast handheld action. The depth-anchored camera is judged on held-out points it never saw during the solve and labelled **GOOD**, **WEAK** or **FAILED** in the Nuke node, with the error in pixels at a stated resolution; a FAILED one says "do not use" so it cannot end up in a comp by accident. COLMAP and nodal cameras report their reprojection error and frame coverage in the same label; one independent referee for every camera is the next step. Whatever happens to the camera, the other passes are still written.
 
-### Clean plate
+### Splat background
 
-Add **Gaussian splat** and the camera plus the plate train a 3D Gaussian splat of the set, with the masked objects left out. Rendered back through the solved camera it gives a clean plate with the people removed, plus a depth pass, wired into the comp. It needs a GOOD or WEAK camera and some parallax; read [docs/gaussian_splat.md](docs/gaussian_splat.md) before trusting one on a shot.
+Add **Gaussian splat** and the camera plus the plate train a 3D Gaussian splat of the set, with the masked objects left out. Rendered back through the solved camera it shows what was behind the people, plus a depth pass, wired into the comp. It is a soft rebuild, not a finished clean plate: good to start a patch from, or to see what the camera saw behind someone. It needs a GOOD or WEAK camera and some parallax; read [docs/gaussian_splat.md](docs/gaussian_splat.md) before trusting one on a shot.
 
 <p align="center">
-  <img src="docs/img/clean-plate-before-after.png" alt="Plate on the left, the Gaussian-splat clean plate on the right: the hand is gone, the set stays" width="900">
+  <img src="docs/img/splat-background.gif" alt="Plate on the left, the splat background on the right: the woman is gone, the garage behind her stays, softer than the plate" width="900">
 </p>
 
-> Left: the plate. Right: the clean plate from the same run, nothing painted. The hand was masked with one click; the gun stayed because it never moved.
+> Left: the plate. Right: the splat background from the same run, nothing painted and nothing clicked: the woman was found by name and left out of the training. Soft, as said above, and already tracked to the shot camera.
 
 ## The app
 
@@ -167,7 +170,7 @@ A companion Nuke node in [`src/live_action_aov/plugins/nuke/UtilityRelight/`](sr
 
 ## Status
 
-Version 0.12, used daily on real production shots at 2K to 6K. What is solid: mattes, Cryptomatte, depth, normals, motion, the Nuke script, the camera on shots with parallax. What is still moving: the camera on fast handheld action, the clean plate on shots with little parallax, the windows for long clips (new: whole-clip passes such as the tracker and the camera still need the RAM for the full clip), and the LTX setup. The [CHANGELOG](CHANGELOG.md) says what changed in each release; [issues](https://github.com/lettidude/LiveActionAOV/issues) are the place for bugs.
+Version 0.12, used daily on real production shots at 2K to 6K. What is solid: mattes, Cryptomatte, depth, normals, motion, the Nuke script, the camera on shots with parallax. What is still moving: the camera on fast handheld action, the splat background on shots with little parallax, the windows for long clips (new: whole-clip passes such as the tracker and the camera still need the RAM for the full clip), and the LTX setup. The [CHANGELOG](CHANGELOG.md) says what changed in each release; [issues](https://github.com/lettidude/LiveActionAOV/issues) are the place for bugs.
 
 An early demo video (June 2026, the interface has changed since) is on [YouTube](https://www.youtube.com/watch?v=HnosSnK1MKs).
 
@@ -205,7 +208,7 @@ LiveActionAOV is glue and comp sense on top of research that other people publis
 | [RAFT](https://github.com/princeton-vl/RAFT) | motion vectors | Princeton Vision & Learning Lab | BSD-3-Clause | yes |
 | [MegaFlow](https://github.com/cvg/megaflow) | motion on fast action | ETH Zurich, Computer Vision and Geometry Lab | Apache-2.0 | yes |
 | [COLMAP](https://github.com/colmap/colmap) / pycolmap | camera track | Johannes Schönberger and contributors, ETH Zurich and UNC Chapel Hill | BSD-3-Clause | yes |
-| [gsplat](https://github.com/nerfstudio-project/gsplat) | Gaussian-splat clean plate | the nerfstudio project | Apache-2.0 | yes |
+| [gsplat](https://github.com/nerfstudio-project/gsplat) | splat background | the nerfstudio project | Apache-2.0 | yes |
 | [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2), [Video Depth Anything](https://github.com/DepthAnything/Video-Depth-Anything) | alternative depth | the Depth Anything team (HKU, ByteDance) | Apache-2.0 for the **Small** models, the only ones the tool loads | yes |
 | [Cryptomatte](https://github.com/Psyop/Cryptomatte) | the ID matte format | Psyop | BSD-3-Clause | yes |
 | [Robust Video Matting](https://github.com/PeterL1n/RobustVideoMatting) | alternative matte engine | Shanchuan Lin and co-authors, ByteDance | GPL-3.0 | the mattes yes; the model is fetched from its repository and must not be shipped inside a closed bundle |

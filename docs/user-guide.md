@@ -97,9 +97,9 @@ liveaov-gui
    - **Fewer inputs work better** — a box or 2–6 points beats dozens; SAM collapses under too many point constraints.
    - At submit, each object propagates across the shot into a `mask.<name>` channel + a named **Cryptomatte ID**.
 4. **Output tab** — one setting for every shot of the session: where the versions go (next to the plate, or one **root**; remembered between sessions), the **proxy** size with the settings proposed for this machine (*Use suggested*), the EXR delivery, the **layout** (one multi-layer EXR, one Read in Nuke; or one EXR per pass in subfolders `passes/depth/`, `passes/matte/` ...) and the **file naming** template, see [File naming](#file-naming). Every run is a new version, see [Output folders](#output-folders). A clip that does not fit the free RAM is run in windows of frames by itself.
-5. **This shot tab** — optional, for the selected shot alone: the **frames** to process (in / out inside the plate, *Whole plate* resets), a **crop** (press *Draw in viewer*, drag a box on the image: passes run on that box only, the EXRs keep the full plate as display window with the box as data window, so Nuke places them; the camera track and the clean plate need the whole frame and refuse a crop) and the shot's **folder name**.
+5. **This shot tab** — optional, for the selected shot alone: the **frames** to process (in / out inside the plate, *Whole plate* resets), a **crop** (press *Draw in viewer*, drag a box on the image: passes run on that box only, the EXRs keep the full plate as display window with the box as data window, so Nuke places them; the camera track and the Gaussian splat need the whole frame and refuse a crop) and the shot's **folder name**.
 6. **Run** — runs the pipeline; a log panel shows progress.
-7. **Preview output** (button, or right-click a shot) — look at what the last run made without Nuke: pick a version and a layer (each mask, depth, normals, flow, the splat clean plate ...), scrub frames, show a mask over the plate. Camera and splat solves are summarised (frames solved, reprojection error, PSNR). Right-click also opens the output / plate folder and the comp in Nuke.
+7. **Preview output** (button, or right-click a shot) — look at what the last run made without Nuke: pick a version and a layer (each mask, depth, normals, flow, the splat background ...), scrub frames, show a mask over the plate. Camera and splat solves are summarised (frames solved, reprojection error, PSNR). Right-click also opens the output / plate folder and the comp in Nuke.
 
 ## Output folders
 
@@ -144,15 +144,15 @@ Every run writes `<shot>_v###.comp.nk` at the top of its version folder. Open it
 | Backdrop | What is in it |
 |---|---|
 | PLATE | the original plate Read |
-| all passes / one per pass | the utility Read(s), `raw` (data, no colour conversion), and one labelled Shuffle2 per pass: every mask on its own, an "every mask" matte, depth / normals / position / flow to RGB, mattes and the splat clean plate to RGBA |
+| all passes / one per pass | the utility Read(s), `raw` (data, no colour conversion), and one labelled Shuffle2 per pass: every mask on its own, an "every mask" matte, depth / normals / position / flow to RGB, mattes and the splat background to RGBA |
 | camera | the solved Camera2, the point cloud (ReadGeo2 of `camera/<shot>_v###.points.obj`) in a Scene, and a ScanlineRender over the plate: drop Cards on the points to check the track |
-| example | with a splat and masks: a Keymix that replaces every masked object with the splat clean plate (watch `splat.alpha`: areas the camera never saw are empty) |
+| example | with a splat and masks: a Keymix that replaces every masked object with the splat background (watch `splat.alpha`: areas the camera never saw are empty) |
 
 Paths are relative to the script, so a whole version folder can be copied to another machine. In Nuke our `mask.*` layer is called `mask_extra.*` (Nuke reserves `mask`); the script already uses the Nuke names.
 
 Nuke caps a script at **1023 channels in total** (every layer of every Read). One Read with 600 masks, 600 Shuffles and the every-mask matte loads and checks fine in Nuke 16; keep a run (plus whatever else is in your script) under ~1000 channels.
 
-The Gaussian splat itself (`splat/<shot>_v###.splat.ply`) is for splat-capable tools; in Nuke 16 use the `splat` EXR layer (clean plate, coverage, depth), which is already rendered through the shot camera.
+The Gaussian splat itself (`splat/<shot>_v###.splat.ply`) is for splat-capable tools; in Nuke 16 use the `splat` EXR layer (background, coverage, depth), which is already rendered through the shot camera.
 
 ## Nuke plugin — UtilityRelight
 

@@ -195,7 +195,7 @@ class LocalExecutor(Executor):
             whole = [pc.name for pc, cls in resolved if getattr(cls, "needs_full_frame", False)]
             if whole:
                 raise ValueError(
-                    f"{', '.join(whole)}: a camera solve / clean plate needs the whole frame. "
+                    f"{', '.join(whole)}: a camera solve / Gaussian splat needs the whole frame. "
                     "Clear the crop or untick these passes."
                 )
 

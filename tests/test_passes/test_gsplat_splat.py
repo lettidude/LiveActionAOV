@@ -1,7 +1,7 @@
 """Gaussian splat pass — helpers without a GPU, plus a gated GPU smoke test.
 
 The CPU tests pin the parts that silently break comp: the colour encoding
-round-trip (the clean plate must comp back over the plate), the GL->OpenCV
+round-trip (the splat background must comp back over the plate), the GL->OpenCV
 view matrix (splat and Nuke camera must agree), SAM 3 masks excluding
 pixels from training, and the 3DGS PLY layout viewers expect.
 """

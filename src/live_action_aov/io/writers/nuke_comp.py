@@ -11,12 +11,12 @@ Open it in Nuke and everything the tool wrote is already there:
   pass folder with the per-pass layout), all relative to the script folder
   so the output folder can be moved or copied to another machine;
 - one Shuffle2 per pass, labelled (each mask on its own, depth/normals/flow
-  to RGB, mattes and the splat clean plate to RGBA), inside a backdrop per
+  to RGB, mattes and the splat background to RGBA), inside a backdrop per
   pass;
 - the camera track (Camera2) with its point cloud (ReadGeo2) in a Scene and
   a ScanlineRender over the plate - the usual matchmove check;
 - with a splat + masks: a Keymix that swaps the first masked object for the
-  splat clean plate, as a ready example of the clean-up.
+  splat background, as a ready example of the clean-up.
 
 Nuke quirks this has to follow (each one verified with Nuke 16 `-t`):
 
@@ -94,8 +94,8 @@ _PRETTY_LABEL = {
     "backward": "backward u,v",
     "flow confidence": "flow confidence",
     "flow occlusion": "flow occlusion",
-    "splat": "clean plate (splat RGBA)",
-    "splat Z": "clean plate Z",
+    "splat": "splat background (RGBA)",
+    "splat Z": "splat background Z",
     "albedo": "albedo",
     "irradiance": "irradiance",
 }
@@ -360,7 +360,7 @@ def render_comp_script(
                     s.set_var(splat_var)
                 sx += 110
             # All objects in one matte (max of every mask): handy on its own
-            # and the mask of the clean-plate example below.
+            # and the mask of the splat-fill example below.
             if g == "matte" and masks and mask_var is None:
                 if k:
                     s.push(rvar)
@@ -408,7 +408,7 @@ def render_comp_script(
         x += 190
 
     # --- splat clean-up example: plate with the first masked object swapped
-    # for the splat clean plate ---
+    # for the splat background ---
     if splat_var and mask_var:
         s.push(mask_var)
         s.push(splat_var)
@@ -417,8 +417,8 @@ def render_comp_script(
             "Keymix",
             [
                 "channels rgba",
-                "name CleanPlate_example",
-                'label "plate with every masked object\\nreplaced by the splat clean plate\\n(check splat.alpha: unseen areas are empty)"',
+                "name SplatFill_example",
+                'label "plate with every masked object\\nreplaced by the splat background\\n(check splat.alpha: unseen areas are empty)"',
                 "xpos 0",
                 "ypos -50",
             ],

@@ -87,7 +87,7 @@ CH_KEY_A = "key.a"
 KEY_CHANNELS = (CH_KEY_R, CH_KEY_G, CH_KEY_B, CH_KEY_A)
 
 # --- Gaussian splat re-render (scene-linear, plate colourspace) ---
-# The static scene re-rendered through the solved camera: a clean plate
+# The static scene re-rendered through the solved camera: the background
 # where SAM 3 objects were excluded from training, plus the splat's own
 # multi-view-consistent depth (camera-space Z, camera-track units; 0 where
 # splat.A = 0). Nuke shows them as layer "splat".

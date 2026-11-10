@@ -656,7 +656,7 @@ def doctor(
     has_gsplat = importlib.util.find_spec("gsplat") is not None
     line(
         has_gsplat or None,
-        "Gaussian-splat clean plate",
+        "Gaussian splat background",
         "gsplat installed" if has_gsplat else "gsplat not installed (see the README)",
     )
 

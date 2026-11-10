@@ -269,7 +269,7 @@ class InspectorPanel(QWidget):
         self._crop_draw_btn.setToolTip(
             "Then drag a box on the image. Passes run on that box only; the "
             "EXRs keep the full plate as display window, so Nuke places them. "
-            "Camera and clean plate need the whole frame."
+            "Camera and Gaussian splat need the whole frame."
         )
         self._crop_draw_btn.toggled.connect(self._on_crop_draw_toggled)
         self._crop_clear_btn = QPushButton("Clear")
@@ -602,12 +602,12 @@ class InspectorPanel(QWidget):
         )
         passes_hint = QLabel(
             "Tick what the comp needs. Recommended = the set we run daily "
-            "(mattes, Cryptomatte, metric depth + normals, motion, camera + clean plate)."
+            "(mattes, Cryptomatte, metric depth + normals, motion, camera + splat background)."
         )
         self._recommended_btn = QPushButton("Use the recommended set")
         self._recommended_btn.setToolTip(
             "Matte (SAM 3 + default engine), Cryptomatte, MoGe-3 depth + normals, "
-            "RAFT motion, camera track + Gaussian-splat clean plate "
+            "RAFT motion, camera track + Gaussian splat background "
             "(camera only when gsplat is not installed)."
         )
         self._recommended_btn.clicked.connect(self._on_recommended_clicked)
@@ -1885,8 +1885,8 @@ _PASS_BLOCKS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     ("Motion", "Forward and backward motion vectors.", ("Motion",)),
     (
-        "Camera & clean plate",
-        "Nuke camera with its verdict in the label, point cloud, Gaussian-splat clean plate.",
+        "Camera & splat",
+        "Nuke camera with its verdict in the label, point cloud, Gaussian splat background (the set behind the masked objects).",
         ("Camera",),
     ),
 )

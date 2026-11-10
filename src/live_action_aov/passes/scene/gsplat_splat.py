@@ -12,7 +12,7 @@ re-renders every solved frame through the solved camera:
 
 - `splat.R/G/B` — the static scene, scene-linear in the plate's colourspace.
   When a SAM 3 matte ran in the same job, every tracked object is excluded
-  from the training loss, so this is a **clean plate**: what was behind the
+  from the training loss, so this is the **background**: what was behind the
   person, recovered from the frames where the camera saw past them.
 - `splat.A` — splat coverage (0 = nothing reconstructed there).
 - `splat.Z` — camera-space depth of the splat (camera-track units, same
@@ -81,7 +81,7 @@ class GsplatSplatPass(UtilityPass):
     pass_type = PassType.SCENE_3D
     temporal_mode = TemporalMode.VIDEO_CLIP
     needs_full_frame = True
-    # Train and output in scene-linear: the clean plate must comp straight
+    # Train and output in scene-linear: the splat background must comp straight
     # back over the plate.
     input_colorspace = "scene_linear"
 
@@ -163,12 +163,12 @@ class GsplatSplatPass(UtilityPass):
         if solve.backend.mapper == "nodal":
             raise RuntimeError(
                 "splat_gsplat: the camera only rotates (nodal solve, no parallax) - a splat "
-                "cannot recover depth or what is behind objects. No clean plate written."
+                "cannot recover depth or what is behind objects. No splat background written."
             )
         if solve.quality.verdict == "FAILED":
             raise RuntimeError(
                 "splat_gsplat: the camera solve FAILED its held-out check (do not use it) - "
-                "no clean plate written."
+                "no splat background written."
             )
         dev = torch.device("cuda")
         torch.manual_seed(int(self.params["seed"]))
