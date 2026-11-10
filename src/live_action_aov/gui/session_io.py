@@ -106,6 +106,7 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
                 "points": [[float(x), float(y), int(lbl)] for (x, y, lbl) in ci.points],
                 "box": None if ci.box is None else [float(v) for v in ci.box],
                 "refiner": ci.refiner,
+                "slot": ci.slot,
             }
             for ci in s.click_instances
         ],
@@ -141,6 +142,7 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
             points=[(float(p[0]), float(p[1]), int(p[2])) for p in (ci.get("points") or [])],
             box=(tuple(float(v) for v in ci["box"]) if ci.get("box") else None),  # type: ignore[arg-type]
             refiner=str(ci.get("refiner", "")),
+            slot=str(ci.get("slot", "")),
         )
         for ci in (d.get("click_instances") or [])
     ]

@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
         self._inspector.click_mode_changed.connect(self._viewport.set_click_mode)
         self._inspector.active_click_instance_changed.connect(self._viewport.set_active_instance)
         self._inspector.mask_preview_requested.connect(self._viewport.preview_active_mask)
+        self._inspector.frame_requested.connect(self._viewport.go_to_frame)
         # Crop: the Output tab arms one drag in the viewer; the viewer reports
         # back when the box is set so the button pops out.
         self._inspector.crop_mode_changed.connect(self._viewport.set_crop_mode)

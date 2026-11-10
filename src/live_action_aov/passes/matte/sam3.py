@@ -338,7 +338,9 @@ class SAM3MattePass(UtilityPass):
         # Interactive click-to-mask prompts (GUI viewport, v0.3). Each entry:
         # {"name": str, "seed_frame": int (plate numbering), "points":
         # [[x, y, label], ...] (label 1=fg, 0=bg), "box": [x1, y1, x2, y2] |
-        # None, "ref_size": [w, h] (resolution the clicks were captured at —
+        # None, "slot": "r" | "g" | "b" | "a" (optional: this object's
+        # `matte.rgba` slot, instead of the ranking), "ref_size": [w, h]
+        # (resolution the clicks were captured at —
         # we rescale to the frames the pass actually sees, so proxy mode
         # doesn't shift the clicks)}. ADDITIVE to text concepts: empty list =
         # concept detection only.
@@ -379,6 +381,8 @@ class SAM3MattePass(UtilityPass):
         self._dtype: Any = None
         # Populated by `run_shot`; consumed by `emit_artifacts`.
         self._instances: list[_DetectedInstance] = []
+        # Click objects the user pinned to a matte.rgba slot: track id -> slot.
+        self._click_slots: dict[int, str] = {}
         # Which detector the last run used and why (log + run report).
         self.detector_used = ""
         self.detector_reason = ""
@@ -1486,6 +1490,7 @@ class SAM3MattePass(UtilityPass):
         # this pass sees, so proxy mode doesn't shift the clicks. Track ids
         # live in a 1000+ block so they never collide with detector ids.
         next_click_id = 1001
+        self._click_slots = {}
         for idx, spec in enumerate(self.params.get("prompt_instances") or []):
             name = str(spec.get("name") or f"click_{idx + 1}")
             seed_plate = int(spec.get("seed_frame", first))
@@ -1530,6 +1535,9 @@ class SAM3MattePass(UtilityPass):
                         name,
                         zoomed.height,
                     )
+            slot = str(spec.get("slot") or "").lower()
+            if slot in ("r", "g", "b", "a"):
+                self._click_slots[next_click_id] = slot
             objs.append(obj)
             next_click_id += 1
 
@@ -1644,6 +1652,13 @@ class SAM3MattePass(UtilityPass):
             for h in (self.params.get("heroes") or [])
             if "track_id" in h and "slot" in h
         ]
+        # A click object the user gave a slot to (GUI Masks tab).
+        live = {i.track_id for i in self._instances}
+        taken: set[str] = {str(o.slot) for o in overrides}
+        for tid, slot in self._click_slots.items():
+            if tid in live and slot not in taken:
+                overrides.append(HeroOverride(track_id=tid, slot=slot))  # type: ignore[arg-type]
+                taken.add(slot)
         ranked_input = [
             self._to_rank_instance(inst, n_frames, plate_h, plate_w, first)
             for inst in self._instances

@@ -65,3 +65,44 @@ def test_small_card_gets_a_small_proxy_and_sam3(
     suggested = text.split("Suggested")[1]
     assert "Small GPU" in suggested and "proxy 1280" in suggested
     assert "SAM 3" in suggested and "SAM 3.1" not in suggested  # a 12 GB card: SAM 3
+
+
+def test_masks_tab_names_presets_and_object_slot(qapp: QApplication) -> None:
+    from live_action_aov.gui.session_io import shot_from_dict, shot_to_dict
+    from live_action_aov.gui.submit_worker import _build_pass_configs
+
+    reg = ShotRegistry()
+    panel = InspectorPanel(reg)
+    shot = _shot(enabled_models=["sam3_matte_on"])
+    reg.add(shot)
+    # No object yet: the per-object controls are off, the names presets work.
+    assert not panel._mask_slot_combo.isEnabled() and not panel._mask_goto_btn.isEnabled()
+    panel._concept_preset_btns[1].click()  # People + vehicles
+    assert shot.sam3_concepts == "person, vehicle"
+    assert panel._sam3_concepts_edit.text() == "person, vehicle"
+    panel._concept_preset_btns[2].click()  # Everything = the default list
+    assert shot.sam3_concepts == ""
+
+    panel._on_mask_new()
+    panel._on_mask_new()
+    a, b = shot.click_instances
+    a.points.append((10.0, 10.0, 1))
+    b.box = (20.0, 20.0, 60.0, 80.0)
+    panel._mask_list.setCurrentRow(0)
+    assert panel._mask_slot_combo.isEnabled()
+    panel._mask_slot_combo.setCurrentIndex(panel._mask_slot_combo.findData("r"))
+    assert a.slot == "r" and "matte.r" in panel._mask_list.item(0).text()
+    panel._mask_list.setCurrentRow(1)
+    panel._mask_slot_combo.setCurrentIndex(panel._mask_slot_combo.findData("r"))
+    assert (a.slot, b.slot) == ("", "r")  # one object per slot
+
+    asked: list[int] = []
+    panel.frame_requested.connect(asked.append)
+    panel._mask_goto_btn.click()
+    assert asked == [b.seed_frame]
+
+    sam = next(c for c in _build_pass_configs(shot) if c.name == "sam3_matte")
+    specs = {s["name"]: s for s in sam.params["prompt_instances"]}
+    assert specs[b.name]["slot"] == "r" and "slot" not in specs[a.name]
+    back = shot_from_dict(shot_to_dict(shot))
+    assert [c.slot for c in back.click_instances] == ["", "r"]

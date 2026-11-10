@@ -60,6 +60,10 @@ class ClickInstance:
     # preview). The right engine depends on the object: portrait weights on
     # a person, trimap/chroma on cars, plants, props.
     refiner: str = ""
+    # Which of the four `matte.rgba` slots this object's soft matte goes to:
+    # "" = the ranking decides, "r" | "g" | "b" | "a" = that one (the comp
+    # knows where to find the hero without opening the header).
+    slot: str = ""
 
 
 @dataclass

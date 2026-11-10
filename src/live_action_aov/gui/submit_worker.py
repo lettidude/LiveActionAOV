@@ -269,15 +269,16 @@ def _serialize_click_instances(
             ref_size = (int(cw), int(ch))
         if not pts and box is None:
             continue
-        out.append(
-            {
-                "name": inst.name,
-                "seed_frame": int(inst.seed_frame),
-                "points": pts,
-                "box": box,
-                "ref_size": [int(ref_size[0]), int(ref_size[1])],
-            }
-        )
+        spec: dict[str, Any] = {
+            "name": inst.name,
+            "seed_frame": int(inst.seed_frame),
+            "points": pts,
+            "box": box,
+            "ref_size": [int(ref_size[0]), int(ref_size[1])],
+        }
+        if getattr(inst, "slot", ""):
+            spec["slot"] = inst.slot  # this object's matte.rgba slot
+        out.append(spec)
     return out
 
 

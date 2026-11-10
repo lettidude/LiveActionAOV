@@ -101,6 +101,8 @@ class InspectorPanel(QWidget):
     # "Preview mask (this frame)" — MainWindow routes this to the viewport,
     # which owns the preview image + the single-frame SAM 3 engine.
     mask_preview_requested = Signal()
+    #: Masks tab "Go to" : scrub the viewer to an object's seed frame.
+    frame_requested = Signal(int)
     #: Output tab "Draw crop" armed / disarmed: the viewer takes one drag.
     crop_mode_changed = Signal(bool)
 
@@ -448,19 +450,13 @@ class InspectorPanel(QWidget):
         )
         self._sam3_concepts_edit.textEdited.connect(self._on_sam3_concepts_edited)
 
-        concepts_label = QLabel("SAM 3 detects")
-        concepts_label.setStyleSheet(
-            "font-weight: 600; color: #ddd; font-size: 9pt; padding-top: 6px;"
-        )
         concepts_hint = QLabel(
-            "Comma-separated. Matte + Cryptomatte. Empty = default concepts - "
-            "unless you have click objects (Masks tab): then empty = clicks only."
+            "What gets a matte and a Cryptomatte ID (people, vehicles, your own objects) "
+            "is chosen on the Masks tab."
         )
         concepts_hint.setStyleSheet("color: #999; font-size: 8pt;")
         concepts_hint.setWordWrap(True)
         passes_block.addSpacing(8)
-        passes_block.addWidget(concepts_label)
-        passes_block.addWidget(self._sam3_concepts_edit)
         passes_block.addWidget(concepts_hint)
 
         # DEFAULT ENGINE for the run — one dropdown, covering both the
@@ -810,21 +806,71 @@ class InspectorPanel(QWidget):
         # submit the SAM 3 tracker propagates it across the shot into a
         # mask.<name> channel + Cryptomatte ID.
         masks_hint = QLabel(
-            "Drag a box or click points (left = include, right = exclude) "
-            "to seed a tracked mask.<name> + Cryptomatte ID. "
-            "FEW INPUTS WORK BEST: a box or 2-6 points, Preview, then one "
-            "corrective click."
+            "For anything the names above do not find, or one object you want on its "
+            "own: press New object, then drag a box around it in the viewer or click on "
+            "it (left = include, right = exclude). A box or 2-6 clicks is enough: "
+            "Preview, then one corrective click. Each object gets its own mask.<name> "
+            "and Cryptomatte ID."
         )
         masks_hint.setStyleSheet("color: #999; font-size: 9pt;")
         masks_hint.setWordWrap(True)
+        found_hint = QLabel(
+            "Every one of these found in the shot is tracked and gets a Cryptomatte ID "
+            "and a mask. Comma-separated, any words (person, red car, dog). Sky, "
+            "buildings and trees get an ID but never one of the four matte slots. "
+            "Empty = the default list; with your own objects below, empty = only those."
+        )
+        found_hint.setStyleSheet("color: #999; font-size: 9pt;")
+        found_hint.setWordWrap(True)
+        self._concept_preset_btns: list[QPushButton] = []
+        preset_row = QHBoxLayout()
+        for label, text, tip in (
+            ("People", "person", "Only people."),
+            ("People + vehicles", "person, vehicle", "People, cars, bikes, trucks."),
+            (
+                "Everything",
+                "",
+                "The default list: person, vehicle, tree, building, sky, water, animal.",
+            ),
+        ):
+            btn = QPushButton(label)
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda _=False, t=text: self._on_concept_preset(t))
+            preset_row.addWidget(btn)
+            self._concept_preset_btns.append(btn)
+        preset_row.addStretch(1)
 
         # Point placement is ALWAYS armed while the Masks tab is open (and
         # disarmed on any other tab) — the old "Place points in viewport"
         # checkbox was one more thing to forget. Scrubbing stays free: the
         # frame slider lives outside the canvas.
         self._mask_list = QListWidget()
-        self._mask_list.setFixedHeight(140)
+        self._mask_list.setMinimumHeight(110)
+        self._mask_list.setMaximumHeight(220)
         self._mask_list.currentRowChanged.connect(self._on_mask_selected)
+        # The selected object's own settings, in one block under the list.
+        self._mask_slot_combo = QComboBox()
+        for label, slot in (
+            ("Auto - the ranking decides", ""),
+            ("matte.r (red)", "r"),
+            ("matte.g (green)", "g"),
+            ("matte.b (blue)", "b"),
+            ("matte.a (alpha)", "a"),
+        ):
+            self._mask_slot_combo.addItem(label, slot)
+        self._mask_slot_combo.setToolTip(
+            "Which of the four matte.rgba channels carries this object's soft matte. "
+            "Auto lets the biggest, most central subjects take them; pick one when the "
+            "comp must always find the hero in the same channel."
+        )
+        self._mask_slot_combo.currentIndexChanged.connect(self._on_mask_slot_changed)
+        self._mask_seed_label = QLabel("-")
+        self._mask_goto_btn = QPushButton("Go to")
+        self._mask_goto_btn.setToolTip(
+            "Scrub the viewer to the frame this object was drawn on: its points and "
+            "box only show, and only preview, on that frame."
+        )
+        self._mask_goto_btn.clicked.connect(self._on_mask_goto_seed)
 
         self._mask_name_edit = QLineEdit()
         self._mask_name_edit.setPlaceholderText("object name (→ Cryptomatte)")
@@ -860,7 +906,12 @@ class InspectorPanel(QWidget):
 
         masks_layout = QVBoxLayout()
         masks_layout.setContentsMargins(8, 8, 8, 8)
-        masks_layout.addWidget(_section_label("Click-to-mask"))
+        masks_layout.addWidget(_section_label("Found by name"))
+        masks_layout.addWidget(found_hint)
+        masks_layout.addWidget(self._sam3_concepts_edit)
+        masks_layout.addLayout(preset_row)
+        masks_layout.addSpacing(14)
+        masks_layout.addWidget(_section_label("Your own objects"))
         masks_layout.addWidget(masks_hint)
         masks_layout.addSpacing(6)
         masks_layout.addLayout(mask_btn_row)
@@ -879,10 +930,6 @@ class InspectorPanel(QWidget):
         self._preview_refiner_note = QLabel("")
         self._preview_refiner_note.setStyleSheet("color: #888; font-size: 8pt;")
         self._preview_refiner_note.setWordWrap(True)
-        masks_layout.addWidget(self._preview_refiner_note)
-        pv_row = QHBoxLayout()
-        pv_row.addWidget(self._mask_preview_btn, stretch=1)
-        masks_layout.addLayout(pv_row)
         # Per-object ENGINE, BESIDE the list: the weight belongs to the
         # LAYER, not the shot — portrait on the person, trimap/chroma on
         # the car, in one run. Selecting a row shows its engine here.
@@ -893,17 +940,24 @@ class InspectorPanel(QWidget):
             "submit refines its mask.<name> with the same engine."
         )
         self._mask_engine_combo.picked.connect(self._on_mask_engine_changed)
-        engine_col = QVBoxLayout()
-        engine_col.addWidget(QLabel("Engine:"))
-        engine_col.addWidget(self._mask_engine_combo)
-        engine_col.addStretch()
-        list_row = QHBoxLayout()
-        list_row.addWidget(self._mask_list, stretch=1)
-        list_row.addLayout(engine_col)
-        masks_layout.addLayout(list_row)
+        masks_layout.addWidget(self._mask_list)
         masks_layout.addWidget(self._mask_points_warn)
-        masks_layout.addWidget(QLabel("Name:"))
-        masks_layout.addWidget(self._mask_name_edit)
+        masks_layout.addSpacing(8)
+        self._mask_detail_title = _section_label("Selected object")
+        masks_layout.addWidget(self._mask_detail_title)
+        detail = QFormLayout()
+        detail.setContentsMargins(0, 2, 0, 0)
+        detail.addRow("Name", self._mask_name_edit)
+        detail.addRow("Soft edge", self._mask_engine_combo)
+        detail.addRow("Matte slot", self._mask_slot_combo)
+        seed_row = QHBoxLayout()
+        seed_row.addWidget(self._mask_seed_label, stretch=1)
+        seed_row.addWidget(self._mask_goto_btn)
+        detail.addRow("Drawn on", seed_row)
+        masks_layout.addLayout(detail)
+        masks_layout.addSpacing(6)
+        masks_layout.addWidget(self._mask_preview_btn)
+        masks_layout.addWidget(self._preview_refiner_note)
         masks_layout.addStretch()
         masks_tab = _scrollable(masks_layout)
 
@@ -1289,7 +1343,9 @@ class InspectorPanel(QWidget):
             "ltx": "LTX Alpha",
         }
         eng = f"  ·  [{eng_names.get(inst.refiner, inst.refiner)}]" if inst.refiner else ""
-        return f"{inst.name}  ·  f{inst.seed_frame}  ·  {n} pt{'s' if n != 1 else ''}{box}{eng}"
+        slot = f"  ·  matte.{inst.slot}" if inst.slot else ""
+        prompts = f"{n} pt{'s' if n != 1 else ''}{box}" if (n or inst.box is not None) else "empty"
+        return f"{inst.name}  ·  f{inst.seed_frame}  ·  {prompts}{eng}{slot}"
 
     def _refresh_mask_list(self) -> None:
         """Repopulate the Masks list from the current shot, preserving the
@@ -1308,8 +1364,57 @@ class InspectorPanel(QWidget):
         self._mask_name_edit.blockSignals(True)
         self._mask_name_edit.setText(active.name if active is not None else "")
         self._mask_name_edit.blockSignals(False)
+        self._sync_mask_detail(active)
         self._update_mask_points_warning(active)
         self.active_click_instance_changed.emit(active)
+
+    def _sync_mask_detail(self, active: ClickInstance | None) -> None:
+        """The "Selected object" block follows the list selection."""
+        self._mask_slot_combo.blockSignals(True)
+        self._mask_slot_combo.setCurrentIndex(
+            max(self._mask_slot_combo.findData(active.slot if active is not None else ""), 0)
+        )
+        self._mask_slot_combo.blockSignals(False)
+        self._mask_seed_label.setText(
+            f"frame {active.seed_frame}" if active is not None else "no object selected"
+        )
+        for w in (
+            self._mask_name_edit,
+            self._mask_engine_combo,
+            self._mask_slot_combo,
+            self._mask_goto_btn,
+            self._mask_preview_btn,
+            self._mask_del_btn,
+            self._mask_undo_btn,
+            self._mask_clear_btn,
+        ):
+            w.setEnabled(active is not None)
+
+    def _on_concept_preset(self, text: str) -> None:
+        """People / People + vehicles / Everything: fill the names field."""
+        if self._current is None:
+            return
+        self._sam3_concepts_edit.setText(text)
+        self._current.sam3_concepts = text
+        self._registry.notify_updated(self._current)
+
+    def _on_mask_slot_changed(self, idx: int) -> None:
+        inst = self._active_mask_instance()
+        if self._building or self._current is None or inst is None:
+            return
+        slot = str(self._mask_slot_combo.itemData(idx) or "")
+        if slot:
+            # One object per slot: taking a slot frees it on the others.
+            for other in self._current.click_instances:
+                if other is not inst and other.slot == slot:
+                    other.slot = ""
+        inst.slot = slot
+        self._refresh_mask_list()
+
+    def _on_mask_goto_seed(self) -> None:
+        inst = self._active_mask_instance()
+        if inst is not None:
+            self.frame_requested.emit(int(inst.seed_frame))
 
     def _update_mask_points_warning(self, inst: ClickInstance | None) -> None:
         """Amber warning once an object has more points than SAM's
@@ -1385,7 +1490,7 @@ class InspectorPanel(QWidget):
         label = self._default_engine_combo.short_label()
         pinned = sum(1 for ci in shot.click_instances if ci.refiner)
         extra = f", {pinned} object(s) with their own engine" if pinned else ""
-        text = f"Run engine: {label}{extra} (set per object below)"
+        text = f"Run engine: {label}{extra} (one object can use another: Soft edge, above)"
         if any(ci.refiner == "ltx" for ci in shot.click_instances):
             from live_action_aov.gui import comfy_dialog
 
@@ -1465,6 +1570,7 @@ class InspectorPanel(QWidget):
         self._mask_name_edit.blockSignals(False)
         want = getattr(inst, "refiner", "") if inst is not None else ""
         self._mask_engine_combo.set_current((want or "", ""))
+        self._sync_mask_detail(inst)
         self.active_click_instance_changed.emit(inst)
 
     def _on_mask_engine_changed(self, data: tuple[str, str]) -> None:

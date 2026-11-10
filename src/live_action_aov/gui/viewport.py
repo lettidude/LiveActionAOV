@@ -357,6 +357,13 @@ class ViewportPanel(QWidget):
         self._canvas.setText("loading…")
         self._request_preview()
 
+    def go_to_frame(self, frame: int) -> None:
+        """Scrub the viewer to `frame` (clamped to the shot)."""
+        if self._current is None or not self._frame_slider.isEnabled():
+            return
+        lo, hi = self._frame_slider.minimum(), self._frame_slider.maximum()
+        self._frame_slider.setValue(min(max(int(frame), lo), hi))
+
     # --- UI → state ---
 
     def _on_frame_slider_changed(self, value: int) -> None:
