@@ -196,6 +196,8 @@ class PyColmapCameraPass(UtilityPass):
         self._masked_labels: list[str] = []
         self._lens_mm: float | None = None
         self._pnp_fov_source = ""
+        # Why the solve left plain SfM for the nodal / PnP route (run report).
+        self._route_why = ""
 
     # --- per-frame hooks unused (VIDEO_CLIP) ---
     def preprocess(self, frames: np.ndarray) -> Any:  # pragma: no cover
@@ -265,6 +267,13 @@ class PyColmapCameraPass(UtilityPass):
             and self._solve.quality.registered_frame_count
             < min_frac * self._solve.quality.total_frame_count
         )
+        if self._solve is None or short:
+            self._route_why = (
+                f"SfM failed: {failure}"
+                if self._solve is None
+                else f"SfM registered {self._solve.quality.registered_frame_count}/"
+                f"{self._solve.quality.total_frame_count} frames"
+            )
         if (self._solve is None or short) and self.params.get("nodal_fallback", True):
             nodal = self._solve_nodal(self._workdir / "database.db", frame_list, plate_wh, solve_wh)
             if nodal is not None:
@@ -350,6 +359,70 @@ class PyColmapCameraPass(UtilityPass):
     def unload(self) -> None:
         # Safety net when emit_sidecars never ran (failed shot, COLMAP crash).
         self._drop_workdir()
+
+    def report_fields(self) -> dict[str, Any]:
+        """Run report: solver route, verdict, held-out / reprojection error at
+        plate resolution, frames without a pose."""
+        s = self._solve
+        if s is None:
+            return {"extra": {"route_reason": self._route_why}} if self._route_why else {}
+        from live_action_aov.core.verdicts import spans
+
+        q = s.quality
+        asked = str(self.params.get("mapper", "incremental"))
+        used = str(s.backend.mapper)
+        engine = f"{s.backend.name}/{used}"
+        frames = sorted(e.frame for e in s.extrinsics)
+        gaps = spans(list(s.unregistered_frames))
+        metrics: dict[str, Any] = {
+            "camera.reprojection_error_px": round(float(q.aggregate_reprojection_error_px), 3),
+            "camera.registered_frames": int(q.registered_frame_count),
+            "camera.total_frames": int(q.total_frame_count),
+        }
+        if q.heldout_error_px is not None:
+            metrics["camera.heldout_error_px"] = round(float(q.heldout_error_px), 3)
+        out: dict[str, Any] = {
+            "engine": engine,
+            "metrics": metrics,
+            "verdict": q.verdict,
+            "verdict_reason": q.warnings[0] if q.verdict and q.warnings else "",
+            "warnings": [w for w in q.warnings if not (q.verdict and w == q.warnings[0])],
+            "section": "camera",
+            "summary": {
+                "solver": engine,
+                "verdict": q.verdict,
+                "heldout_error_px": metrics.get("camera.heldout_error_px"),
+                "reprojection_error_px": metrics["camera.reprojection_error_px"],
+                "at_resolution": [int(s.intrinsics.width_px), int(s.intrinsics.height_px)],
+                "frames": [frames[0], frames[-1]] if frames else None,
+                "registered": int(q.registered_frame_count),
+                "total": int(q.total_frame_count),
+                "no_pose_frames": [list(g) for g in gaps],
+                "focal_px": round(float(s.intrinsics.fx_px), 2),
+                "masked_labels": list(s.backend.masked_labels),
+            },
+            "needs_human": [
+                {
+                    "source": "",
+                    "kind": "camera_gap",
+                    "reason": "camera has no pose on these frames (Nuke interpolates over a gap)",
+                    "frames": list(g),
+                }
+                for g in gaps
+            ],
+        }
+        if used != asked:
+            # The designed chain (SfM -> nodal -> depth-anchored PnP), judged
+            # by its own verdict: no human needed for the route itself.
+            out["fallbacks"] = [
+                {
+                    "wanted": f"{s.backend.name}/{asked}",
+                    "used": engine,
+                    "reason": self._route_why,
+                    "expected": True,
+                }
+            ]
+        return out
 
     def _drop_workdir(self) -> None:
         if self._workdir is None:

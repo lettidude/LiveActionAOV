@@ -36,6 +36,7 @@ from live_action_aov.core.output_layout import LOGS_DIR, file_name, frame_templa
 from live_action_aov.core.output_layout import sidecar_template as layout_sidecar_template
 from live_action_aov.core.pass_base import TemporalMode, UtilityPass
 from live_action_aov.core.registry import get_registry
+from live_action_aov.core.run_report import RunReportBuilder, report_path, write_report
 from live_action_aov.core.work_dir import make_work_dir
 from live_action_aov.executors.base import Executor
 from live_action_aov.io.oiio_io import OiioError
@@ -159,6 +160,36 @@ class LocalExecutor(Executor):
         log_paths: Any,
         cancel: CancelToken | None,
     ) -> Job:
+        """The run, then its `logs/<shot>_v###.run_report.json` - written
+        whatever happened (done, failed, cancelled)."""
+        rr = RunReportBuilder(job)
+        error = ""
+        try:
+            return self._submit_run(
+                job, caller_report, registry, shot, sidecar_dir, log_paths, cancel, rr
+            )
+        except CancelledError:
+            raise
+        except BaseException as e:
+            error = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            status = "failed" if error else ("cancelled" if shot.status == "cancelled" else "done")
+            if not error and shot.status not in ("done", "cancelled"):
+                status = "failed"
+            _write_run_report(rr, shot, status, error)
+
+    def _submit_run(
+        self,
+        job: Job,
+        caller_report: ProgressCallback,
+        registry: Any,
+        shot: Shot,
+        sidecar_dir: Path,
+        log_paths: Any,
+        cancel: CancelToken | None,
+        rr: RunReportBuilder,
+    ) -> Job:
         _log.info(
             "passes=%s post=%s frames=%s colorspace=%s proxy=%s output=%s",
             [pc.name for pc in job.passes],
@@ -190,6 +221,8 @@ class LocalExecutor(Executor):
         nodes = [_node_for(pc, cls) for (pc, cls) in resolved]
         ordered = topological_sort(nodes)
         resolved_by_name = {pc.name: (pc, cls) for (pc, cls) in resolved}
+        for node in ordered:
+            rr.declare(node.name, resolved_by_name[node.name][1])
 
         if shot.crop is not None:
             whole = [pc.name for pc, cls in resolved if getattr(cls, "needs_full_frame", False)]
@@ -269,18 +302,38 @@ class LocalExecutor(Executor):
                     ", ".join(failed_passes),
                 )
                 failed_passes[node.name] = f"needs {', '.join(missing)}"
+                rr.pass_skipped(
+                    node.name, f"needs {', '.join(missing)} ({', '.join(failed_passes)} failed)"
+                )
                 return set()
             pass_params = dict(pc.params)
             pass_params.update(shot.pass_overrides.get(node.name, {}))
             pass_params.update(extra_params)
             instance = cls(pass_params)
+            rr.pass_started(node.name)
             try:
-                return self._run_pass(
+                wrote = self._run_pass(
                     instance, cls, node.name, reader, shot, arts, channels_out, flows, frame_range
                 )
+                # Before `unload`: the pass's own report fields read its state.
+                rr.pass_done(
+                    node.name,
+                    frame_range=frame_range,
+                    vram_gb=_vram_peak_gib(),
+                    channels=wrote,
+                    instance=instance,
+                )
+                return wrote
             except CancelledError:
                 raise
             except Exception as e:
+                rr.pass_failed(
+                    node.name,
+                    f"{type(e).__name__}: {e}" if not cls.footage_dependent else str(e),
+                    frame_range=frame_range,
+                    vram_gb=_vram_peak_gib(),
+                    instance=instance,
+                )
                 if not cls.footage_dependent:
                     raise
                 _log.error(
@@ -798,6 +851,24 @@ class LocalExecutor(Executor):
         for tag, path in (instance.emit_sidecars(shot) or {}).items():
             shot.sidecars[tag] = Path(path)
         return wrote
+
+
+def _write_run_report(rr: RunReportBuilder, shot: Shot, status: str, error: str) -> None:
+    """`logs/<shot>_v###.run_report.json` + its one-line summary in the log.
+    Never raises: a report must not turn a finished run into a failed one."""
+    try:
+        rep = rr.finish(shot, status, error)
+        path = write_report(rep, report_path(shot))
+        shot.sidecars["run_report"] = path
+        _log.info("Run report: %s", rep.summary)
+        for n in rep.needs_human:
+            where = f" (frames {n.frames[0]}-{n.frames[1]})" if n.frames else ""
+            _log.warning("Needs a human: %s%s", n.reason, where)
+        _log.info("Run report written: %s", path)
+    except Exception:
+        _log.warning("could not write the run report", exc_info=True)
+    finally:
+        rr.ram.stop()
 
 
 def _window_plan(shot: Shot, classes: list[type[UtilityPass]]) -> list[tuple[int, int, int, int]]:

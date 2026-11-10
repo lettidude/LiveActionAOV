@@ -540,11 +540,32 @@ def run_shot(
         raise typer.Exit(code=130) from None
     except Exception as e:
         console.print(f"[red]FAILED:[/red] {e}")
+        _print_run_report(shot)
         raise typer.Exit(code=1) from e
     finally:
         signal.signal(signal.SIGINT, previous_handler)
 
     console.print(f"[green]Done.[/green] {shot.sidecars.get('comp') or shot.output_dir}")
+    _print_run_report(shot)
+
+
+def _print_run_report(shot: Shot) -> None:
+    """The run report's one-line summary + its "needs a human" list."""
+    from live_action_aov.core.run_report import load_report
+
+    path = shot.sidecars.get("run_report")
+    if path is None:
+        return
+    try:
+        rep = load_report(Path(path))
+    except Exception as e:  # the report is a convenience here
+        console.print(f"[yellow]Run report unreadable:[/yellow] {e}", highlight=False)
+        return
+    console.print(f"[bold]Run report:[/bold] {rep.summary}", highlight=False)
+    for n in rep.needs_human:
+        where = f" (frames {n.frames[0]}-{n.frames[1]})" if n.frames else ""
+        console.print(f"  [yellow]needs a human:[/yellow] {n.reason}{where}", highlight=False)
+    console.print(f"  {path}", highlight=False)
 
 
 # ---------------------------------------------------------------------------

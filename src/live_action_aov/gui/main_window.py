@@ -717,12 +717,20 @@ class MainWindow(QMainWindow):
         if target is None:
             return
 
+        target.last_report_summary = result.report_summary
+        target.last_needs_human = list(result.needs_human)
+        if result.report_summary:
+            self._log_panel.append_lifecycle(f"Run report: {result.report_summary}")
+            for line in result.needs_human:
+                self._log_panel.append_error(f"Needs a human: {line}")
         if result.success:
             target.status = "done"
             target.last_sidecar_dir = result.sidecar_dir
             self._log_panel.append_lifecycle(
                 f"===== Submit done: {target.name} → {result.sidecar_dir} ====="
             )
+            if result.report_summary:
+                self.statusBar().showMessage(result.report_summary, 15_000)
         elif result.cancelled:
             # User-initiated abort. Mark the shot as cancelled (not
             # failed) — partial sidecars on disk are expected and the

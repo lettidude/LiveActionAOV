@@ -277,6 +277,9 @@ class Job(BaseModel):
     shot: Shot
     passes: list[PassConfig]
     post: list[PostConfig] = Field(default_factory=list)
+    # Run-report verdict limits / needs-a-human policy for this job,
+    # `{"limits": {...}, "policy": {...}}` over `core.verdicts` defaults.
+    report_thresholds: dict[str, Any] = Field(default_factory=dict)
 
     # Farm-shaped fields — LocalExecutor ignores in v1.
     priority: int = 50
