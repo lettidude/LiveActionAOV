@@ -74,6 +74,7 @@ from live_action_aov.passes.matte.rank import (
     HeroOverride,
     Instance,
     RankWeights,
+    is_scenery_label,
     rank_and_assign,
 )
 
@@ -316,6 +317,14 @@ class SAM3MattePass(UtilityPass):
         # "auto" = clothing / body / vehicle-part words (see _PART_WORDS), or
         # a list of labels. A person inside a car is NOT a part of the car.
         "part_labels": "auto",
+        # SCENERY labels (sky, building, tree, water, …): tracked and given
+        # their `mask.<label>` + Cryptomatte id like any object, but never a
+        # hero slot while a subject (person, animal, vehicle, a click) is
+        # still unslotted, and the LTX refiner keeps SAM's edge for them (no
+        # hair / motion blur to recover) and never grows a subject's crop to
+        # take them in. "auto" = the scenery words in rank.SCENERY_WORDS, or
+        # a list of labels. A user click is never scenery.
+        "scenery_labels": "auto",
         # Ranking weights (RankWeights schema).
         "ranking": {
             "area": 0.4,
@@ -1646,6 +1655,15 @@ class SAM3MattePass(UtilityPass):
             max_heroes=int(self.params["max_heroes"]),
             overrides=overrides,
         )
+        hero_ids = {h.track_id for h in self._heroes}
+        held = [i for i in ranked_input if i.scenery and i.track_id not in hero_ids]
+        if held and len(self._heroes) == int(self.params["max_heroes"]):
+            _log.info(
+                "SAM3 matte: %d scenery track(s) kept out of the hero slots (%s); "
+                "they keep their mask.<label> channel and Cryptomatte id.",
+                len(held),
+                ", ".join(f"{i.label}_{i.track_id}" for i in held),
+            )
         return per_frame
 
     def _to_rank_instance(
@@ -1696,7 +1714,14 @@ class SAM3MattePass(UtilityPass):
             centrality=_mean_or_zero(centralities),
             motion_energy=_mean_or_zero(motion_energies),
             user_priority=0.0,
+            scenery=self._is_scenery(inst.track_id, inst.label),
         )
+
+    def _is_scenery(self, track_id: int, label: str) -> bool:
+        """Scenery = a `scenery_labels` label that is NOT a user click."""
+        if self._priority.get(track_id) == 1:
+            return False
+        return _scenery_label_test(self.params.get("scenery_labels", "auto"))(label)
 
     # ------------------------------------------------------------------
     # Artifact emission
@@ -1728,6 +1753,9 @@ class SAM3MattePass(UtilityPass):
                     "layer": self._layer.get(inst.track_id, len(hard_masks)),
                     # Whole this track is a part of (None = independent).
                     "parent": self._parent.get(inst.track_id),
+                    # Scenery (sky, building, …): refiners keep SAM's edge
+                    # and never grow another object's crop to take it in.
+                    "scenery": self._is_scenery(inst.track_id, inst.label),
                 }
         except MemoryError as exc:
             # The pre-flight in run_shot should catch this first, but if the
@@ -2062,6 +2090,14 @@ def _part_label_test(spec: Any) -> Callable[[str], bool]:
     return lambda label: any(
         w in _PART_WORDS for w in label.lower().replace("-", " ").replace("_", " ").split()
     )
+
+
+def _scenery_label_test(spec: Any) -> Callable[[str], bool]:
+    """`scenery_labels`: "auto" = rank.is_scenery_label, or an explicit list."""
+    if isinstance(spec, (list, tuple, set)):
+        allowed = {str(x).strip().lower() for x in spec}
+        return lambda label: label.strip().lower() in allowed
+    return is_scenery_label
 
 
 def _seed_parents(

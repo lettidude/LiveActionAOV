@@ -28,7 +28,15 @@ subject, fine hair on the hero). The others keep the whole-frame matte.
    overlapping by `overlap`; each chunk gets its own box, so the crop follows
    a moving subject. Box = the object's hard mask over the chunk, padded by
    `pad`, grown so neighbouring objects of similar size stay WHOLE (a person
-   cut at the box edge comes back as a hard line + texture garbage).
+   cut at the box edge comes back as a hard line + texture garbage). A
+   neighbour that is SCENERY (sky, building, tree: `scenery` in the SAM
+   artifact), or bigger than `neighbour_max_ratio` times the padded box,
+   never grows the crop: with the default concepts every object's box used to
+   swallow the buildings and trees around it until it was the whole frame,
+   and LTX, which mattes ONE salient foreground per crop, gave each object
+   somebody else's alpha (A65 couple-car plate, 2026-11-09). Scenery tracks
+   themselves are not sent to LTX in all-masks mode: SAM's edge, lightly
+   anti-aliased, like the small objects under `refine_min_px`.
 2. The crop is scaled to `long_edge` (multiple of 32) and sent to the user's
    ComfyUI (`comfy_url`) - LTX-2.5 22B distilled + the alpha-gen IC-LoRA.
    Model files are found on the server: the int8 safetensors if present,
@@ -67,6 +75,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -76,6 +85,7 @@ from live_action_aov.core.pass_base import License
 from live_action_aov.core.work_dir import make_work_dir
 from live_action_aov.io.channels import CH_MATTE_A, CH_MATTE_B, CH_MATTE_G, CH_MATTE_R
 from live_action_aov.passes.matte.boxmask import stack_box
+from live_action_aov.passes.matte.rank import is_scenery_label
 from live_action_aov.passes.matte.rvm import RVMRefinerPass
 
 if TYPE_CHECKING:
@@ -154,8 +164,9 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         "overlap": 16,  # cross-faded frames between chunks
         "long_edge": 1280,  # working resolution of the crop
         "pad": 0.25,  # box padding, fraction of the box size
-        # A neighbour whose box is at most this times the object's box is
-        # kept whole inside the crop; bigger ones (car, wall) may be cut.
+        # A neighbour whose box is at most this times the object's PADDED
+        # box is kept whole inside the crop; bigger ones (car, wall) may be
+        # cut. Scenery neighbours (sky, building, tree, ...) never grow it.
         "neighbour_max_ratio": 1.5,
         # "dilate": SAM mask grown by `gate_frac` of the long edge, feathered.
         # "trimap": ViTMatte's guided trimap (SAM + BiRefNet): wide only
@@ -255,6 +266,18 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
     # ------------------------------------------------------------------
     # Per track
     # ------------------------------------------------------------------
+
+    def _skip_refine(self, track_id: int, track: dict[str, Any]) -> bool:
+        # Scenery has no hair / motion-blur edge to recover, and LTX on a
+        # frame-sized crop of sky returns whatever is salient in it (the car).
+        if not _is_scenery_track(track):
+            return False
+        _log.info(
+            "LTX alpha: track %d '%s' is scenery - SAM mask kept (anti-aliased), no LTX run.",
+            int(track_id),
+            str(track.get("label", "") or ""),
+        )
+        return True
 
     def _refine_instance(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
         if not self._comfy_ready():
@@ -443,9 +466,12 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
 
     def _owner_map(self, T: int) -> tuple[np.ndarray, list[int]]:
         """Nearest track per working-res pixel (-1 = none within `far_frac`).
-        Owners = every top-level track (parts belong to their whole), whether
-        or not this pass refines it: a neighbour refined by another engine
-        still keeps its foreground."""
+        Owners = every top-level SUBJECT track (parts belong to their whole),
+        whether or not this pass refines it: a neighbour refined by another
+        engine still keeps its foreground. Scenery (sky, building, tree) owns
+        nothing: LTX's foreground is by definition not the set, and a wall
+        tracked behind an actor would otherwise take the hair that sticks out
+        of the actor's SAM mask (it lies inside the wall's mask)."""
         import cv2
 
         assert self._fg_work is not None
@@ -453,7 +479,8 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         ids = [
             int(t)
             for t, tr in sorted(self._hard_masks.items())
-            if tr.get("parent") is None or int(tr["parent"]) not in self._hard_masks
+            if (tr.get("parent") is None or int(tr["parent"]) not in self._hard_masks)
+            and not _is_scenery_track(tr)
         ]
         far = float(self.params["far_frac"]) * ww
         owner = np.full((T, wh, ww), -1, np.int16)
@@ -523,8 +550,9 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         )
 
     def _neighbour_boxes(self, local_frames: list[int]) -> list[tuple[int, int, int, int]]:
-        """Union box over the chunk of every OTHER track (parts and the
-        whole of this object excluded: they are the object itself)."""
+        """Union box over the chunk of every OTHER subject track (parts and
+        the whole of this object excluded: they are the object itself;
+        scenery excluded: it must never grow the crop)."""
         me = self._track_id
         family = {me}
         for t, tr in self._hard_masks.items():
@@ -534,7 +562,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         want = {self._first + k for k in local_frames}
         out = []
         for t, tr in self._hard_masks.items():
-            if int(t) in family:
+            if int(t) in family or _is_scenery_track(tr):
                 continue
             boxes = []
             st = tr.get("stack")
@@ -1010,6 +1038,15 @@ def crossfade_weight(j: int, length: int, overlap: int, first: bool, last: bool)
     return float(w)
 
 
+def _is_scenery_track(track: dict[str, Any]) -> bool:
+    """The SAM pass's `scenery` flag; an older artifact without it falls back
+    to the label words (sky, building, tree, ...)."""
+    flag = track.get("scenery")
+    if flag is not None:
+        return bool(flag)
+    return is_scenery_label(str(track.get("label", "") or ""))
+
+
 def grow_box(
     own: tuple[int, int, int, int],
     neighbours: list[tuple[int, int, int, int]],
@@ -1017,9 +1054,16 @@ def grow_box(
     max_ratio: float,
     H: int,
     W: int,
+    scenery: Sequence[bool] = (),
 ) -> tuple[int, int, int, int]:
     """Pad the object's box (y0, x0, y1, x1); then any neighbour of similar
-    size it cuts is taken in WHOLE, until nothing changes."""
+    size it cuts is taken in WHOLE, until nothing changes.
+
+    Never taken in: a neighbour flagged in `scenery` (aligned with
+    `neighbours`; missing = not scenery), or one whose box is bigger than
+    `max_ratio` times the PADDED own box - the sky, a building, the wall
+    behind the subject are scenery, and LTX would matte whatever is salient
+    in a crop that holds them."""
     y0, x0, y1, x1 = own
     bh, bw = y1 - y0, x1 - x0
     box = (
@@ -1029,7 +1073,8 @@ def grow_box(
         min(W, int(x1 + pad * bw) + 1),
     )
     area = (box[2] - box[0]) * (box[3] - box[1])
-    small = [n for n in neighbours if (n[2] - n[0]) * (n[3] - n[1]) <= max_ratio * area]
+    subjects = [n for i, n in enumerate(neighbours) if not (i < len(scenery) and scenery[i])]
+    small = [n for n in subjects if (n[2] - n[0]) * (n[3] - n[1]) <= max_ratio * area]
     changed = True
     while changed:
         changed = False

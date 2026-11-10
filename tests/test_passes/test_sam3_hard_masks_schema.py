@@ -121,18 +121,21 @@ def test_inner_dict_is_keyed_by_plain_int_track_ids(_artifacts) -> None:
         assert type(k) is int, f"track_id key {k!r} is {type(k)}, want plain int"
 
 
-def test_per_track_entry_has_exactly_five_keys(_artifacts) -> None:
+def test_per_track_entry_has_exactly_six_keys(_artifacts) -> None:
     """If someone adds a new field (e.g. `bbox`, `confidence`), update
     this test — CorridorKey needs to know about it before the artifact
     goes live. If someone drops or renames a field, this test is the
     tripwire. `layer` (depth rank, 0 = front) feeds the matte layering post;
-    `parent` (whole track id for a part like hair-in-person, else None) too."""
+    `parent` (whole track id for a part like hair-in-person, else None) too;
+    `scenery` (bool: sky, building, tree, ... and not a user click) tells the
+    refiners to keep SAM's edge and never grow another object's crop to it."""
     inner = next(iter(_artifacts["sam3_hard_masks"].values()))
+    want = {"label", "frames", "stack", "layer", "parent", "scenery"}
     for tid, data in inner.items():
-        assert set(data.keys()) == {"label", "frames", "stack", "layer", "parent"}, (
-            f"Track {tid} schema drift: got {sorted(data.keys())!r}, "
-            f"want exactly {{'label', 'frames', 'stack', 'layer', 'parent'}}"
+        assert set(data.keys()) == want, (
+            f"Track {tid} schema drift: got {sorted(data.keys())!r}, want exactly {sorted(want)!r}"
         )
+        assert type(data["scenery"]) is bool
     ranks = sorted(int(d["layer"]) for d in inner.values())
     assert ranks == list(range(len(inner)))
 
@@ -294,3 +297,58 @@ def test_empty_shot_emits_no_artifacts_rather_than_malformed_skeleton() -> None:
         f"CorridorKey will see this as 'matte ran with zero heroes' "
         f"rather than 'no matte pass'."
     )
+
+
+# ---------------------------------------------------------------------------
+# Scenery through the pass: flagged in the artifact, ranked after subjects.
+# ---------------------------------------------------------------------------
+
+
+class _SceneryFake(_SchemaFake):
+    """A sky bigger than everything, a vehicle, a small person."""
+
+    def _detect_seed(self, seed_frame, concepts):  # type: ignore[override]
+        h, w, _ = seed_frame.shape
+        return [
+            (1, "person", _rect(h, w, h // 2, 3 * h // 4, w // 2, 5 * w // 8)),
+            (2, "vehicle", _rect(h, w, h // 2, h, 0, w // 3)),
+            (3, "sky", _rect(h, w, 0, h // 2, 0, w)),
+        ]
+
+
+def test_sky_is_flagged_scenery_and_ranked_after_the_subjects() -> None:
+    n, h, w = 5, 32, 48
+    plates = [np.full((h, w, 3), 0.5, dtype=np.float32) for _ in range(n)]
+    pass_ = _SceneryFake(
+        {"concepts": ["person", "vehicle", "sky"], "min_area_fraction": 0.001, "max_heroes": 2}
+    )
+    pass_.run_shot(_FakeReader(plates, first=10), frame_range=(10, 10 + n - 1))
+    art = pass_.emit_artifacts()
+    hard = next(iter(art["sam3_hard_masks"].values()))
+    assert {t: d["scenery"] for t, d in hard.items()} == {1: False, 2: False, 3: True}
+    heroes = next(iter(art["sam3_instances"].values()))
+    # The sky has the largest area, yet both slots go to the subjects.
+    assert [h_["slot"] for h_ in heroes] == ["r", "g"]
+    assert {h_["track_id"] for h_ in heroes} == {1, 2}
+    # ... and it still has its mask channel.
+    assert "sky" in next(iter(art["matte_concepts"].values()))
+
+
+def test_scenery_labels_list_overrides_the_word_list() -> None:
+    n, h, w = 5, 32, 48
+    plates = [np.full((h, w, 3), 0.5, dtype=np.float32) for _ in range(n)]
+    pass_ = _SceneryFake(
+        {
+            "concepts": ["person", "vehicle", "sky"],
+            "min_area_fraction": 0.001,
+            "max_heroes": 2,
+            "scenery_labels": ["vehicle"],  # the user says: the parked car is set dressing
+        }
+    )
+    pass_.run_shot(_FakeReader(plates, first=10), frame_range=(10, 10 + n - 1))
+    art = pass_.emit_artifacts()
+    hard = next(iter(art["sam3_hard_masks"].values()))
+    assert {t: d["scenery"] for t, d in hard.items()} == {1: False, 2: True, 3: False}
+    heroes = next(iter(art["sam3_instances"].values()))
+    assert [h_["slot"] for h_ in heroes] == ["r", "g"]
+    assert {h_["track_id"] for h_ in heroes} == {1, 3}  # the car is now the one left out

@@ -458,6 +458,31 @@ def test_crop_label_gets_its_own_run_inside_a_whole_frame_job() -> None:
     assert "foreground.a" in out[5]
 
 
+def test_whole_frame_foreground_never_goes_to_scenery() -> None:
+    """A building tracked behind the actor: the hair LTX finds just outside
+    SAM's person mask lies INSIDE the building's mask. It is the person's
+    (scenery owns no foreground), and the building gets none of it."""
+    n = 9
+    frames, art = _two_actors(n)
+    wall = np.ones_like(art["sam3_hard_masks"][0][1]["stack"])
+    wall[:, 33:87, 43:77] = 0  # the building is everything but the two actors
+    wall[:, 33:87, 93:127] = 0
+    art["sam3_hard_masks"][0][3] = {
+        "label": "building",
+        "frames": list(range(1, n + 1)),
+        "stack": wall,
+        "scenery": True,
+    }
+    _FakeComfy.calls = []
+    p = _FakeComfy({"whole_long_edge": 256, "whole_chunk": 17, "overlap": 8})
+    p.ingest_artifacts(art)
+    out = p.run_shot(_Reader(frames), frame_range=(1, n))
+    a = out[5]["matte.r"]
+    assert a[60, 42] > 0.9  # SAM missed x 40-42; the wall mask covers it
+    assert a[60, 77] > 0.9  # same on the other side
+    assert p._owner_ids == [1, 2]  # the wall is not an owner
+
+
 def test_whole_frame_chunks_long_shots_in_8n_plus_1_calls() -> None:
     p, out = _run_whole(40)
     assert len(p.calls) > 1
@@ -474,3 +499,132 @@ def test_ltx_cache_skips_the_second_run(tmp_path: Path) -> None:
     np.testing.assert_allclose(out1[5]["matte.r"], out2[5]["matte.r"], atol=2e-3)
     p3, _ = _run_whole(9, cache_dir=str(tmp_path), seed=7)
     assert len(p3.calls) == 1  # another seed is another result
+
+
+# ---------------------------------------------------------------------------
+# Scenery and the crop box (A65 couple-car plate, 2026-11-09: with the default
+# concepts every object's box grew to the whole 2K proxy, and LTX, one salient
+# foreground per crop, gave every object somebody else's alpha).
+# ---------------------------------------------------------------------------
+
+
+def test_scenery_neighbour_of_similar_size_does_not_grow_the_box() -> None:
+    """A building box that passes the size ratio is still left out when it
+    is scenery; a person of that size is still taken in whole."""
+    own = (100, 100, 300, 200)  # y0, x0, y1, x1 -> padded 300 x 150 = 45k px
+    building = (60, 180, 310, 430)  # 250 x 250 = 62.5k <= 1.5 x 45k: similar size
+    person = (120, 210, 320, 330)
+    with_person = grow_box(own, [person], 0.25, 1.5, 1080, 2048)
+    assert with_person[3] >= 330  # subject neighbour: taken in whole
+    kept_out = grow_box(own, [building], 0.25, 1.5, 1080, 2048, scenery=[True])
+    assert kept_out == grow_box(own, [], 0.25, 1.5, 1080, 2048)
+    # Same call without the flag reproduces the old blow-up.
+    assert grow_box(own, [building], 0.25, 1.5, 1080, 2048)[3] >= 430
+
+
+def test_box_stays_person_sized_inside_a_frame_sized_building() -> None:
+    """Synthetic masks through the pass: a person inside a frame-sized
+    building (scenery) with a chain of similar-size trees and a sky band.
+    The crop stays the padded person box; a second person next to the first
+    is still taken in whole."""
+    H, W = 240, 400
+    n = 3
+    hard = {}
+    person = np.zeros((n, H, W), np.uint8)
+    person[:, 100:160, 100:130] = 1  # 60 x 30 -> padded 90 x 45
+    friend = np.zeros((n, H, W), np.uint8)
+    friend[:, 100:160, 135:165] = 1  # cut by the padded box (ends at 138) -> taken whole
+    building = np.ones((n, H, W), np.uint8)  # the whole frame
+    tree = np.zeros((n, H, W), np.uint8)
+    tree[:, 60:180, 60:100] = 1  # 120 x 40 = 4800 <= 1.5 x 4050: "similar size"
+    sky = np.zeros((n, H, W), np.uint8)
+    sky[:, 0:70, :] = 1
+    frames = list(range(1, n + 1))
+    hard[1] = {"label": "person", "frames": frames, "stack": person, "scenery": False}
+    hard[2] = {"label": "person", "frames": frames, "stack": friend, "scenery": False}
+    hard[8] = {"label": "building", "frames": frames, "stack": building, "scenery": True}
+    hard[4] = {"label": "tree", "frames": frames, "stack": tree, "scenery": True}
+    hard[11] = {"label": "sky", "frames": frames, "stack": sky}  # old artifact: by label
+    p = LTXAlphaRefinerPass({"pad": 0.25, "neighbour_max_ratio": 1.5})
+    p._hard_masks = hard
+    p._first = 1
+    p._track_id = 1
+    box = p._chunk_box(person, [0, 1, 2], H, W)
+    assert box is not None
+    y0, x0, y1, x1 = box
+    assert (y1 - y0) < 100 and (x1 - x0) < 110, box  # person-sized, not 240 x 400
+    assert x1 >= 165  # the friend is inside, whole
+    assert y0 >= 85 and x0 >= 90  # neither the tree nor the sky pulled it out
+
+
+def test_is_scenery_track_prefers_the_flag_over_the_label() -> None:
+    from live_action_aov.passes.matte.ltx_alpha import _is_scenery_track
+
+    assert _is_scenery_track({"label": "sky"})  # old artifact: by label
+    assert not _is_scenery_track({"label": "sky", "scenery": False})  # a click named sky
+    assert _is_scenery_track({"label": "hero", "scenery": True})
+    assert not _is_scenery_track({"label": "person"})
+
+
+def test_refine_all_skips_ltx_for_scenery_and_keeps_sam_mask(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """All-masks mode: the person goes to LTX on a person-sized crop; the sky
+    (scenery) is not sent to LTX and comes out as SAM's mask, anti-aliased,
+    in mask.sky; one log line says so."""
+    n, h, w = 9, 120, 200
+    frames, hard = _scene(n, h=h, w=w)
+    sky = np.zeros((n, h, w), np.uint8)
+    sky[:, 0:30, :] = 1
+    for f in frames:
+        f[0:30, :] = 0.3  # grey sky band (dark for the fake LTX)
+    art = {
+        "sam3_hard_masks": {
+            0: {
+                1: {"label": "box", "frames": list(range(1, n + 1)), "stack": hard},
+                2: {
+                    "label": "sky",
+                    "frames": list(range(1, n + 1)),
+                    "stack": sky,
+                    "scenery": True,
+                },
+            }
+        },
+        "sam3_instances": {
+            0: [
+                {
+                    "track_id": 1,
+                    "slot": "r",
+                    "label": "box",
+                    "score": 0.9,
+                    "frames": list(range(1, n + 1)),
+                }
+            ]
+        },
+    }
+    _FakeComfy.calls = []
+    p = _FakeComfy(
+        {
+            "mode": "per_object",
+            "long_edge": 128,
+            "chunk": 17,
+            "overlap": 8,
+            "gate": "dilate",
+            "refine_all_masks": True,
+            "refine_min_px": 0,
+        }
+    )
+    p.ingest_artifacts(art)
+    with caplog.at_level("INFO", logger="live_action_aov.passes.matte.ltx_alpha"):
+        out = p.run_shot(_Reader(frames), frame_range=(1, n))
+    assert len(p.calls) == 1  # the box only; nothing for the sky
+    ww, wh, _ = p.calls[0]
+    assert (ww, wh) == (
+        128,
+        96,
+    )  # the padded moving square (66 x 54), not the 200 x 120 frame (128 x 64)
+    m = out[5]["mask.sky"]
+    assert m[10, 100] == 1.0 and m[60, 100] == 0.0  # SAM's band, solid
+    assert out[5]["matte.r"][60, 40] > 0.9
+    skipped = [r for r in caplog.records if "is scenery" in r.getMessage()]
+    assert len(skipped) == 1 and "track 2 'sky'" in skipped[0].getMessage()
