@@ -51,7 +51,11 @@ from live_action_aov.gui.session_io import (
 )
 from live_action_aov.gui.shot_list import ShotListPanel
 from live_action_aov.gui.shot_state import ShotRegistry, ShotState
-from live_action_aov.gui.submit_worker import SubmitResult, SubmitWorker
+from live_action_aov.gui.submit_worker import (
+    SubmitResult,
+    SubmitWorker,
+    outside_range_message,
+)
 from live_action_aov.gui.viewport import ViewportPanel
 
 _WINDOW_TITLE = "LiveActionAOV"
@@ -561,6 +565,10 @@ class MainWindow(QMainWindow):
                     "Choose root…). Each run lands in <root>/<shot>/v###/.",
                 )
                 return
+            outside = outside_range_message(shot)
+            if outside:
+                QMessageBox.warning(self, "Object outside the frames to process", outside)
+                return
 
         # Non-commercial consent — one dialog for the whole batch,
         # listing every NC model the user has enabled across all
@@ -641,6 +649,10 @@ class MainWindow(QMainWindow):
                 self._log_panel.append_error(
                     f"'{shot.name}' was ticked during the batch but has no output root - skipped."
                 )
+                continue
+            outside = outside_range_message(shot)
+            if outside:
+                self._log_panel.append_error(f"{outside} Skipped.")
                 continue
             if _collect_nc_entries([shot]):
                 self._log_panel.append_error(

@@ -282,6 +282,35 @@ def _serialize_click_instances(
     return out
 
 
+def objects_outside_range(state: ShotState) -> list[tuple[str, int]]:
+    """(name, frame) of every Masks-tab object drawn on a frame the run will
+    not process. The tracker can only start from a frame it reads: seeded on
+    another one, the points sit on the wrong image and the mask is wrong for
+    the whole range."""
+    if "sam3_matte_on" not in state.enabled_models:
+        return []
+    first, last = state.effective_frame_range()
+    return [
+        (inst.name, int(inst.seed_frame))
+        for inst in state.click_instances
+        if (inst.points or inst.box is not None) and not first <= int(inst.seed_frame) <= last
+    ]
+
+
+def outside_range_message(state: ShotState) -> str:
+    """One sentence for the artist, or "" when every object is inside."""
+    bad = objects_outside_range(state)
+    if not bad:
+        return ""
+    first, last = state.effective_frame_range()
+    names = ", ".join(f"'{n}' (frame {f})" for n, f in bad)
+    return (
+        f"'{state.name}': {names} was drawn outside the frames to process ({first}-{last}). "
+        "Widen the range in the This shot tab, or draw the object again on a frame inside it "
+        "(Masks tab > Go to shows where it was drawn)."
+    )
+
+
 def _sam3_matte_params(state: ShotState) -> dict[str, Any]:
     """Assemble the `sam3_matte` param dict from the GUI: text concepts and/or
     interactive click prompts. Both may be present (named clicks alongside
@@ -294,6 +323,9 @@ def _sam3_matte_params(state: ShotState) -> dict[str, Any]:
     concepts = _parse_concepts(state.sam3_concepts)
     if concepts:
         params["concepts"] = concepts
+    outside = outside_range_message(state)
+    if outside:
+        raise ValueError(outside)  # the window checks first; this is the backstop
     clicks = _serialize_click_instances(state.click_instances, state.resolution, state.crop)
     if clicks:
         params["prompt_instances"] = clicks

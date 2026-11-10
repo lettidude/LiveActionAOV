@@ -1495,6 +1495,16 @@ class SAM3MattePass(UtilityPass):
             name = str(spec.get("name") or f"click_{idx + 1}")
             seed_plate = int(spec.get("seed_frame", first))
             seed_local_i = min(max(seed_plate - first, 0), n_frames - 1)
+            if not first <= seed_plate <= last:
+                _log.warning(
+                    "SAM3 matte: '%s' was drawn on frame %d, outside this run (%d-%d): seeded on "
+                    "frame %d instead, with points made for another image - check its mask",
+                    name,
+                    seed_plate,
+                    first,
+                    last,
+                    first + seed_local_i,
+                )
             ref = spec.get("ref_size") or None
             sx = plate_w / float(ref[0]) if ref and float(ref[0]) > 0 else 1.0
             sy = plate_h / float(ref[1]) if ref and float(ref[1]) > 0 else 1.0
