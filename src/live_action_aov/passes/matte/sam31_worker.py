@@ -15,6 +15,14 @@ on the seed frame, masks propagated both ways. Writes one
 `obj_<concept index>_<object id>.npz` (`mask`: (T, H, W) uint8) per object
 and `result.json` into the output folder.
 
+With `--extra-seeds` (small-objects mode) each concept gets one more
+session per extra seed frame (`add_prompt` starts a session over, so one
+session cannot hold several seed frames). Files are then
+`obj_<concept>_s<session>_<object id>.npz` and each object records its
+`session` and `seed`; the bridge merges them into one track per object.
+The primary session (`--seed`) must work as before; a failing extra
+session is logged in `result.json` (`sessions`) and skipped.
+
 Two Windows shims, applied here instead of patching Meta's repo:
 - `sam3.model.decoder` forces the FLASH_ATTENTION SDPA kernel, which the
   Windows torch wheels do not ship ("No available kernel"): it may now fall
@@ -23,7 +31,7 @@ Two Windows shims, applied here instead of patching Meta's repo:
   `init_state` does not accept (upstream f1647e8): unknown keywords dropped.
 
 Usage: python sam31_worker.py --frames DIR --out DIR --concepts '["person"]'
-       --seed N [--checkpoint FILE] [--repo facebook/sam3.1]
+       --seed N [--extra-seeds '[0, 99]'] [--checkpoint FILE] [--repo facebook/sam3.1]
 """
 
 from __future__ import annotations
@@ -68,6 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--concepts", required=True, help="JSON list of text prompts")
     ap.add_argument("--seed", type=int, required=True, help="seed frame index (0-based)")
+    ap.add_argument(
+        "--extra-seeds", default="", help="JSON list of more seed frames (small-objects mode)"
+    )
     ap.add_argument("--checkpoint", default="")
     ap.add_argument("--repo", default="facebook/sam3.1")
     a = ap.parse_args(argv)
@@ -92,37 +103,69 @@ def main(argv: list[str] | None = None) -> int:
     print(f"SAM 3.1 built in {time.time() - t0:.0f}s; {n} frames, seed {a.seed}", flush=True)
 
     os.makedirs(a.out, exist_ok=True)
+    extra = [int(x) for x in json.loads(a.extra_seeds)] if a.extra_seeds else []
+    seeds = [a.seed] + [s for s in extra if s != a.seed]
+    multi = len(seeds) > 1 or bool(a.extra_seeds)
     objects = []
+    sessions = []
     for ci, concept in enumerate(json.loads(a.concepts)):
-        t1 = time.time()
-        sid = pred.handle_request({"type": "start_session", "resource_path": a.frames})[
-            "session_id"
-        ]
-        r = pred.handle_request(
-            {"type": "add_prompt", "session_id": sid, "frame_index": a.seed, "text": concept}
-        )
-        seeds = [int(x) for x in r["outputs"]["out_obj_ids"]]
-        masks: dict[int, dict[int, np.ndarray]] = {}
-
-        try:
-            _collect(pred, sid, "both", masks)
-        except TypeError:
-            _collect(pred, sid, "forward", masks)
-            _collect(pred, sid, "backward", masks)
-        pred.handle_request({"type": "close_session", "session_id": sid})
-        for oid, fm in sorted(masks.items()):
-            h, w = next(iter(fm.values())).shape
-            stack = np.zeros((n, h, w), np.uint8)
-            for fi, m in fm.items():
-                if 0 <= fi < n:
-                    stack[fi] = m
-            name = f"obj_{ci:02d}_{oid:04d}.npz"
-            np.savez_compressed(os.path.join(a.out, name), mask=stack)
-            objects.append({"file": name, "concept": concept, "obj_id": oid})
-        print(
-            f"'{concept}': {len(seeds)} seeded, {len(masks)} tracked in {time.time() - t1:.0f}s",
-            flush=True,
-        )
+        for si, seed in enumerate(seeds):
+            t1 = time.time()
+            sid = pred.handle_request({"type": "start_session", "resource_path": a.frames})[
+                "session_id"
+            ]
+            masks: dict[int, dict[int, np.ndarray]] = {}
+            try:
+                r = pred.handle_request(
+                    {"type": "add_prompt", "session_id": sid, "frame_index": seed, "text": concept}
+                )
+                found = [int(x) for x in r["outputs"]["out_obj_ids"]]
+                try:
+                    _collect(pred, sid, "both", masks)
+                except TypeError:
+                    _collect(pred, sid, "forward", masks)
+                    _collect(pred, sid, "backward", masks)
+            except Exception as e:
+                if si == 0:
+                    raise  # the primary seed must work, as in single-seed mode
+                print(f"'{concept}' seed {seed}: session SKIPPED - SAM 3.1 error: {e}", flush=True)
+                sessions.append({"concept": concept, "seed": seed, "skipped": str(e)[-500:]})
+                try:
+                    pred.handle_request({"type": "close_session", "session_id": sid})
+                except Exception:
+                    pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                continue
+            pred.handle_request({"type": "close_session", "session_id": sid})
+            for oid, fm in sorted(masks.items()):
+                h, w = next(iter(fm.values())).shape
+                stack = np.zeros((n, h, w), np.uint8)
+                for fi, m in fm.items():
+                    if 0 <= fi < n:
+                        stack[fi] = m
+                if multi:
+                    name = f"obj_{ci:02d}_s{si:02d}_{oid:04d}.npz"
+                    entry = {"file": name, "concept": concept, "obj_id": oid}
+                    entry.update(session=si, seed=seed)
+                else:
+                    name = f"obj_{ci:02d}_{oid:04d}.npz"
+                    entry = {"file": name, "concept": concept, "obj_id": oid}
+                np.savez_compressed(os.path.join(a.out, name), mask=stack)
+                objects.append(entry)
+            tracked = len(masks)
+            print(
+                f"'{concept}': {len(found)} seeded, {tracked} tracked in {time.time() - t1:.0f}s"
+                + (f" (seed frame {seed})" if multi else ""),
+                flush=True,
+            )
+            if multi:
+                sessions.append(
+                    {"concept": concept, "seed": seed, "seeded": len(found), "tracked": tracked}
+                )
+                del masks
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
     peak = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
     with open(os.path.join(a.out, "result.json"), "w", encoding="utf-8") as f:
         json.dump(
@@ -132,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
                 "objects": objects,
                 "seconds": round(time.time() - t0),
                 "peak_vram_gb": round(peak, 1),
+                **({"seeds": seeds, "sessions": sessions} if multi else {}),
             },
             f,
             indent=1,

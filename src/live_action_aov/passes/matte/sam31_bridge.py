@@ -26,6 +26,7 @@ import logging
 import os
 import shutil
 import subprocess
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,8 @@ from typing import Any
 import numpy as np
 
 from live_action_aov.core.work_dir import make_work_dir
+from live_action_aov.passes.matte import sam31_merge
+from live_action_aov.passes.matte.sam31_merge import MergeConfig, RawTrack
 
 _log = logging.getLogger(__name__)
 
@@ -91,9 +94,16 @@ def run_sam31(
     python: str,
     timeout_s: float = 3600.0,
     checkpoint: str = "",
+    extra_seeds: Sequence[int] = (),
+    merge: MergeConfig | None = None,
 ) -> list[Sam31Object]:
     """Track `concepts` through `frames` ((T, H, W, 3) display-referred
-    0..1) with SAM 3.1. Masks come back at the frames' resolution."""
+    0..1) with SAM 3.1. Masks come back at the frames' resolution.
+
+    With `merge` (small-objects mode) the worker also seeds `extra_seeds`,
+    one session each, and the raw tracks of all sessions are merged into
+    one object each (`sam31_merge`). Without it: one session on
+    `seed_local`, objects as SAM 3.1 returns them."""
     from PIL import Image
 
     work = make_work_dir("laov_sam31_")
@@ -117,13 +127,23 @@ def run_sam31(
             "--seed",
             str(int(seed_local)),
         ]
+        if merge is not None:
+            cmd += ["--extra-seeds", json.dumps([int(x) for x in extra_seeds])]
         if checkpoint:
             cmd += ["--checkpoint", checkpoint]
         env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
         env["PYTHONUTF8"] = "1"
-        _log.info(
-            "SAM 3.1: %d frames, concepts %s, seed frame %d", len(frames), concepts, seed_local
-        )
+        if merge is None:
+            _log.info(
+                "SAM 3.1: %d frames, concepts %s, seed frame %d", len(frames), concepts, seed_local
+            )
+        else:
+            _log.info(
+                "SAM 3.1 (small objects): %d frames, concepts %s, seed frames %s",
+                len(frames),
+                concepts,
+                [int(seed_local), *[int(x) for x in extra_seeds]],
+            )
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout_s, env=env, check=False
@@ -136,7 +156,7 @@ def run_sam31(
             raise RuntimeError(
                 f"SAM 3.1 worker failed (exit {proc.returncode}): {(proc.stderr or '')[-1500:]}"
             )
-        return read_results(odir)
+        return read_results(odir) if merge is None else merge_results(odir, merge)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -150,6 +170,77 @@ def read_results(out_dir: Path) -> list[Sam31Object]:
     return out
 
 
+def merge_results(out_dir: Path, cfg: MergeConfig) -> list[Sam31Object]:
+    """The worker's raw tracks of every seed session, merged into one
+    object per concept instance (`sam31_merge`). Full stacks are read from
+    disk only when needed, so many sessions of a crowd do not all sit in
+    RAM at once. An empty result is logged and returned as []."""
+    res = json.loads((out_dir / "result.json").read_text(encoding="utf-8"))
+    for s in res.get("sessions", []):
+        if "skipped" in s:
+            _log.warning(
+                "SAM 3.1: '%s' session seeded on frame %s skipped (SAM 3.1 error: %s); "
+                "the other sessions are used.",
+                s.get("concept"),
+                s.get("seed"),
+                str(s["skipped"])[-300:],
+            )
+
+    def loader(path: Path) -> Callable[[], np.ndarray]:
+        def load() -> np.ndarray:
+            with np.load(path) as z:
+                return np.asarray(z["mask"], dtype=np.uint8)
+
+        return load
+
+    tracks: list[RawTrack] = []
+    for o in res["objects"]:
+        load = loader(out_dir / o["file"])
+        t = sam31_merge.make_track(
+            load(),
+            str(o["concept"]),
+            int(o.get("session", 0)),
+            int(o.get("seed", res.get("seed", 0))),
+            int(o["obj_id"]),
+            load,
+            cfg,
+        )
+        if t is not None:
+            tracks.append(t)
+            if t.glitches:
+                _log.info(
+                    "SAM 3.1: '%s' object %d (seed frame %d): %d glitch frame(s) dropped %s",
+                    t.label,
+                    t.obj_id,
+                    t.seed,
+                    len(t.glitches),
+                    t.glitches[:12],
+                )
+    if not tracks:
+        _log.warning(
+            "SAM 3.1 (small objects): no objects found in %d session(s).",
+            len(res.get("seeds", [])) or 1,
+        )
+        return []
+    clusters, rep = sam31_merge.merge_tracks(tracks, cfg)
+    _log.info(
+        "SAM 3.1 (small objects): %d raw track(s) -> %d object(s) "
+        "(%d linked across seeds, %d fragments stitched, %d duplicates merged, "
+        "%d glitch frames dropped).",
+        rep.raw_tracks,
+        rep.objects,
+        rep.linked,
+        rep.stitched,
+        rep.duplicates,
+        rep.glitch_frames,
+    )
+    out = []
+    for g, members in enumerate(clusters):
+        stack = sam31_merge.assemble(tracks, members, cfg)
+        out.append(Sam31Object(tracks[members[0]].label, g, stack))
+    return out
+
+
 def keep_object(stack: np.ndarray, min_peak_coverage: float, min_frames: int) -> bool:
     """Drop SAM 3.1's false hits: an object must cover `min_peak_coverage`
     of the frame on its biggest frame (shelf items, posters: under 0.2 %)
@@ -158,4 +249,23 @@ def keep_object(stack: np.ndarray, min_peak_coverage: float, min_frames: int) ->
     return bool(cov.max() >= min_peak_coverage and (cov > 0).sum() >= min_frames)
 
 
-__all__ = ["Sam31Object", "find_python", "keep_object", "read_results", "run_sam31"]
+def peak_height(stack: np.ndarray) -> int:
+    """The object's tallest bounding box over the clip, in rows."""
+    rows = stack.reshape(stack.shape[0], stack.shape[1], -1).any(2)  # (T, H)
+    best = 0
+    for r in rows:
+        nz = np.flatnonzero(r)
+        if len(nz):
+            best = max(best, int(nz[-1] - nz[0] + 1))
+    return best
+
+
+__all__ = [
+    "Sam31Object",
+    "find_python",
+    "keep_object",
+    "merge_results",
+    "peak_height",
+    "read_results",
+    "run_sam31",
+]
