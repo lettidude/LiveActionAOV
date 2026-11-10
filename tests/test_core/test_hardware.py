@@ -66,6 +66,9 @@ def test_long_clip_steps_the_proxy_down_before_tiny_windows() -> None:
     long = hwm.suggest(hw, (4096, 1936), 600)
     assert long.proxy_long_edge == 1920 and long.window_frames is not None
     assert "windows" in long.one_line()
+    # A 2K plate is not stepped down to 1920: nothing to gain.
+    two_k = hwm.suggest(Hardware("card", 32.0, 94.0, 30.0), (2048, 1080), 123)
+    assert two_k.proxy_long_edge is None
 
 
 def test_window_spans_tile_the_clip_with_context() -> None:

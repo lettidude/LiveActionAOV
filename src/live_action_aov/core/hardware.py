@@ -195,7 +195,8 @@ def suggest(
     # RAM: a long clip at a big proxy only fits in windows so short that the
     # overlap is most of the work. One proxy step down is the better trade
     # (same cameras, depth and ids; slightly softer matte edges).
-    for step in [p for p in PROXY_STEPS if p < min(cap, long_edge) and p >= 1920]:
+    # (a step that barely shrinks the plate is not worth it: 2048 -> 1920).
+    for step in [p for p in PROXY_STEPS if 1920 <= p <= 0.8 * min(cap, long_edge)]:
         win = plan_windows(resolution, n_frames, hw.ram_free_gb, proxy, channels)
         if win is None or win >= 4 * WINDOW_OVERLAP:
             break

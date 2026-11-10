@@ -198,9 +198,9 @@ class InspectorPanel(QWidget):
         self._proxy_combo.addItem("720p  (long edge 1280)", 1280)
         self._proxy_combo.addItem("540p  (long edge 960)", 960)
         self._proxy_combo.setToolTip(
-            "Resize every plate frame to this long edge before passes "
-            "see it. Sidecars are written at the same resolution. Use "
-            "for fast iteration; switch back to Full plate for delivery."
+            "Resize every plate frame to this long edge before the passes see it. "
+            "The EXRs are scaled back to plate size, so they line up in comp. "
+            "Smaller = faster and less memory, slightly softer matte edges."
         )
         self._proxy_combo.currentIndexChanged.connect(self._on_proxy_changed)
         # What this machine (card + RAM) can run for the selected shot, and
@@ -703,10 +703,21 @@ class InspectorPanel(QWidget):
         preview_layout.addStretch()
         preview_tab = _scrollable(preview_layout)
 
-        # Output tab.
-        output_layout = QVBoxLayout()
-        output_layout.setContentsMargins(8, 8, 8, 8)
-        output_layout.addWidget(_section_label("This shot: frames and crop"))
+        # "This shot" tab: the ad-hoc settings of ONE shot. Everything in
+        # the Output tab is for the whole session; a batch must not need a
+        # visit to every shot.
+        shot_layout = QVBoxLayout()
+        shot_layout.setContentsMargins(8, 8, 8, 8)
+        shot_layout.addWidget(_section_label("Only this shot"))
+        shot_only_note = QLabel(
+            "Optional. These apply to the selected shot alone; the Output tab is the "
+            "same for every shot of the session."
+        )
+        shot_only_note.setStyleSheet("color: #888; font-size: 9pt;")
+        shot_only_note.setWordWrap(True)
+        shot_layout.addWidget(shot_only_note)
+        shot_layout.addSpacing(10)
+        shot_layout.addWidget(_section_label("Frames to process"))
         range_row = QHBoxLayout()
         range_row.addWidget(QLabel("Frames"))
         range_row.addWidget(self._range_in)
@@ -714,28 +725,41 @@ class InspectorPanel(QWidget):
         range_row.addWidget(self._range_out)
         range_row.addWidget(self._range_reset_btn)
         range_row.addStretch(1)
-        output_layout.addLayout(range_row)
+        shot_layout.addLayout(range_row)
+        shot_layout.addSpacing(10)
+        shot_layout.addWidget(_section_label("Part of the frame"))
         crop_row = QHBoxLayout()
         crop_row.addWidget(QLabel("Crop:"))
         crop_row.addWidget(self._crop_label, stretch=1)
         crop_row.addWidget(self._crop_draw_btn)
         crop_row.addWidget(self._crop_clear_btn)
-        output_layout.addLayout(crop_row)
-        output_layout.addSpacing(16)
-        output_layout.addWidget(_section_label("Output"))
-        session_wide_note = QLabel("These settings apply to every shot in the session.")
-        session_wide_note.setStyleSheet("color: #777; font-size: 8pt; font-style: italic;")
+        shot_layout.addLayout(crop_row)
+        shot_layout.addSpacing(10)
+        shot_layout.addWidget(_section_label("Folder name"))
+        shot_layout.addLayout(external_name_row)
+        shot_layout.addStretch()
+        shot_tab = _scrollable(shot_layout)
+
+        # Output tab: the same for every shot of the session.
+        output_layout = QVBoxLayout()
+        output_layout.setContentsMargins(8, 8, 8, 8)
+        output_layout.addWidget(_section_label("Output - every shot"))
+        session_wide_note = QLabel(
+            "One setting for the whole session. A single shot's frames, crop and folder "
+            "name are in the This shot tab."
+        )
+        session_wide_note.setStyleSheet("color: #888; font-size: 9pt;")
+        session_wide_note.setWordWrap(True)
         output_layout.addWidget(session_wide_note)
         output_layout.addWidget(self._out_mode_plate)
         output_layout.addWidget(self._out_mode_root)
         output_layout.addLayout(out_root_row)
-        output_layout.addLayout(external_name_row)
         output_layout.addWidget(self._resolved_out_label)
         output_layout.addSpacing(16)
         output_layout.addWidget(_section_label("Proxy resolution"))
         proxy_hint = QLabel(
-            "Resize plate before passes run; sidecars land at this "
-            "resolution. Use Full plate for delivery."
+            "The models run on a smaller copy of the plate (faster, less memory); "
+            "the EXRs are still written at plate size."
         )
         proxy_hint.setStyleSheet("color: #888; font-size: 9pt;")
         proxy_hint.setWordWrap(True)
@@ -888,6 +912,7 @@ class InspectorPanel(QWidget):
         tabs.addTab(masks_tab, "Masks")
         tabs.addTab(preview_tab, "Colour")
         tabs.addTab(output_tab, "Output")
+        tabs.addTab(shot_tab, "This shot")
         # Auto-arm point placement while the Masks tab is open (replaces
         # the old "Place points in viewport" checkbox).
         self._masks_tab_index = tabs.indexOf(masks_tab)
