@@ -25,7 +25,7 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -228,6 +228,11 @@ class ViewportPanel(QWidget):
         # ndarray lives at `_last_composed` resolution; it's invalidated on
         # any point/frame/instance change so a stale mask never lies.
         self._preview_mask: np.ndarray | None = None
+        # Auto preview: every click or box asks for a preview by itself. A
+        # request that arrives while one is running is remembered and run
+        # when that one lands, so the overlay always matches the points.
+        self._auto_preview = True
+        self._preview_again = False
         # Live rubber-band rect while the user drags a box, in normalized
         # [0,1] image coords — drawn as a dashed rectangle, cleared on release.
         self._drag_rect: tuple[float, float, float, float] | None = None
@@ -471,6 +476,7 @@ class ViewportPanel(QWidget):
             self._frame_status("Preview: no image loaded yet.")
             return
         if self._mask_worker.is_busy():
+            self._preview_again = True
             return
         image = _pixmap_to_rgb_float(self._last_composed)
         ih, iw = image.shape[0], image.shape[1]
@@ -544,7 +550,23 @@ class ViewportPanel(QWidget):
     def _frame_status(self, text: str) -> None:
         self._frame_label.setText(text)
 
+    def set_auto_preview(self, on: bool) -> None:
+        self._auto_preview = bool(on)
+        if not on:
+            self._preview_again = False
+
+    def _kick_auto_preview(self) -> None:
+        """After a click or a box: preview by itself (Masks tab "Auto")."""
+        if self._auto_preview:
+            QTimer.singleShot(0, self.preview_active_mask)
+
     def _on_mask_preview_ready(self, mask: object) -> None:
+        if self._preview_again:
+            # The points changed while this one ran: it is stale, run the new one.
+            self._preview_again = False
+            self._preview_mask = None
+            QTimer.singleShot(0, self.preview_active_mask)
+            return
         self._preview_mask = mask if isinstance(mask, np.ndarray) else None
         shot = self._current
         frame = (shot.current_frame or shot.frame_range[0]) if shot else "—"
@@ -553,6 +575,7 @@ class ViewportPanel(QWidget):
 
     def _on_mask_preview_failed(self, error: str) -> None:
         self._preview_mask = None
+        self._preview_again = False
         self._frame_status(f"Preview failed: {error[:60]}")
 
     def _can_edit_active(self) -> bool:
@@ -587,6 +610,7 @@ class ViewportPanel(QWidget):
         self._preview_mask = None  # point set changed → previewed mask stale
         self._repaint_canvas()
         self._registry.notify_updated(shot)
+        self._kick_auto_preview()
 
     def _on_canvas_boxed(self, nx0: float, ny0: float, nx1: float, ny1: float) -> None:
         if self._crop_mode:
@@ -602,6 +626,7 @@ class ViewportPanel(QWidget):
         self._drag_rect = None
         self._repaint_canvas()
         self._registry.notify_updated(shot)
+        self._kick_auto_preview()
 
     def _set_crop_from_drag(self, nx0: float, ny0: float, nx1: float, ny1: float) -> None:
         """Crop mode: the dragged box (normalized) becomes the shot's crop in

@@ -50,6 +50,13 @@ uses [semantic versioning](https://semver.org/).
   whole-frame run, the named objects get their own LTX run on a rectangle around them, for the one
   subject that needs more pixels than the whole frame gives it.
 ### Changed
+- **Masks tab: the preview is back in front.** *Preview* sits right under the object buttons, and
+  with *Auto* on (the default) every click or box previews by itself: no more points on a plate with
+  nothing to show for them. *with* switches what the preview is made with (run engine, ViTMatte,
+  BiRefNet, SAM only) and previews again. The names preset in use (People, People + vehicles,
+  Everything) stays lit. The pass is listed as *Matte (SAM + soft-edge engine)*: it may be SAM 3.1.
+- **ComfyUI not running is said in plain words** ("nothing is running there, start ComfyUI or check
+  the port") instead of the raw socket error.
 - **The Gaussian splat output is called *splat background*, no longer *clean plate*** in the app, the
   docs and the Nuke script (the example node is `SplatFill_example`, was `CleanPlate_example`). It is a
   soft rebuild of what was behind the masked objects: a base for a patch, not a finished clean

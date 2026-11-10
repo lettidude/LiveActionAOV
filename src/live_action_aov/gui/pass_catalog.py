@@ -128,7 +128,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         # the submit worker appends the engine passes.
         ModelEntry(
             "sam3_matte_on",
-            "Matte (SAM 3 + soft-edge engine)",
+            "Matte (SAM + soft-edge engine)",
             "SAM-License / MIT",
             True,
             ("sam3_matte",),

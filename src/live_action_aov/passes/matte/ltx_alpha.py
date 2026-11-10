@@ -876,6 +876,20 @@ def comfy_check(params: dict[str, Any] | None = None) -> tuple[bool, str]:
     return ok, msg
 
 
+def _why_unreachable(e: BaseException) -> str:
+    """A connection error in words an artist can act on."""
+    text = str(e)
+    reason = getattr(e, "reason", e)
+    if isinstance(reason, ConnectionRefusedError) or "10061" in text or "refused" in text.lower():
+        return (
+            "nothing is running there. Start ComfyUI, or check the port in the address "
+            "(8188 unless you changed it). Until then the mattes use ViTMatte."
+        )
+    if isinstance(reason, TimeoutError) or "timed out" in text.lower():
+        return "no answer in 20 s. Is that machine on, and the port open?"
+    return text
+
+
 def _resolve(
     params: dict[str, Any] | None,
 ) -> tuple[bool, str, dict[str, tuple[str, str]]]:
@@ -886,7 +900,7 @@ def _resolve(
     try:
         info = json.load(urllib.request.urlopen(url + "/object_info", timeout=20))
     except (urllib.error.URLError, OSError, ValueError) as e:
-        return False, f"ComfyUI not reachable at {url} ({e})", {}
+        return False, f"ComfyUI not reachable at {url}: {_why_unreachable(e)}", {}
     picked = {
         "unet": pick_model(
             info, str(p["unet"]), "UNETLoader", "UnetLoaderGGUF", "unet_name", _GGUF_UNET

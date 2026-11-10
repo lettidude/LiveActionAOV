@@ -101,6 +101,8 @@ class InspectorPanel(QWidget):
     # "Preview mask (this frame)" — MainWindow routes this to the viewport,
     # which owns the preview image + the single-frame SAM 3 engine.
     mask_preview_requested = Signal()
+    #: Masks tab "Auto": preview by itself after every click or box.
+    mask_auto_preview_toggled = Signal(bool)
     #: Masks tab "Go to" : scrub the viewer to an object's seed frame.
     frame_requested = Signal(int)
     #: Output tab "Draw crop" armed / disarmed: the viewer takes one drag.
@@ -606,7 +608,7 @@ class InspectorPanel(QWidget):
         )
         self._recommended_btn = QPushButton("Use the recommended set")
         self._recommended_btn.setToolTip(
-            "Matte (SAM 3 + default engine), Cryptomatte, MoGe-3 depth + normals, "
+            "Matte (SAM + default engine), Cryptomatte, MoGe-3 depth + normals, "
             "RAFT motion, camera track + Gaussian splat background "
             "(camera only when gsplat is not installed)."
         )
@@ -835,6 +837,8 @@ class InspectorPanel(QWidget):
         ):
             btn = QPushButton(label)
             btn.setToolTip(tip)
+            btn.setCheckable(True)  # the preset in use stays lit
+            btn.setProperty("preset", text)
             btn.clicked.connect(lambda _=False, t=text: self._on_concept_preset(t))
             preset_row.addWidget(btn)
             self._concept_preset_btns.append(btn)
@@ -890,13 +894,50 @@ class InspectorPanel(QWidget):
         # on the seed frame BEFORE running the whole shot. The heavy lifting
         # lives in the viewport (which owns the preview image); this button
         # just asks for it.
-        self._mask_preview_btn = QPushButton("Preview mask (this frame)")
+        self._mask_preview_btn = QPushButton("Preview")
         self._mask_preview_btn.setToolTip(
-            "Runs SAM 3 on the seed frame only and overlays the resulting "
-            "mask in the viewport. First use loads the model (one-time "
-            "wait); after that it's quick. Adjust points and preview again."
+            "Runs SAM on the object's frame only and overlays the soft matte "
+            "in the viewer. First use loads the model (one-time wait); after "
+            "that it is quick. Adjust the points and preview again."
         )
         self._mask_preview_btn.clicked.connect(self.mask_preview_requested.emit)
+        self._mask_auto_preview_btn = QPushButton("Auto")
+        self._mask_auto_preview_btn.setCheckable(True)
+        self._mask_auto_preview_btn.setChecked(True)
+        self._mask_auto_preview_btn.setToolTip(
+            "On: the preview runs by itself after every click or box, so you "
+            "always see what is being matted. Off: only when you press Preview."
+        )
+        self._mask_auto_preview_btn.toggled.connect(self.mask_auto_preview_toggled.emit)
+        # What the preview is made with: the run engine, or one you want to
+        # compare against it. Switching re-previews the selected object.
+        self._preview_with_btns: dict[str, QPushButton] = {}
+        preview_row = QHBoxLayout()
+        preview_row.addWidget(self._mask_preview_btn)
+        preview_row.addWidget(self._mask_auto_preview_btn)
+        preview_row.addSpacing(12)
+        preview_with_label = QLabel("with")
+        preview_with_label.setStyleSheet("color: #999;")
+        preview_row.addWidget(preview_with_label)
+        for label, key, tip in (
+            (
+                "Run engine",
+                "auto",
+                "The object's own engine, else the run engine. LTX Alpha only runs at "
+                "submit: its preview is ViTMatte.",
+            ),
+            ("ViTMatte", "vitmatte", "Soft edge from ViTMatte (trimap matting)."),
+            ("BiRefNet", "birefnet:", "Soft edge from BiRefNet."),
+            ("SAM only", "none", "The hard SAM mask, no soft edge: is the object right at all?"),
+        ):
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, k=key: self._on_preview_with(k))
+            preview_row.addWidget(b)
+            self._preview_with_btns[key] = b
+        self._preview_with_btns["auto"].setChecked(True)
+        preview_row.addStretch(1)
 
         mask_btn_row = QHBoxLayout()
         mask_btn_row.addWidget(self._mask_new_btn)
@@ -915,6 +956,7 @@ class InspectorPanel(QWidget):
         masks_layout.addWidget(masks_hint)
         masks_layout.addSpacing(6)
         masks_layout.addLayout(mask_btn_row)
+        masks_layout.addLayout(preview_row)
         # Too-many-points guardrail. Empirically verified on real plates:
         # 3+2 points → full-object mask (34.8% of frame); 50+ points → the
         # mask collapses to nearly nothing (1.6%). SAM's interactive
@@ -956,7 +998,6 @@ class InspectorPanel(QWidget):
         detail.addRow("Drawn on", seed_row)
         masks_layout.addLayout(detail)
         masks_layout.addSpacing(6)
-        masks_layout.addWidget(self._mask_preview_btn)
         masks_layout.addWidget(self._preview_refiner_note)
         masks_layout.addStretch()
         masks_tab = _scrollable(masks_layout)
@@ -1103,6 +1144,7 @@ class InspectorPanel(QWidget):
 
             # SAM 3 concepts free-text (drives Matte + Cryptomatte).
             self._sam3_concepts_edit.setText(shot.sam3_concepts)
+            self._sync_concept_presets()
 
             self._refine_all_check.blockSignals(True)
             self._refine_all_check.setChecked(bool(shot.refine_all_masks))
@@ -1123,8 +1165,7 @@ class InspectorPanel(QWidget):
             self._pnp_check.blockSignals(False)
 
             self._default_engine_combo.set_current((shot.default_engine, shot.refiner_model))
-            # The preview follows each object's engine (no separate preview pick).
-            shot.preview_refiner = "auto"
+            self._sync_preview_with()
             self._update_preview_refiner_note()
 
             # Click-to-mask object list (Masks tab).
@@ -1317,6 +1358,7 @@ class InspectorPanel(QWidget):
         if self._building or self._current is None:
             return
         self._current.sam3_concepts = text
+        self._sync_concept_presets()
         self._registry.notify_updated(self._current)
 
     # --- Click-to-mask (Masks tab) ---
@@ -1396,7 +1438,40 @@ class InspectorPanel(QWidget):
             return
         self._sam3_concepts_edit.setText(text)
         self._current.sam3_concepts = text
+        self._sync_concept_presets()
         self._registry.notify_updated(self._current)
+
+    def _sync_concept_presets(self) -> None:
+        """Light the preset that matches the names field (none for a custom list)."""
+
+        def norm(text: str) -> str:
+            return ", ".join(p.strip().lower() for p in text.split(",") if p.strip())
+
+        now = norm(self._sam3_concepts_edit.text())
+        for btn in self._concept_preset_btns:
+            btn.blockSignals(True)
+            btn.setChecked(norm(str(btn.property("preset") or "")) == now)
+            btn.blockSignals(False)
+
+    def _on_preview_with(self, key: str) -> None:
+        """Masks tab "with": what the preview is made with; re-previews."""
+        if self._current is None:
+            self._sync_preview_with()
+            return
+        self._current.preview_refiner = key
+        self._sync_preview_with()
+        inst = self._active_mask_instance()
+        if inst is not None and (inst.points or inst.box is not None):
+            self.mask_preview_requested.emit()
+
+    def _sync_preview_with(self) -> None:
+        want = str(getattr(self._current, "preview_refiner", "auto") or "auto")
+        if want.startswith("birefnet:"):
+            want = "birefnet:"
+        for key, btn in self._preview_with_btns.items():
+            btn.blockSignals(True)
+            btn.setChecked(key == want)
+            btn.blockSignals(False)
 
     def _on_mask_slot_changed(self, idx: int) -> None:
         inst = self._active_mask_instance()
