@@ -98,8 +98,8 @@ liveaov-gui
    - At submit, each object propagates across the shot into a `mask.<name>` channel + a named **Cryptomatte ID**.
 4. **Output tab** — one setting for every shot of the session: where the versions go (next to the plate, or one **root**; remembered between sessions), the **proxy** size with the settings proposed for this machine (*Use suggested*), the EXR delivery, the **layout** (one multi-layer EXR, one Read in Nuke; or one EXR per pass in subfolders `passes/depth/`, `passes/matte/` ...) and the **file naming** template, see [File naming](#file-naming). Every run is a new version, see [Output folders](#output-folders). A clip that does not fit the free RAM is run in windows of frames by itself.
 5. **This shot tab** — optional, for the selected shot alone: the **frames** to process (in / out inside the plate, *Whole plate* resets), a **crop** (press *Draw in viewer*, drag a box on the image: passes run on that box only, the EXRs keep the full plate as display window with the box as data window, so Nuke places them; the camera track and the clean plate need the whole frame and refuse a crop) and the shot's **folder name**.
-5. **Submit local** — runs the pipeline; a log panel shows progress.
-6. **Preview output** (button, or right-click a shot) — look at what the last run made without Nuke: pick a version and a layer (each mask, depth, normals, flow, the splat clean plate ...), scrub frames, show a mask over the plate. Camera and splat solves are summarised (frames solved, reprojection error, PSNR). Right-click also opens the output / plate folder and the comp in Nuke.
+6. **Run** — runs the pipeline; a log panel shows progress.
+7. **Preview output** (button, or right-click a shot) — look at what the last run made without Nuke: pick a version and a layer (each mask, depth, normals, flow, the splat clean plate ...), scrub frames, show a mask over the plate. Camera and splat solves are summarised (frames solved, reprojection error, PSNR). Right-click also opens the output / plate folder and the comp in Nuke.
 
 ## Output folders
 
