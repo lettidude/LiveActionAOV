@@ -18,9 +18,10 @@ uses [semantic versioning](https://semver.org/).
 - **File naming template** (`Shot.naming`, Output tab → *File naming*, CLI `--naming`): one template
   for every file of a run with `{shot} {plate} {version} {pass} {frame} {ext}`, with presets for the
   common studio orders. The default naming is unchanged.
-- **Long clips no longer run out of memory.** A clip too long for the machine's RAM is processed in
+- **Long clips use much less memory.** A clip too long for the machine's RAM is processed in
   overlapping windows of frames by itself (`Shot.window_frames`: `auto`, a number or off;
-  `window_overlap`; CLI `--window`). The frames written are the same as a whole-clip run.
+  `window_overlap`; CLI `--window`). Passes that need the whole clip (the SAM tracker, the camera,
+  the splat, video models) still run on it once. The frames written are the same as a whole-clip run.
   Plugin authors: new pass attributes `window_safe` / `window_crossfade` and a `probe_clip` hook.
 - **`liveaov doctor`**, and the same line in the app's Output tab: what is installed and the settings
   proposed for a plate (proxy size, detector, windows), with the reason for each. **Use suggested**
@@ -57,8 +58,9 @@ uses [semantic versioning](https://semver.org/).
   template. The comp script points at the new name.
 
 ### Fixed
-- **Gaussian splat: one frame could come out washed out.** All frames now come out clean; the report
-  gains `holdout_psnr_min_db` and `polish_steps`, and the log warns about a weak frame.
+- **Gaussian splat: one frame could come out washed out** while the others were fine. Fixed; the
+  report gains `holdout_psnr_min_db` and `polish_steps`, and the log warns about a weak frame. Areas
+  the camera never saw behind the masked objects are still a guess: check `splat.A`.
 - **Model licences that were declared wrong.** **DSINE** is non-commercial (Imperial College
   London licence), not MIT: it now asks for `--allow-noncommercial` and is out of the default
   download set (MoGe-3 is the normals model for paid work). **Robust Video Matting** is GPL-3.0,
