@@ -159,8 +159,9 @@ class PyColmapCameraPass(UtilityPass):
         # (every `pnp_holdout_every`-th one never enters the solve): GOOD /
         # WEAK limits are fractions of the image width. A FAILED camera is
         # still written when `pnp_keep_failed`, labelled "do not use".
-        # The same limits judge COLMAP's camera (`_referee_sfm`): KLT corners
-        # tracked through the shot, held out frame by frame against its poses.
+        # The same limits judge COLMAP's camera (`_referee_sfm`) and the nodal
+        # one (`_referee_nodal`): KLT corners tracked through the shot, held
+        # out frame by frame against the fixed poses.
         "pnp_fallback": True,
         "pnp_holdout_every": 5,
         "pnp_good_frac": 0.0011,
@@ -267,7 +268,9 @@ class PyColmapCameraPass(UtilityPass):
             < min_frac * self._solve.quality.total_frame_count
         )
         if (self._solve is None or short) and self.params.get("nodal_fallback", True):
-            nodal = self._solve_nodal(self._workdir / "database.db", frame_list, plate_wh, solve_wh)
+            nodal = self._solve_nodal(
+                self._workdir / "database.db", frame_list, plate_wh, solve_wh, image_dir, mask_dir
+            )
             if nodal is not None:
                 self._solve, self._sparse_dir = nodal, None
                 return {}
@@ -485,9 +488,13 @@ class PyColmapCameraPass(UtilityPass):
         frame_list: list[tuple[int, str]],
         plate_wh: tuple[int, int],
         solve_wh: tuple[int, int],
+        image_dir: Path,
+        mask_dir: Path | None,
     ) -> CameraSolve | None:
         """Rotation-only solve from COLMAP's verified matches, or None when
-        it does not fit (the camera really translates, or too few matches)."""
+        it does not fit (the camera really translates, or too few matches).
+        The camera it writes carries the KLT referee's verdict
+        (`_referee_nodal`) like every other camera."""
         from live_action_aov.passes.camera import nodal
 
         if not db_path.is_file():  # COLMAP crashed before writing its database
@@ -549,9 +556,11 @@ class PyColmapCameraPass(UtilityPass):
             focal_source="nodal_pan"
             if measured
             else ("lens_metadata" if self._lens_mm else "guess"),
+            verdict=self._referee_nodal(sol, frame_list, solve_wh, image_dir, mask_dir),
         )
+        # The verdict line stays first (GUI light, Nuke label); the nodal note follows.
         solve.quality.warnings.insert(
-            0, f"No parallax: rotation-only (nodal) camera, translation fixed at 0; {focal_note}."
+            1, f"No parallax: rotation-only (nodal) camera, translation fixed at 0; {focal_note}."
         )
         q = solve.quality
         _log.info(
@@ -749,12 +758,8 @@ class PyColmapCameraPass(UtilityPass):
         mask_dir: Path | None,
     ) -> Any:
         """Held-out verdict (`pnp.PnPVerdict`) of COLMAP's camera, so an SfM
-        solve is judged like the depth-anchored one: KLT corners of the
-        middle registered frame tracked through the shot (tracked objects
-        masked out), each one triangulated with COLMAP's poses from every
-        frame but the one under test and reprojected into it
-        (`pnp.heldout_from_poses`). Trackers as the PnP path tries them
-        (`pnp_tracker`); the best verdict wins, GOOD stops the search."""
+        solve is judged like the depth-anchored one: its registered poses and
+        the intrinsics of its main camera go to `_referee_poses`."""
         from live_action_aov.passes.camera import pnp
 
         sw, _sh = solve_wh
@@ -771,20 +776,70 @@ class PyColmapCameraPass(UtilityPass):
                 np.asarray(pose.translation, dtype=np.float64).reshape(3),
             )
             cam_counts[im.camera_id] = cam_counts.get(im.camera_id, 0) + 1
-        n = len(frame_list)
-        good_frac = float(self.params.get("pnp_good_frac", 0.0011))
-        weak_frac = float(self.params.get("pnp_weak_frac", 0.0027))
         if len(poses) < 2:
             # Nothing to referee: `assess` on an empty solve says FAILED.
             empty = pnp.PnPSolve(
                 K=np.eye(3), anchor=0, points=np.zeros((0, 3)), colors=np.zeros((0, 3), np.uint8)
             )
-            return pnp.assess(empty, sw, n, good_frac=good_frac, weak_frac=weak_frac)
+            return pnp.assess(
+                empty,
+                sw,
+                len(frame_list),
+                good_frac=float(self.params.get("pnp_good_frac", 0.0011)),
+                weak_frac=float(self.params.get("pnp_weak_frac", 0.0027)),
+            )
         camera = reconstruction.cameras[max(cam_counts, key=lambda c: cam_counts[c])]
         intr = _intrinsics(camera, (0, 0), self.params)  # solve resolution; k1 not applied
         K = np.array(
             [[intr.fx_px, 0.0, intr.cx_px], [0.0, intr.fy_px, intr.cy_px], [0.0, 0.0, 1.0]]
         )
+        return self._referee_poses(K, poses, frame_list, solve_wh, image_dir, mask_dir, "SfM")
+
+    def _referee_nodal(
+        self,
+        sol: Any,
+        frame_list: list[tuple[int, str]],
+        solve_wh: tuple[int, int],
+        image_dir: Path,
+        mask_dir: Path | None,
+    ) -> Any:
+        """Held-out verdict (`pnp.PnPVerdict`) of a rotation-only camera
+        (`nodal.NodalSolve`): its rotations with zero translation and its
+        focal go to `_referee_poses`. Every track triangulates to a point at
+        infinity under a camera that only turns, so a pan that fits comes
+        back GOOD and NODAL; a rotation the plate disagrees with shows up as
+        a held-out error the fit error alone would not."""
+        sw, sh = solve_wh
+        f = float(sol.focal_px)
+        K = np.array([[f, 0.0, sw / 2.0], [0.0, f, sh / 2.0], [0.0, 0.0, 1.0]])
+        poses = {
+            int(k): (np.asarray(R, dtype=np.float64), np.zeros(3)) for k, R in sol.rotations.items()
+        }
+        return self._referee_poses(K, poses, frame_list, solve_wh, image_dir, mask_dir, "nodal")
+
+    def _referee_poses(
+        self,
+        K: np.ndarray,
+        poses: dict[int, tuple[np.ndarray, np.ndarray]],
+        frame_list: list[tuple[int, str]],
+        solve_wh: tuple[int, int],
+        image_dir: Path,
+        mask_dir: Path | None,
+        what: str,
+    ) -> Any:
+        """Held-out verdict of FIXED poses `{local frame index: (R_cw, t_cw)}`
+        (OpenCV, solve resolution) with intrinsics `K`: KLT corners of the
+        middle posed frame tracked through the shot (tracked objects masked
+        out), each one triangulated with the poses from every frame but the
+        one under test and reprojected into it (`pnp.heldout_from_poses`).
+        Trackers as the PnP path tries them (`pnp_tracker`); the best verdict
+        wins, GOOD stops the search. `what` names the camera in the log."""
+        from live_action_aov.passes.camera import pnp
+
+        sw, _sh = solve_wh
+        n = len(frame_list)
+        good_frac = float(self.params.get("pnp_good_frac", 0.0011))
+        weak_frac = float(self.params.get("pnp_weak_frac", 0.0027))
         anchor = min(poses, key=lambda k: (abs(k - n // 2), k))
         gray, static = self._load_solve_frames(frame_list, solve_wh, image_dir, mask_dir)
         anchor_static = static[anchor]
@@ -809,8 +864,9 @@ class PyColmapCameraPass(UtilityPass):
                 break
         assert best is not None
         _log.info(
-            "Camera solve: KLT referee on the SfM camera - %s, held-out %.2f px (solve res), "
+            "Camera solve: KLT referee on the %s camera - %s, held-out %.2f px (solve res), "
             "%d/%d reliable frames, %d corners",
+            what,
             best.verdict,
             best.heldout_px,
             len(best.reliable),
@@ -1418,10 +1474,19 @@ def build_solve_from_nodal(
     focal_source: str = "nodal_pan",
     point_distance: float = 100.0,
     max_points: int = 4000,
+    verdict: Any,
 ) -> CameraSolve:
     """`nodal.NodalSolve` -> `CameraSolve`: rotation-only poses (camera at
     the origin), plate-resolution intrinsics, and the matched features as
-    points on a sphere `point_distance` away (to check the pan in Nuke)."""
+    points on a sphere `point_distance` away (to check the pan in Nuke).
+
+    `verdict` (`pnp.PnPVerdict`, from `PyColmapCameraPass._referee_nodal`)
+    is not optional: the fit error is measured on the matches the
+    rotations were fitted to, so every nodal camera carries the
+    independent held-out verdict that leads its warnings and the Nuke
+    label, like the SfM and PnP cameras."""
+    if verdict is None:
+        raise TypeError("build_solve_from_nodal needs the referee's verdict.")
     sw, sh = solve_wh
     pw, ph = plate_wh if plate_wh[0] > 0 else solve_wh
     scale = pw / max(sw, 1)
@@ -1481,6 +1546,7 @@ def build_solve_from_nodal(
                 )
     registered = {e.frame for e in extrinsics}
     quality = _quality(per_err, per_count, len(registered), len(frame_list), intr, extrinsics)
+    _apply_verdict(quality, verdict, scale, len(frame_list), metric=False)
     return CameraSolve(
         shot=ShotRef(),
         backend=BackendInfo(

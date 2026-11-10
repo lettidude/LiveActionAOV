@@ -19,6 +19,13 @@ uses [semantic versioning](https://semver.org/).
   version unchanged (the two fields keep their meaning; the SfM line states the parallax instead of
   metres, since an SfM solve has no scale). The referee's parallax call is also machine-readable
   (`quality.nodal`), and the splat pass refuses a camera it called NODAL, not only the nodal mapper.
+- **The nodal camera carries it too.** The rotation-only fallback (pans, locked-off shots) was the
+  last camera written with `verdict: ""`, so its GUI light, Nuke label and `liveaov qc` stayed
+  blank. The same KLT referee now judges its rotations (zero translation, its own focal): every
+  track is a point at infinity under a camera that only turns, so a pan that fits is **GOOD** and
+  NODAL, and a rotation the plate disagrees with gets a finite held-out error and FAILED. The
+  verdict line leads the warnings, ahead of the "No parallax" note; `build_solve_from_nodal`
+  refuses to build a camera without one. Every camera JSON the pass writes now has a verdict.
 
 ## [0.12.0] — 2026-11-08
 

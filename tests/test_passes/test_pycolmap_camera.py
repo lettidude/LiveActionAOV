@@ -642,7 +642,12 @@ def test_a_colmap_crash_is_a_camera_failure_not_a_run_crash(
     # The child's progress lines reach the log.
     assert "extracting features on 1 frames" in caplog.text
     # The nodal fallback then finds no database and declines instead of failing.
-    assert PyColmapCameraPass()._solve_nodal(tmp_path / "database.db", [], (8, 8), (8, 8)) is None
+    assert (
+        PyColmapCameraPass()._solve_nodal(
+            tmp_path / "database.db", [], (8, 8), (8, 8), tmp_path, None
+        )
+        is None
+    )
 
 
 def test_the_workdir_goes_when_the_camera_fails(tmp_path: Path, caplog: pytest.LogCaptureFixture):
