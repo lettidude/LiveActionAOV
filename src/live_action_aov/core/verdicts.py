@@ -8,12 +8,9 @@
 A pass reports *metrics* (numbers with a name, e.g. ``splat.holdout_psnr_db``);
 this module turns a metric into a traffic light - GOOD / WEAK / FAILED - and
 holds the *policy* that decides what lands in the report's ``needs_human``
-list. The defaults are deliberately generic: they flag what is clearly broken
-on any plate. Tuned values belong to whoever owns the plates; they come in
-without a code change, as an override:
-
-    {"limits": {"splat.holdout_psnr_db": {"good": 27, "weak": 22}},
-     "policy": {"weak_needs_human": false}}
+list. The defaults are generic and few. Other values come in without a code
+change, as an override (format: ``{"limits": {<metric>: {"good": x,
+"weak": y}}, "policy": {<key>: value}}``; a limit set to null is switched off).
 
 Sources, later wins: the defaults below, the JSON file named by the
 ``LAOV_REPORT_THRESHOLDS`` environment variable, ``Job.report_thresholds``.
@@ -57,11 +54,8 @@ class Limit:
 
 #: Generic limits. Metric names are `<area>.<what>_<unit>`.
 DEFAULT_LIMITS: dict[str, Limit] = {
-    # In-sample reprojection of an SfM solve, plate pixels. Only judges a
-    # solve that brings no verdict of its own.
+    # Only judges a camera solve that brings no verdict of its own.
     "camera.reprojection_error_px": Limit(1.0, 2.0, unit="px"),
-    # Held-out frames of the Gaussian splat (same limits as the pass's log
-    # warnings: 20 dB on the worst frame, 40 % of the plate masked).
     "splat.holdout_psnr_db": Limit(25.0, 20.0, higher_is_better=True, unit="dB"),
     "splat.holdout_psnr_min_db": Limit(20.0, 15.0, higher_is_better=True, unit="dB"),
     "splat.masked_fraction": Limit(0.25, 0.4),
@@ -75,12 +69,10 @@ DEFAULT_POLICY: dict[str, Any] = {
     "fallback_needs_human": True,  # a pass ran on its fallback engine
     "noncommercial_needs_human": True,  # a non-commercial model ran
     # An object's area under this fraction of its own median, for at least
-    # `matte_collapse_min_frames` frames in a row, inside the frames it is
-    # tracked on: "collapsed" (lost, or shrunk to a sliver).
+    # `matte_collapse_min_frames` frames in a row: "lost or collapsed".
     "matte_collapse_ratio": 0.2,
     "matte_collapse_min_frames": 2,
-    # Frame-to-frame area change above this factor: a warning (a cut, an
-    # ID swap, a mask that jumped to the neighbour).
+    # Frame-to-frame area change above this factor: a warning.
     "matte_jump_ratio": 3.0,
     # Ignore objects smaller than this fraction of the frame for the checks.
     "matte_min_area": 0.0005,

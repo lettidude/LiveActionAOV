@@ -95,8 +95,11 @@ plates/sh020_v003_utility/v001/      one folder per run, never overwritten
     passes/                          the utility EXRs (+ a lossless Cryptomatte sidecar)
     camera/                          Camera2 .nk, .usda, .json, point cloud, COLMAP model
     splat/                           the Gaussian splat (.ply)
-    logs/
+    logs/                            run log + sh020_v001.run_report.json
 ```
+
+The run report says, per pass, what ran, what fell back and why, timings, VRAM / RAM, verdicts and what needs a human
+to look at it ([docs/run-report.md](docs/run-report.md)).
 
 Or pick one root for the whole session in the Output tab (`--out` on the command line). Proxy resolution and delivery format (lossless 32-bit, or DWAB half-float at a fraction of the size) live in the same tab.
 
