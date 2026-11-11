@@ -19,8 +19,9 @@ metres:
    disparity (relative source) or one scale (metric source). The fit is
    robust (worst residuals dropped) so moving subjects and MoGe-3's own
    outliers do not drive it. `align_window` = 0 pools every reference into
-   ONE fit for the clip (nothing can flicker); N > 0 pools the references
-   within N frames, then blends the fits linearly (follows a long dolly).
+   ONE fit for the clip (nothing can flicker, the default); N > 0 pools the
+   references within N frames, then blends the fits linearly. Windows follow
+   MoGe-3's own slow scale wander too, so keep 0 unless a long dolly needs it.
 
 `Z` is metres; P comes from this Z with MoGe-3's FOV (`depth_intrinsics`),
 so P and Z agree. The camera track keeps its own MoGe-3 depth: this pass
@@ -270,9 +271,11 @@ def fit_samples(
 
 
 def robust_fit(x: np.ndarray, y: np.ndarray, metric_src: bool, keep: float) -> tuple[float, float]:
-    """Disparity: y = a x + b, least squares on the `keep` fraction of
-    pixels with the smallest relative residual (3 rounds). Metric: one log
-    offset (median), returned as (scale, 0)."""
+    """Disparity: y = a x + b with b >= 0, least squares on the RELATIVE
+    residual (near and far pixels count alike) over the `keep` fraction of
+    pixels that fit best (3 rounds). b >= 0 keeps every surface the video
+    model sees at a finite depth. Metric: one log offset (median), returned
+    as (scale, 0)."""
     if x.size == 0:
         return (1.0, 0.0) if metric_src else (float("nan"), float("nan"))
     if metric_src:
@@ -280,8 +283,12 @@ def robust_fit(x: np.ndarray, y: np.ndarray, metric_src: bool, keep: float) -> t
     sel = np.ones(x.size, dtype=bool)
     a = b = 0.0
     for _ in range(3):
-        A = np.stack([x[sel], np.ones(int(sel.sum()))], axis=1)
-        (a, b), *_ = np.linalg.lstsq(A, y[sel], rcond=None)
+        w = 1.0 / np.maximum(y[sel], 1e-9)
+        xs = x[sel] * w
+        A = np.stack([xs, w], axis=1)
+        (a, b), *_ = np.linalg.lstsq(A, np.ones(int(sel.sum())), rcond=None)
+        if b < 0.0:
+            a, b = float(np.dot(xs, np.ones_like(xs)) / max(np.dot(xs, xs), 1e-12)), 0.0
         r = np.abs(a * x + b - y) / np.maximum(y, 1e-9)
         sel = r <= np.quantile(r, keep)
     return float(a), float(b)

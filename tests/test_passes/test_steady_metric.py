@@ -92,6 +92,18 @@ def test_robust_fit_recovers_disparity_affine_despite_outliers() -> None:
     assert b == pytest.approx(0.05, abs=1e-3)
 
 
+def test_robust_fit_never_sends_far_surfaces_to_infinity() -> None:
+    """A best fit with a negative shift would map small disparities to
+    'beyond infinity'; the shift is held at zero instead."""
+    x = np.array([0.02, 0.05, 0.5, 1.0, 2.0])
+    y = 0.9 * x - 0.01  # true shift < 0
+    y[:2] = [0.01, 0.03]
+    a, b = sm.robust_fit(x, y, metric_src=False, keep=1.0)
+    assert b >= 0.0 and a > 0.0
+    z, valid = sm.apply_fit(np.array([[0.001, 0.02]]), a, b, metric_src=False, far=1e9)
+    assert valid.all() and np.isfinite(z).all()
+
+
 def test_robust_fit_metric_is_one_scale() -> None:
     x = np.log(np.array([1.0, 2.0, 4.0, 8.0]))
     s, b = sm.robust_fit(x, x + np.log(2.5), metric_src=True, keep=0.8)
