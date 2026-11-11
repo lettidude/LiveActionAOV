@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import math
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 #: Horizontal FOV (degrees) a real rectilinear lens can have. 5 deg is a
 #: ~285 mm lens on a Super 35 film back (~410 mm on full frame); 130 deg is
@@ -190,6 +190,10 @@ class CameraSolve(BaseModel):
     unregistered_frames: list[int] = Field(default_factory=list)
     points: list[ScenePoint] = Field(default_factory=list)
     quality: Quality = Field(default_factory=Quality)
+    # The lens range the solver judged this camera with (None = check off),
+    # so a pass that takes its focal (MoGe-3) agrees with it. Not written to
+    # the JSON: a solve read back from disk gets the default range.
+    _lens_fov_x_deg_range: tuple[float, float] | None = PrivateAttr(default=PLAUSIBLE_FOV_X_DEG)
 
 
 __all__ = [

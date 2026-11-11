@@ -67,7 +67,7 @@ from live_action_aov.core.pass_base import (
     UtilityPass,
 )
 from live_action_aov.core.runtime_env import load_local_first
-from live_action_aov.io.camera_schema import plausible_fov_x
+from live_action_aov.io.camera_schema import PLAUSIBLE_FOV_X_DEG, plausible_fov_x
 from live_action_aov.io.channels import (
     CH_BACK_X,
     CH_BACK_Y,
@@ -591,7 +591,9 @@ def camera_fov(solve: Any, trust: str = "usable") -> float | None:
     if trust != "any" and camera_refused(solve):
         return None
     fov = _raw_camera_fov(solve)
-    return fov if plausible_fov_x(fov) else None
+    # The range the camera pass judged it with (its `lens_fov_x_deg_range`).
+    bounds = getattr(solve, "_lens_fov_x_deg_range", PLAUSIBLE_FOV_X_DEG)
+    return fov if plausible_fov_x(fov, bounds) else None
 
 
 def _raw_camera_fov(solve: Any) -> float | None:
