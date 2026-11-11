@@ -236,6 +236,10 @@ class ShotState:
     status: str = "new"
     last_error: str = ""
     last_sidecar_dir: Path | None = None
+    # The last run's report (runtime only, like the status): its one-line
+    # summary and its "needs a human" reasons.
+    last_report_summary: str = ""
+    last_needs_human: list[str] = field(default_factory=list)
 
     def resolve_output_dir(self) -> Path | None:
         """The shot's folder (its versions live inside it): next to the

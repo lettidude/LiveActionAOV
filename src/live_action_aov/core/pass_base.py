@@ -285,6 +285,17 @@ class UtilityPass(ABC):
         del shot
         return {}
 
+    # --- Run report ---
+    def report_fields(self) -> dict[str, Any]:
+        """Fields this pass adds to its entry in the run report
+        (`core.run_report.PassContribution`: engine, fallbacks, objects,
+        metrics, verdict, warnings, needs_human, section + summary, extra).
+        Called after `run_shot` (also after a failure), before `unload`.
+        Default: nothing - the executor already records status, timings,
+        peak VRAM / RAM and the channels written. Must be cheap and must
+        not raise (an error is logged and ignored)."""
+        return {}
+
     # --- Cross-pass artifact consumption ---
     def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:
         """Receive the full artifact dict produced by upstream passes.

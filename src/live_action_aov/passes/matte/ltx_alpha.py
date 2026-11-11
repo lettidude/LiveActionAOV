@@ -208,6 +208,7 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         super().__init__(params)
         self._fallback: ViTMatteRefinerPass | None = None
         self._comfy_ok: bool | None = None
+        self._comfy_msg = ""
         self._models: dict[str, tuple[str, str]] = {}
         self._track_id: int | None = None
         self._track_label = ""
@@ -635,11 +636,37 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
     def _comfy_ready(self) -> bool:
         if self._comfy_ok is None:
             self._comfy_ok, msg, self._models = _resolve(self.params)
+            self._comfy_msg = msg
             if self._comfy_ok:
                 _log.info("LTX alpha: %s", msg)
             else:
                 _log.warning("LTX alpha: %s - using ViTMatte for these objects.", msg)
         return self._comfy_ok
+
+    def report_fields(self) -> dict[str, Any]:
+        """Run report: LTX or its ViTMatte fallback, and the objects LTX did
+        not see as foreground."""
+        out: dict[str, Any] = {"extra": {"mode": str(self.params.get("mode", "whole_frame"))}}
+        if self._comfy_ok is None:
+            return out  # nothing was refined (no object to matte)
+        if not self._comfy_ok:
+            out["engine"] = "vitmatte"
+            out["engine_reason"] = self._comfy_msg
+            out["fallbacks"] = [{"wanted": "ltx", "used": "vitmatte", "reason": self._comfy_msg}]
+            return out
+        out["engine"] = "ltx"
+        unseen = [str(u) for u in (getattr(self, "unseen", None) or [])]
+        if unseen:
+            out["fallbacks"] = [
+                {
+                    "wanted": "ltx",
+                    "used": "vitmatte (SAM edge for scenery)",
+                    "reason": "not foreground for LTX (whole_min_cover)",
+                    "objects": unseen,
+                    "partial": True,
+                }
+            ]
+        return out
 
     def _vitmatte(self) -> ViTMatteRefinerPass:
         if self._fallback is None:
