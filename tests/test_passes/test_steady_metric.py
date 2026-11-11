@@ -39,12 +39,13 @@ def _fake_vda(metric: bool):
     return infer
 
 
-def _fake_depth_at(jitter: list[float]):
+def _fake_depth_at(jitter: list[float], letterbox=None):
     """MoGe-3: true depth x a per-frame scale jitter, a moving 'person' that
     is wrong, sky on the top rows."""
 
     def depth_at(self, reader, frame_range, frames):
         self._intrinsics = (0.8, 1.2, 0.5, 0.5)
+        self.letterbox = letterbox
         out = {}
         for i, f in enumerate(frames):
             z = TRUE_Z * jitter[i % len(jitter)]
@@ -60,10 +61,10 @@ def _fake_depth_at(jitter: list[float]):
 
 @pytest.fixture
 def fakes(monkeypatch):
-    def install(metric: bool, jitter=(1.0, 1.08, 0.93, 1.04)):
+    def install(metric: bool, jitter=(1.0, 1.08, 0.93, 1.04), letterbox=None):
         monkeypatch.setattr(VideoDepthAnythingPass, "_load_model", lambda self: None)
         monkeypatch.setattr(VideoDepthAnythingPass, "_infer_clip", _fake_vda(metric))
-        monkeypatch.setattr(MoGe3Pass, "depth_at", _fake_depth_at(list(jitter)))
+        monkeypatch.setattr(MoGe3Pass, "depth_at", _fake_depth_at(list(jitter), letterbox))
 
     return install
 
@@ -146,6 +147,17 @@ def test_run_shot_gives_steady_metres(fakes, source) -> None:
     art = p.emit_artifacts()
     assert art["depth_intrinsics"][1].tolist() == pytest.approx([0.8, 1.2, 0.5, 0.5])
     assert "depth_metric" in art
+
+
+def test_letterbox_bars_stay_invalid_on_every_frame(fakes) -> None:
+    """VDA gives values on the bars too; the output keeps MoGe-3's letterbox."""
+    fakes(metric=False, letterbox=(0, 3, W, H - 6))
+    out = sm.SteadyMetricDepthPass({"ref_every": 4}).run_shot(_Reader(), (1, 6))
+    for f in out:
+        conf = out[f][CH_DEPTH_CONFIDENCE]
+        assert conf[:3].max() == 0.0 and conf[-3:].max() == 0.0
+        assert conf[3:-3].min() == 1.0
+        assert (out[f][CH_Z][:3] == 10000.0).all()
 
 
 def test_p_follows_the_delivered_z(fakes) -> None:

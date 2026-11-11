@@ -171,6 +171,7 @@ class SteadyMetricDepthPass(UtilityPass):
         try:
             ref_depth = moge.depth_at(reader, frame_range, refs)
             self._intrinsics = moge._intrinsics
+            box = moge.letterbox
         finally:
             moge.unload()
             _free_gpu()
@@ -206,10 +207,16 @@ class SteadyMetricDepthPass(UtilityPass):
             if int(self.params["align_window"]) <= 0
             else f"{self.params['align_window']}-frame windows",
         )
+        # Letterbox bars are not picture: invalid on every frame, as in MoGe-3.
+        h, w = raw[frames[0]].shape
+        picture = np.zeros((h, w), bool)
+        x0, y0, cw, ch = box or (0, 0, w, h)
+        picture[y0 : y0 + ch, x0 : x0 + cw] = True
         out: dict[int, dict[str, np.ndarray]] = {}
         for f in frames:
             a, b = params[f]
             z, valid = apply_fit(raw[f], a, b, metric_src, far)
+            valid &= picture
             out[f] = {
                 CH_Z: np.where(valid, z, sky).astype(np.float32),
                 CH_DEPTH_CONFIDENCE: valid.astype(np.float32),

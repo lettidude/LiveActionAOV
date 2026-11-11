@@ -128,6 +128,8 @@ class MoGe3Pass(UtilityPass):
         self._camera_solve: Any = None
         self._first: int | None = None
         self._intrinsics: tuple[float, float, float, float] | None = None
+        # Letterbox box (x, y, w, h) of the last shot setup, in full-frame pixels.
+        self.letterbox: tuple[int, int, int, int] | None = None
         self.fov_source = ""
 
     # ------------------------------------------------------------------
@@ -261,6 +263,7 @@ class MoGe3Pass(UtilityPass):
         function that runs one full frame with it."""
         sample_imgs, (h, w), box = self._clip_setup(reader, frames)
         samples = list(sample_imgs)
+        self.letterbox = box
         x0, y0, cw, ch = box
         if box != (0, 0, w, h):
             _log.info("MoGe-3: letterbox cropped to %dx%d at (%d, %d)", cw, ch, x0, y0)
