@@ -111,6 +111,16 @@ def test_camera_fov_skips_guessed_focal() -> None:
     assert moge3.camera_fov(None) is None
 
 
+def test_camera_fov_ignores_an_impossible_lens() -> None:
+    """A failed track's ~179 deg pinhole never becomes the geometry's FOV."""
+    intr = SimpleNamespace(fx_px=10.0, width_px=2048, source="moge3_depth_pnp")
+    assert moge3.camera_fov(SimpleNamespace(intrinsics=intr)) is None
+    intr.fx_px = 1800.0  # a ~59 deg lens: kept
+    assert moge3.camera_fov(SimpleNamespace(intrinsics=intr)) == pytest.approx(
+        math.degrees(2 * math.atan(1024 / 1800))
+    )
+
+
 def test_run_shot_fixes_one_fov_and_stabilises_scale() -> None:
     p = _FakePass({"fov_samples": 3, "scale_window": 5})
     out = p.run_shot(_Reader(), (1, 10))
