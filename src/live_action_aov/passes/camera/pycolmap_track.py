@@ -161,6 +161,8 @@ class PyColmapCameraPass(UtilityPass):
         # (every `pnp_holdout_every`-th one never enters the solve): GOOD /
         # WEAK limits are fractions of the image width. A FAILED camera is
         # still written when `pnp_keep_failed`, labelled "do not use".
+        # The same limits judge COLMAP's camera (`_referee_sfm`): KLT corners
+        # tracked through the shot, held out frame by frame against its poses.
         "pnp_fallback": True,
         "pnp_holdout_every": 5,
         "pnp_good_frac": 0.0011,
@@ -257,6 +259,7 @@ class PyColmapCameraPass(UtilityPass):
                 plate_wh=plate_wh,
                 params=self.params,
                 masked_labels=self._masked_labels,
+                verdict=self._referee_sfm(rec, frame_list, solve_wh, image_dir, mask_dir),
             )
         except RuntimeError as e:
             failure, self._solve = e, None
@@ -596,21 +599,7 @@ class PyColmapCameraPass(UtilityPass):
         depth = cv2.resize(depth, (sw, sh), interpolation=cv2.INTER_NEAREST)
         f = pnp.focal_from_fov(sw, fov)
         K = np.array([[f, 0.0, sw / 2.0], [0.0, f, sh / 2.0], [0.0, 0.0, 1.0]])
-        gray = [cv2.imread(str(image_dir / name), cv2.IMREAD_GRAYSCALE) for _, name in frame_list]
-        static: list[np.ndarray | None] = [
-            cv2.imread(str(mask_dir / f"{name}.png"), cv2.IMREAD_GRAYSCALE) > 0
-            if mask_dir is not None and (mask_dir / f"{name}.png").is_file()
-            else None
-            for _, name in frame_list
-        ]
-        # Matte edges (motion blur, hair) poison the solve: keep a margin
-        # around the tracked objects on top of the COLMAP mask dilation.
-        grow = round(float(self.params.get("pnp_mask_grow_frac", 0.005)) * max(sw, sh))
-        if grow > 0:
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1))
-            static = [
-                cv2.erode(m.astype(np.uint8), kernel) > 0 if m is not None else None for m in static
-            ]
+        gray, static = self._load_solve_frames(frame_list, solve_wh, image_dir, mask_dir)
         usable = ~pnp.near_depth_edges(depth, radius=11)  # = the LK window (21 px)
         # Sky / far background: the depth error there is huge.
         z_lo, z_hi = self.params.get("pnp_depth_range_m", (0.2, 60.0))
@@ -727,6 +716,114 @@ class PyColmapCameraPass(UtilityPass):
         for warn in q.warnings:
             _log.warning("Camera solve: %s", warn)
         return solve
+
+    def _load_solve_frames(
+        self,
+        frame_list: list[tuple[int, str]],
+        solve_wh: tuple[int, int],
+        image_dir: Path,
+        mask_dir: Path | None,
+    ) -> tuple[list[np.ndarray], list[np.ndarray | None]]:
+        """The exported solve-resolution frames (uint8 grey) and, per frame,
+        the static mask (True = not a tracked object) or None. Matte edges
+        (motion blur, hair) poison a track: the mask keeps a margin around
+        the objects on top of the COLMAP mask dilation."""
+        import cv2
+
+        sw, sh = solve_wh
+        gray = [cv2.imread(str(image_dir / name), cv2.IMREAD_GRAYSCALE) for _, name in frame_list]
+        static: list[np.ndarray | None] = [
+            cv2.imread(str(mask_dir / f"{name}.png"), cv2.IMREAD_GRAYSCALE) > 0
+            if mask_dir is not None and (mask_dir / f"{name}.png").is_file()
+            else None
+            for _, name in frame_list
+        ]
+        grow = round(float(self.params.get("pnp_mask_grow_frac", 0.005)) * max(sw, sh))
+        if grow > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1))
+            static = [
+                cv2.erode(m.astype(np.uint8), kernel) > 0 if m is not None else None for m in static
+            ]
+        return gray, static
+
+    def _referee_sfm(
+        self,
+        reconstruction: Any,
+        frame_list: list[tuple[int, str]],
+        solve_wh: tuple[int, int],
+        image_dir: Path,
+        mask_dir: Path | None,
+    ) -> Any:
+        """Held-out verdict (`pnp.PnPVerdict`) of COLMAP's camera, so an SfM
+        solve is judged like the depth-anchored one: KLT corners of the
+        middle registered frame tracked through the shot (tracked objects
+        masked out), each one triangulated with COLMAP's poses from every
+        frame but the one under test and reprojected into it
+        (`pnp.heldout_from_poses`). Trackers as the PnP path tries them
+        (`pnp_tracker`); the best verdict wins, GOOD stops the search."""
+        from live_action_aov.passes.camera import pnp
+
+        sw, _sh = solve_wh
+        idx = {name: k for k, (_f, name) in enumerate(frame_list)}
+        poses: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        cam_counts: dict[int, int] = {}
+        for im in reconstruction.images.values():
+            k = idx.get(im.name)
+            if k is None or not _is_registered(im):
+                continue
+            pose = _pose(im)
+            poses[k] = (
+                np.asarray(pose.rotation.matrix(), dtype=np.float64),
+                np.asarray(pose.translation, dtype=np.float64).reshape(3),
+            )
+            cam_counts[im.camera_id] = cam_counts.get(im.camera_id, 0) + 1
+        n = len(frame_list)
+        good_frac = float(self.params.get("pnp_good_frac", 0.0011))
+        weak_frac = float(self.params.get("pnp_weak_frac", 0.0027))
+        if len(poses) < 2:
+            # Nothing to referee: `assess` on an empty solve says FAILED.
+            empty = pnp.PnPSolve(
+                K=np.eye(3), anchor=0, points=np.zeros((0, 3)), colors=np.zeros((0, 3), np.uint8)
+            )
+            return pnp.assess(empty, sw, n, good_frac=good_frac, weak_frac=weak_frac)
+        camera = reconstruction.cameras[max(cam_counts, key=lambda c: cam_counts[c])]
+        intr = _intrinsics(camera, (0, 0), self.params)  # solve resolution; k1 not applied
+        K = np.array(
+            [[intr.fx_px, 0.0, intr.cx_px], [0.0, intr.fy_px, intr.cy_px], [0.0, 0.0, 1.0]]
+        )
+        anchor = min(poses, key=lambda k: (abs(k - n // 2), k))
+        gray, static = self._load_solve_frames(frame_list, solve_wh, image_dir, mask_dir)
+        anchor_static = static[anchor]
+        usable = anchor_static if anchor_static is not None else np.ones(gray[anchor].shape, bool)
+        uv = pnp.anchor_corners(
+            gray[anchor], usable, int(self.params.get("pnp_max_corners", 6000)), max(4, sw // 400)
+        )
+        rank = {"GOOD": 2, "WEAK": 1, "FAILED": 0}
+        best: pnp.PnPVerdict | None = None
+        for guide in self._pnp_guides(frame_list, sw):
+            tracks = self._track_pnp(gray, anchor, uv, static, guide)
+            v = pnp.assess_poses(
+                K, poses, tracks, anchor, sw, n, good_frac=good_frac, weak_frac=weak_frac
+            )
+            if best is None or (rank[v.verdict], len(v.reliable), -v.heldout_px) > (
+                rank[best.verdict],
+                len(best.reliable),
+                -best.heldout_px,
+            ):
+                best = v
+            if v.verdict == "GOOD":
+                break
+        assert best is not None
+        _log.info(
+            "Camera solve: KLT referee on the SfM camera - %s, held-out %.2f px (solve res), "
+            "%d/%d reliable frames, %d corners",
+            best.verdict,
+            best.heldout_px,
+            len(best.reliable),
+            n,
+            len(uv),
+        )
+        return best
 
     def _fov_sweep(
         self,
@@ -1180,9 +1277,17 @@ def build_solve_from_reconstruction(
     plate_wh: tuple[int, int] = (0, 0),
     params: dict[str, Any],
     masked_labels: list[str] | None = None,
+    verdict: Any,
 ) -> CameraSolve:
     """pycolmap `Reconstruction` -> `CameraSolve` (OpenGL poses, Nuke Eulers,
-    plate-resolution intrinsics, per-frame reprojection error in plate px)."""
+    plate-resolution intrinsics, per-frame reprojection error in plate px).
+
+    `verdict` (`pnp.PnPVerdict`, from `PyColmapCameraPass._referee_sfm`) is
+    not optional: COLMAP's reprojection error is measured on the features
+    it fitted, so every SfM camera carries the independent held-out verdict
+    that leads its warnings and the Nuke label, like the PnP camera."""
+    if verdict is None:
+        raise TypeError("build_solve_from_reconstruction needs the referee's verdict.")
     name_to_frame = {name: frame for frame, name in frame_list}
     images = [
         im
@@ -1241,6 +1346,7 @@ def build_solve_from_reconstruction(
     registered = {e.frame for e in extrinsics}
     total = len(frame_list)
     quality = _quality(per_frame_err, per_frame_count, len(registered), total, intr, extrinsics)
+    _apply_verdict(quality, verdict, px_scale, total, metric=False)
     return CameraSolve(
         shot=ShotRef(),
         backend=BackendInfo(
@@ -1472,18 +1578,7 @@ def build_solve_from_pnp(
         "scale in metres is MoGe-3's estimate.",
     )
     if verdict is not None:
-        held_plate = float(verdict.heldout_px) * scale
-        line = (
-            f"{verdict.verdict} CANDIDATE - {'NODAL' if verdict.nodal else 'translated'}: "
-            f"held-out error {held_plate:.1f} px (plate res), {len(verdict.reliable)}/"
-            f"{len(frame_list)} reliable frames, travel {verdict.travel_m:.2f} m = "
-            f"{100 * verdict.parallax:.1f} % of the {verdict.depth_m:.1f} m median depth"
-        )
-        if verdict.verdict == "FAILED":
-            line += " - DO NOT USE"
-        quality.warnings.insert(0, line)
-        quality.verdict = verdict.verdict
-        quality.heldout_error_px = held_plate
+        _apply_verdict(quality, verdict, scale, len(frame_list), metric=True)
     return CameraSolve(
         shot=ShotRef(),
         backend=BackendInfo(
@@ -1528,6 +1623,45 @@ def _image_reprojection_errors(reconstruction: Any, im: Any) -> np.ndarray:
             )
         )
     return np.asarray(errs, dtype=np.float64)
+
+
+def _apply_verdict(
+    quality: Quality, verdict: Any, scale: float, n_frames: int, *, metric: bool
+) -> None:
+    """Write a `pnp.PnPVerdict` into `quality`: the verdict line leads the
+    warnings (hence the Nuke label), `verdict`, `heldout_error_px` (plate
+    px = solve px x `scale`) and `nodal` feed the GUI light, `liveaov qc`
+    and the splat gate. `metric`
+    solves (PnP, metres from MoGe-3) state the travel in metres; an SfM
+    solve has no scale, so only the parallax (travel over depth) is said."""
+    held_plate: float | None = float(verdict.heldout_px) * scale
+    assert held_plate is not None
+    if math.isfinite(held_plate):
+        held = f"held-out error {held_plate:.1f} px (plate res)"
+    else:
+        # The referee could not test the camera (its tracks were lost): no
+        # number to report, and `assess` has already said FAILED.
+        held, held_plate = "held-out error not measurable (tracks lost)", None
+    line = (
+        f"{verdict.verdict} CANDIDATE - {'NODAL' if verdict.nodal else 'translated'}: "
+        f"{held}, {len(verdict.reliable)}/{n_frames} reliable frames, "
+    )
+    if metric:
+        line += (
+            f"travel {verdict.travel_m:.2f} m = {100 * verdict.parallax:.1f} % of the "
+            f"{verdict.depth_m:.1f} m median depth"
+        )
+    else:
+        line += (
+            f"travel {100 * verdict.parallax:.1f} % of the median scene depth "
+            "(KLT referee, held out frame by frame)"
+        )
+    if verdict.verdict == "FAILED":
+        line += " - DO NOT USE"
+    quality.warnings.insert(0, line)
+    quality.verdict = verdict.verdict
+    quality.heldout_error_px = held_plate
+    quality.nodal = bool(verdict.nodal)
 
 
 def _quality(

@@ -39,6 +39,9 @@ uses [semantic versioning](https://semver.org/).
   detail.
 
 ### Changed
+- **Every COLMAP camera now gets a GOOD / WEAK / FAILED verdict**, like the fallback camera already
+  had: it shows in the GUI, in the Nuke camera's label and in `liveaov qc`, and a camera that only
+  rotates is flagged NODAL. The Gaussian splat skips a NODAL camera.
 - **Masks tab: the preview is back in front.** *Preview* sits under the object buttons and, with
   *Auto* on (the default), every click or box previews by itself. *with* picks what the preview is
   made with. The names preset in use stays lit. The pass is listed as *Matte (SAM + soft-edge engine)*.

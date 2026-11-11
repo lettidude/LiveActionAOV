@@ -28,6 +28,8 @@ import pytest
 
 from live_action_aov.core.job import Shot
 from live_action_aov.io.camera_schema import CameraSolve
+from live_action_aov.io.writers.nuke_script import render_nuke_camera_script
+from live_action_aov.passes.camera import pnp
 from live_action_aov.passes.camera import pycolmap_track as mod
 from live_action_aov.passes.camera.pycolmap_track import (
     PyColmapCameraPass,
@@ -245,12 +247,25 @@ _NAMES = ["frame_001001.png", "frame_001002.png", "frame_001003.png"]
 _FRAMES = [(1001, _NAMES[0]), (1002, _NAMES[1]), (1003, _NAMES[2]), (1004, "frame_001004.png")]
 
 
-def _build(**kw: Any) -> CameraSolve:
+def _verdict(verdict: str = "GOOD", heldout_px: float = 0.3) -> pnp.PnPVerdict:
+    """What the KLT referee says about `_Rec` (solve res): stands in for it."""
+    return pnp.PnPVerdict(
+        verdict=verdict,
+        heldout_px=heldout_px,
+        reliable=[0, 1, 2],
+        travel_m=0.6,
+        depth_m=6.0,
+        nodal=False,
+    )
+
+
+def _build(verdict: pnp.PnPVerdict | None = None, **kw: Any) -> CameraSolve:
     return build_solve_from_reconstruction(
         _Rec(_NAMES, **kw),
         frame_list=_FRAMES,
         plate_wh=(2048, 1080),
         params=dict(PyColmapCameraPass.DEFAULT_PARAMS),
+        verdict=_verdict() if verdict is None else verdict,
     )
 
 
@@ -284,7 +299,7 @@ def test_gl_export_projects_exactly_like_colmap():
     COLMAP observed. The same check passed inside Nuke 16 on a real solve."""
     rec = _Rec(_NAMES, noise_px=0.0)
     s = build_solve_from_reconstruction(
-        rec, frame_list=_FRAMES[:3], plate_wh=(1024, 540), params={}
+        rec, frame_list=_FRAMES[:3], plate_wh=(1024, 540), params={}, verdict=_verdict()
     )
     f, cx, cy = s.intrinsics.fx_px, s.intrinsics.cx_px, s.intrinsics.cy_px
     for e, im in zip(s.extrinsics, rec.images.values(), strict=True):
@@ -309,6 +324,40 @@ def test_first_camera_is_upright_identity():
     s = _build()
     assert np.allclose(np.array(s.extrinsics[0].rotation_matrix), np.eye(3))
     assert np.allclose(s.extrinsics[0].rotation_euler_zxy_deg, (0.0, 0.0, 0.0))
+
+
+# ---------------------------------------------------------------------------
+# The SfM camera carries the referee's verdict, like the PnP camera
+# ---------------------------------------------------------------------------
+
+
+def test_an_sfm_solve_without_a_verdict_is_impossible():
+    """COLMAP's own reprojection error says nothing about a drifted or split
+    solve: the builder refuses to make a camera the referee has not judged."""
+    kw: dict[str, Any] = dict(
+        frame_list=_FRAMES, plate_wh=(2048, 1080), params=dict(PyColmapCameraPass.DEFAULT_PARAMS)
+    )
+    with pytest.raises(TypeError):
+        build_solve_from_reconstruction(_Rec(_NAMES), **kw)
+    with pytest.raises(TypeError, match="verdict"):
+        build_solve_from_reconstruction(_Rec(_NAMES), verdict=None, **kw)
+
+
+def test_sfm_verdict_leads_the_warnings_in_plate_pixels():
+    s = _build(_verdict("GOOD", heldout_px=0.3))
+    q = s.quality
+    assert q.verdict == "GOOD" and q.nodal is False
+    assert q.heldout_error_px == pytest.approx(0.6)  # solve 1024 wide -> plate 2048
+    assert q.warnings[0].startswith("GOOD CANDIDATE - translated: held-out error 0.6 px")
+    assert "3/4 reliable frames" in q.warnings[0] and " m " not in q.warnings[0]  # no scale in SfM
+    assert "KLT referee" in q.warnings[0]
+    failed = _build(_verdict("FAILED", heldout_px=12.0))
+    assert failed.quality.verdict == "FAILED" and failed.quality.warnings[0].endswith("DO NOT USE")
+    assert render_nuke_camera_script(failed).count("FAILED CANDIDATE") >= 1
+    # Tracks lost: FAILED with nothing to measure, and no "inf" in the JSON.
+    lost = _build(_verdict("FAILED", heldout_px=float("inf"))).quality
+    assert lost.heldout_error_px is None and "not measurable" in lost.warnings[0]
+    assert "Infinity" not in lost.model_dump_json()
 
 
 # ---------------------------------------------------------------------------
@@ -374,12 +423,19 @@ def test_no_sam3_in_job_means_no_masks(tmp_path: Path):
 
 
 class _Reader:
-    def __init__(self, n: int, h: int = 108, w: int = 192) -> None:
-        self.n, self.h, self.w = n, h, w
+    def __init__(self, n: int, h: int = 108, w: int = 192, static: bool = False) -> None:
+        self.n, self.h, self.w, self.static = n, h, w, static
 
     def read_frame(self, f: int):
-        rng = np.random.default_rng(f)
-        return rng.random((self.h, self.w, 3), dtype=np.float32), {}
+        # `static`: the same trackable texture every frame (a locked-off plate).
+        rng = np.random.default_rng(0 if self.static else f)
+        img = rng.random((self.h, self.w, 3), dtype=np.float32)
+        if self.static:
+            import cv2
+
+            img = cv2.GaussianBlur(img, (0, 0), 1.5)
+            img = (img - img.min()) / (img.max() - img.min())
+        return img, {}
 
 
 def test_run_shot_then_emit_sidecars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -396,7 +452,7 @@ def test_run_shot_then_emit_sidecars(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(PyColmapCameraPass, "_solve_colmap", fake_solve)
     p = PyColmapCameraPass()
-    assert p.run_shot(_Reader(4), (1001, 1004)) == {}
+    assert p.run_shot(_Reader(4, static=True), (1001, 1004)) == {}
     assert seen["pngs"] == [n for _, n in _FRAMES] and seen["mask_dir"] is None
     shot = Shot(
         name="PF0081-03",
@@ -421,6 +477,15 @@ def test_run_shot_then_emit_sidecars(tmp_path: Path, monkeypatch: pytest.MonkeyP
     solve = CameraSolve.model_validate_json(paths["camera"].read_text(encoding="utf-8"))
     assert solve.shot.name == "PF0081-03" and solve.unregistered_frames == [1004]
     assert workdir is not None and not workdir.exists()  # temp cleaned (keep_workdir False)
+    # The referee judged COLMAP's camera on the plate's own KLT tracks: the
+    # verdict, with a measured held-out error, is in the JSON and leads the
+    # Nuke label - whatever it says (this fake dolly-and-pan is an arc that a
+    # locked-off plate ~8.6 units away explains nearly exactly).
+    q = solve.quality
+    assert q.verdict in {"GOOD", "WEAK", "FAILED"}
+    assert q.heldout_error_px is not None and math.isfinite(q.heldout_error_px)
+    assert q.warnings[0].startswith(f"{q.verdict} CANDIDATE")
+    assert f"{q.verdict} CANDIDATE" in paths["camera_nk"].read_text(encoding="utf-8")
 
 
 def test_run_shot_rejects_under_three_frames():
@@ -470,6 +535,23 @@ def test_split_solve_is_a_failure_not_a_camera(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(RuntimeError, match="3/4 frames could be solved"):
         p.run_shot(_Reader(4), (1001, 1004))
     assert p._solve is None and p.emit_sidecars(None) == {}
+
+
+def test_every_sfm_camera_run_shot_writes_has_a_verdict(monkeypatch: pytest.MonkeyPatch):
+    """Random-noise frames: the referee tracks nothing, or garbage. The
+    camera still carries a verdict (FAILED) - never ""."""
+    pytest.importorskip("pycolmap")
+
+    def fake_solve(self, workdir, image_dir, mask_dir, frame_list):
+        return _Rec([n for _, n in frame_list], cam_w=192, cam_h=108)
+
+    monkeypatch.setattr(PyColmapCameraPass, "_solve_colmap", fake_solve)
+    p = PyColmapCameraPass()
+    assert p.run_shot(_Reader(4), (1001, 1004)) == {}
+    assert p._solve is not None and p._solve.backend.mapper == "incremental"
+    q = p._solve.quality
+    assert q.verdict in {"GOOD", "WEAK", "FAILED"} and q.warnings[0].startswith(q.verdict)
+    assert q.verdict == "FAILED" and q.warnings[0].endswith("DO NOT USE")
 
 
 class _FakeModel:

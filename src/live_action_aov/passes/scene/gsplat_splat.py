@@ -69,6 +69,30 @@ _GSPLAT_HELP = (
 )
 
 
+def camera_gate(solve: Any) -> Any:
+    """The camera solve a splat can train on, or a RuntimeError saying why
+    not: no solve, a camera that only rotates (the nodal mapper, or an SfM /
+    PnP camera whose referee found no parallax: `quality.nodal`), or one
+    that FAILED its held-out check. Without parallax a splat cannot recover
+    depth or what is behind objects, whatever the mapper says."""
+    if solve is None or not solve.extrinsics:
+        raise RuntimeError(
+            "splat_gsplat needs a camera solve: enable 'Camera track' in the same job "
+            "(the solve is passed in memory, not read from disk)."
+        )
+    if solve.backend.mapper == "nodal" or solve.quality.nodal is True:
+        raise RuntimeError(
+            "splat_gsplat: the camera only rotates (nodal solve, no parallax) - a splat "
+            "cannot recover depth or what is behind objects. No splat background written."
+        )
+    if solve.quality.verdict == "FAILED":
+        raise RuntimeError(
+            "splat_gsplat: the camera solve FAILED its held-out check (do not use it) - "
+            "no splat background written."
+        )
+    return solve
+
+
 class GsplatSplatPass(UtilityPass):
     name = "splat_gsplat"
     version = "0.1.0"
@@ -159,22 +183,7 @@ class GsplatSplatPass(UtilityPass):
             raise ImportError(_GSPLAT_HELP) from e
         if not torch.cuda.is_available():
             raise RuntimeError("splat_gsplat needs a CUDA GPU.")
-        if self._solve is None or not self._solve.extrinsics:
-            raise RuntimeError(
-                "splat_gsplat needs a camera solve: enable 'Camera track' in the same job "
-                "(the solve is passed in memory, not read from disk)."
-            )
-        solve = self._solve
-        if solve.backend.mapper == "nodal":
-            raise RuntimeError(
-                "splat_gsplat: the camera only rotates (nodal solve, no parallax) - a splat "
-                "cannot recover depth or what is behind objects. No splat background written."
-            )
-        if solve.quality.verdict == "FAILED":
-            raise RuntimeError(
-                "splat_gsplat: the camera solve FAILED its held-out check (do not use it) - "
-                "no splat background written."
-            )
+        solve = camera_gate(self._solve)
         dev = torch.device("cuda")
         torch.manual_seed(int(self.params["seed"]))
         np.random.seed(int(self.params["seed"]))
