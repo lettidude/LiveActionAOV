@@ -46,6 +46,27 @@ class SubmitResult:
     # branch on cancellation vs a real failure — partial sidecars on
     # disk after a cancel are expected, not an error condition.
     cancelled: bool = False
+    # From the run's `logs/<shot>_v###.run_report.json` ("" when none).
+    report_summary: str = ""
+    needs_human: tuple[str, ...] = ()
+
+
+def read_run_report(shot: Shot) -> tuple[str, tuple[str, ...]]:
+    """(one-line summary, needs-a-human lines) of the run that just ended."""
+    path = shot.sidecars.get("run_report")
+    if path is None:
+        return "", ()
+    try:
+        from live_action_aov.core.run_report import load_report
+
+        rep = load_report(Path(path))
+    except Exception:
+        return "", ()
+    lines = tuple(
+        n.reason + (f" (frames {n.frames[0]}-{n.frames[1]})" if n.frames else "")
+        for n in rep.needs_human
+    )
+    return rep.summary, lines
 
 
 class SubmitWorker(QObject):
@@ -143,18 +164,23 @@ class _SubmitTask(QRunnable):
             # Surface the run's version folder (comp script, passes/,
             # camera/ ...) so the UI can reveal / preview it.
             sidecar_dir = run_dir(self.job.shot)
+            summary, human = read_run_report(self.job.shot)
             self._emit(
                 SubmitResult(
                     shot_state_id=self.shot_state_id,
                     success=True,
                     sidecar_dir=sidecar_dir,
                     error=None,
+                    report_summary=summary,
+                    needs_human=human,
                 )
             )
         except CancelledError as e:
             # User-initiated abort — surface as a non-success result
             # but flag it so the MainWindow doesn't pop a "Submit
-            # failed" error dialog.
+            # failed" error dialog. The executor still wrote a
+            # "cancelled" run report for the passes that ran.
+            summary, human = read_run_report(self.job.shot)
             self._emit(
                 SubmitResult(
                     shot_state_id=self.shot_state_id,
@@ -162,15 +188,20 @@ class _SubmitTask(QRunnable):
                     sidecar_dir=None,
                     error=str(e) or "Cancelled",
                     cancelled=True,
+                    report_summary=summary,
+                    needs_human=human,
                 )
             )
         except Exception as e:
+            summary, human = read_run_report(self.job.shot)
             self._emit(
                 SubmitResult(
                     shot_state_id=self.shot_state_id,
                     success=False,
                     sidecar_dir=None,
                     error=f"{type(e).__name__}: {e}",
+                    report_summary=summary,
+                    needs_human=human,
                 )
             )
         finally:

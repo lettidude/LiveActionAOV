@@ -16,6 +16,7 @@ gives a loud, recoverable failure rather than a silent no-op.
 
 from __future__ import annotations
 
+import html
 import re
 from pathlib import Path
 
@@ -408,6 +409,9 @@ def _format_item_label(shot: ShotState) -> str:
     n = end - start + 1
     marker = _STATUS_MARKER.get(shot.status, "")
     suffix = f"   {marker}" if marker else ""
+    if shot.status in ("done", "failed", "cancelled") and shot.last_needs_human:
+        # The run report's "needs a human" count: look before you comp.
+        suffix += f"   ⚑ {len(shot.last_needs_human)}"
     return f"{shot.name}   ({n} fr){suffix}"
 
 
@@ -424,6 +428,9 @@ def _format_item_tooltip(shot: ShotState) -> str:
     ]
     if shot.detected is not None:
         lines.append(f"Colorspace: {shot.colorspace_label()}")
+    if shot.last_report_summary:
+        lines.append(f"Last run: {html.escape(shot.last_report_summary)}")
+        lines.extend(f"⚑ {html.escape(r)}" for r in shot.last_needs_human)
     return "<br/>".join(lines)
 
 

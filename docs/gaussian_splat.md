@@ -50,14 +50,11 @@ tool's venv compiles it with the system CUDA toolkit (12.8 to match torch).
 
 Check: `.venv\Scripts\python.exe -c "from gsplat.cuda._backend import _C; print(_C is not None)"`.
 
-## What to expect (measured, ACTIONVFX PF0081, 64 frames 2048x1080 dolly, RTX 5090)
+## Checking the result
 
-| | |
-|---|---|
-| Camera solve | 64/64 frames, 0.99 px mean reprojection, checked inside Nuke 16 (`scripts/nuke_check_camera.py`) |
-| Splat training | 61 s, 7000 steps at 2048x1080, ~31k gaussians |
-| Quality on frames held OUT of training | 33.9 dB PSNR |
-| Total job (SAM 3 + camera + splat) | ~4 min |
+**Preview output** (button, or right-click a shot) summarises both solves: how many frames the
+camera solved, its reprojection error, and the splat's quality on frames it was not trained on.
+`scripts/nuke_check_camera.py` checks a camera inside Nuke by projecting the solved points through it.
 
 ## Looking at the splat in 3D
 
@@ -80,7 +77,7 @@ Away from the path the camera took, the splat falls apart: it only knows what th
   a person who never moves out of the way, outside the camera move) is
   empty or smeared: check `splat.A` and the plate before using a patch.
 - Objects that move but are not masked fade out if they are absent in most
-  frames (the gun picked up in PF0081 vanishes, leaving a faint smear).
+  frames, leaving a faint smear.
 - Needs parallax: locked-off and nodal-pan shots cannot be solved.
 - Units are arbitrary (same as the camera); `splat.Z` is camera-space depth
   in those units, 0 where `splat.A` = 0.
