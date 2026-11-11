@@ -16,8 +16,8 @@ Per-frame models wobble, so the pass fixes the shot-level parts:
 
 - **One FOV per shot.** Per frame MoGe's FOV drifts up to ~10 deg on a
   close-up. Priority: `fov_x_deg` param > the camera track (`camera_solve`,
-  unless its focal was a guess, or the camera check said FAILED or nodal:
-  `camera_fov_from`) > the median of MoGe's own estimate over
+  unless its focal was a guess or no real lens, or the camera check said FAILED
+  or nodal: `camera_fov_from`) > the median of MoGe's own estimate over
   `fov_samples` frames. Every frame then runs with that FOV.
 - **Scale.** The metric scale jitters from frame to frame. `scale_ref`:
   - `static` (default when the run has mattes or motion vectors): each
@@ -67,6 +67,7 @@ from live_action_aov.core.pass_base import (
     UtilityPass,
 )
 from live_action_aov.core.runtime_env import load_local_first
+from live_action_aov.io.camera_schema import plausible_fov_x
 from live_action_aov.io.channels import (
     CH_BACK_X,
     CH_BACK_Y,
@@ -476,8 +477,19 @@ class MoGe3Pass(UtilityPass):
             self.fov_source = "camera track"
             return crop_fov(cam)
         refused = camera_refused(self._camera_solve) if trust != "any" else ""
+        raw = _raw_camera_fov(self._camera_solve)
         fovs = [e["fov_x"] for e in estimates.values()]
         self.fov_source = f"MoGe median of {len(fovs)} frames ({min(fovs):.1f}-{max(fovs):.1f})"
+        if not refused and raw is not None:
+            # Neither FAILED nor nodal, yet refused: the lens itself is impossible.
+            self.fov_source += "; camera track ignored (no real lens)"
+            msg = (
+                f"MoGe-3: the camera track's lens (horizontal FOV {raw:.1f} deg) is not a real "
+                "lens - ignored, MoGe-3 estimates the FOV itself"
+            )
+            _log.warning(msg)
+            if msg not in self._warnings:
+                self._warnings.append(msg)
         if refused:
             self.fov_source += f"; camera track ignored ({refused})"
             msg = (
@@ -571,11 +583,20 @@ def camera_refused(solve: Any) -> str:
 
 def camera_fov(solve: Any, trust: str = "usable") -> float | None:
     """Horizontal FOV (degrees, full plate) from a camera solve, or None when
-    there is none, its focal is a guess, or (`trust="usable"`) the camera
-    check marked it FAILED or nodal. `trust="any"`: the previous behaviour."""
+    there is none, its focal is a guess or no real lens (a failed track), or
+    (`trust="usable"`) the camera check marked it FAILED or nodal. `trust="any"`
+    skips the FAILED / nodal check only: an impossible lens is never used."""
     if solve is None:
         return None
     if trust != "any" and camera_refused(solve):
+        return None
+    fov = _raw_camera_fov(solve)
+    return fov if plausible_fov_x(fov) else None
+
+
+def _raw_camera_fov(solve: Any) -> float | None:
+    """The solve's horizontal FOV before any trust check, None without one."""
+    if solve is None:
         return None
     intr = solve.intrinsics
     if getattr(intr, "source", "") == "guess" or intr.fx_px <= 0:

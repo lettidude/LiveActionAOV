@@ -363,3 +363,23 @@ def test_fov_sweep_picks_a_clearly_better_fov_and_ignores_noise() -> None:
     # The best FOV still above the WEAK limit: noise, kept.
     bad = attempt_for(lambda f: 5.0 + abs(f - true_f))
     assert p._fov_sweep(bad, tracks, K, 66.0, W, 0.0027) == 1.0
+
+
+def test_a_rejected_partial_solve_lens_caps_the_camera_at_weak(tmp_path: Path) -> None:
+    """PnP ran on MoGe-3's FOV because the partial solve's lens was rejected:
+    the camera fits (GOOD on its held-out points) but the focal is a guess,
+    so it is WEAK at best and says why."""
+    frames, depth = _scene()
+    frame_list = [(1001 + t, f"frame_{1001 + t:06d}.png") for t in range(N_FR)]
+    for (_, name), g in zip(frame_list, frames, strict=True):
+        cv2.imwrite(str(tmp_path / name), g)
+    p = PyColmapCameraPass({"pnp_max_corners": 800})
+    p._anchor_depth = lambda img: (depth, 60.0)  # type: ignore[method-assign]
+    p._pnp_fov_source = "FOV 60.0 deg estimated by MoGe-3"
+    p._pnp_fov_rejected = 175.0
+    solve = p._solve_pnp(_Reader(frames), frame_list, (2 * W, 2 * H), (W, H), tmp_path, None)
+    assert solve is not None
+    q = solve.quality
+    assert q.verdict == "WEAK" and q.warnings[0].startswith("WEAK CANDIDATE")
+    assert "impossible lens" in q.warnings[1] and "175.0 deg" in q.warnings[1]
+    assert solve.intrinsics.fx_px == pytest.approx(2 * FX, rel=1e-6)  # MoGe-3's FOV
