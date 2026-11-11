@@ -171,6 +171,19 @@ class UtilityPass(ABC):
         pass wrote (MoGe-3 serving only normals next to VDA's Z)."""
         return list(cls.smoothable_channels)
 
+    @classmethod
+    def stabilisable_for(cls, params: dict[str, Any]) -> list[str]:
+        """Channels the opt-in window stabiliser touches when this pass sets
+        `stabilise`. The smoothable ones; for a pass with none (video
+        models), its declared image channels (depth, normals, mattes,
+        shading), never confidences or raw copies."""
+        chans = cls.smoothable_for(params)
+        if chans:
+            return chans
+        from live_action_aov.post.temporal_stabilise import default_stabilisable
+
+        return default_stabilisable([c.name for c in cls.produces_channels])
+
     # --- Pass parameters (populated from YAML via `configure`) ---
     params: dict[str, Any]
 

@@ -427,8 +427,46 @@ class LocalExecutor(Executor):
             if has_depth and has_normals and "ssao" not in existing_post_names:
                 auto_post.append(PostConfig(name="ssao", params={}))
 
+            # --- Opt-in flow-warped window stabiliser (`stabilise: median |
+            # mean | blend` on any pass). Replaces that pass's EMA and runs
+            # before the derived posts (P, AO) so they see the steady values.
+            # Off by default: with no pass asking, nothing here changes.
+            stab_post: list[PostConfig] = []
+            stabilised: set[str] = set()
+            for node in ordered:
+                pc, cls = resolved_by_name[node.name]
+                stab_mode = _stabilise_mode(
+                    pc.params.get("stabilise", getattr(cls, "DEFAULT_PARAMS", {}).get("stabilise"))
+                )
+                if stab_mode is None:
+                    continue
+                if not flow_available:
+                    _log.warning(
+                        "%s: stabilise needs a motion pass in the same job; left as is.",
+                        node.name,
+                    )
+                    continue
+                merged = {**getattr(cls, "DEFAULT_PARAMS", {}), **pc.params}
+                chans = cls.stabilisable_for(merged)
+                if not chans:
+                    continue
+                stab_post.append(
+                    PostConfig(
+                        name="temporal_stabilise",
+                        params={
+                            "applied_to": chans,
+                            "mode": stab_mode,
+                            "window": int(merged.get("stabilise_window", 5)),
+                            "_auto_for": node.name,
+                        },
+                    )
+                )
+                stabilised.add(node.name)
+
             if flow_available:
                 for node in ordered:
+                    if node.name in stabilised:
+                        continue
                     pc, cls = resolved_by_name[node.name]
                     smooth_param = pc.params.get(
                         "smooth", getattr(cls, "DEFAULT_PARAMS", {}).get("smooth")
@@ -459,6 +497,8 @@ class LocalExecutor(Executor):
             # alphas, so it always runs last - after any smoother.
             if arts.get("sam3_hard_masks") and "matte_layering" not in existing_post_names:
                 auto_post.append(PostConfig(name="matte_layering", params={}))
+            if stab_post:
+                auto_post = stab_post + auto_post
             posts = list(job.post) + auto_post
             posts = [p for p in posts if p.name != "matte_layering"] + [
                 p for p in posts if p.name == "matte_layering"
@@ -1032,6 +1072,26 @@ def _smooth_wanted(value: Any) -> bool:
     return False
 
 
+def _stabilise_mode(value: Any) -> str | None:
+    """Resolve a pass's `stabilise` param: None (off) or a stabiliser mode.
+
+    Off: None / False / "off" / "false" / "no" / "". On: "median", "mean",
+    "blend"; True / "on" / "true" mean "median".
+    """
+    if value is None or value is False:
+        return None
+    if value is True:
+        return "median"
+    v = str(value).strip().lower()
+    if v in {"", "off", "false", "no", "0", "none"}:
+        return None
+    if v in {"on", "true", "yes", "1"}:
+        return "median"
+    if v in {"median", "mean", "blend"}:
+        return v
+    raise ValueError(f"stabilise: expected off, median, mean or blend, got {value!r}")
+
+
 def _node_for(pc: PassConfig, cls: type[UtilityPass]) -> PassNode:
     return PassNode(
         name=pc.name,
@@ -1284,6 +1344,15 @@ def _base_attrs(
                     p["params"]["fb_threshold_px"]
                 )
         base[f"{METADATA_NAMESPACE}/smooth/post_processors"] = ",".join(tagged)
+    # Window stabilisers (opt-in) — own keys under `smooth/`, so a run without
+    # them writes exactly the header it wrote before they existed.
+    for p in [p for p in applied_post if p["name"] == "temporal_stabilise"]:
+        auto_for = p["params"].get("_auto_for")
+        key = f"{p['name']}::{auto_for}" if auto_for else p["name"]
+        base[f"{METADATA_NAMESPACE}/smooth/{key}/algorithm"] = p["algorithm"]
+        base[f"{METADATA_NAMESPACE}/smooth/{key}/applied_to"] = ",".join(p["applied_to"])
+        base[f"{METADATA_NAMESPACE}/smooth/{key}/mode"] = str(p["params"].get("mode", ""))
+        base[f"{METADATA_NAMESPACE}/smooth/{key}/window"] = int(p["params"].get("window", 0))
 
     # Position derivation — lives under `position/`.
     positions = [p for p in applied_post if p["name"] == "position_from_depth"]

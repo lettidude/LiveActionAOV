@@ -401,6 +401,16 @@ def run_shot(
             "that many frames; `off` = always one go.",
         ),
     ] = "auto",
+    stabilise: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--stabilise",
+            help="Steady a pass over time with the motion pass: `PASS[=MODE[:WINDOW]]`, "
+            "repeatable. MODE median (default), mean or blend; WINDOW 3, 5 (default) "
+            "or 7 frames. PASS is a pass of this run or depth / normals / matte. "
+            "Needs a motion pass (`flow`) in --passes. Off by default.",
+        ),
+    ] = None,
 ) -> None:
     """Run passes on the EXR sequence in `folder` and write sidecar EXRs."""
     raw_names = [p.strip() for p in passes.split(",") if p.strip()]
@@ -501,6 +511,22 @@ def run_shot(
             for n in pass_names
         ],
     )
+    if stabilise:
+        try:
+            stab = _parse_stabilise(
+                stabilise,
+                pass_names,
+                depth_backend=depth_backend,
+                normals_backend=normals_backend,
+                matte_detector=matte_detector,
+                refiner=refiner,
+            )
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(code=2) from None
+        for pc in job.passes:
+            if pc.name in stab:
+                pc.params = {**pc.params, **stab[pc.name]}
 
     console.print(
         f"[cyan]Running[/cyan] {shot.name} frames {frame_range[0]}..{frame_range[1]} "
@@ -757,6 +783,50 @@ _SEMANTIC_ALIASES: dict[str, str] = {
     # (detector provides, refiner requires sam3_hard_masks + sam3_instances).
     "matte": "matte_detector+refiner",
 }
+
+
+def _parse_stabilise(
+    specs: list[str],
+    pass_names: list[str],
+    *,
+    depth_backend: str,
+    normals_backend: str,
+    matte_detector: str,
+    refiner: str,
+) -> dict[str, dict[str, object]]:
+    """`--stabilise PASS[=MODE[:WINDOW]]` -> {pass name: pass params}."""
+    out: dict[str, dict[str, object]] = {}
+    for spec in specs:
+        name, _, rest = spec.strip().partition("=")
+        mode, _, win = rest.partition(":")
+        mode = (mode or "median").strip().lower()
+        if mode not in {"median", "mean", "blend"}:
+            raise ValueError(f"--stabilise {spec}: MODE is median, mean or blend.")
+        try:
+            window = int(win) if win else 5
+        except ValueError:
+            raise ValueError(f"--stabilise {spec}: WINDOW is 3, 5 or 7.") from None
+        if window not in {3, 5, 7}:
+            raise ValueError(f"--stabilise {spec}: WINDOW is 3, 5 or 7.")
+        targets = _resolve_semantic_passes(
+            [name.strip()],
+            depth_backend=depth_backend,
+            normals_backend=normals_backend,
+            matte_detector=matte_detector,
+            refiner=refiner,
+        )
+        hits = [t for t in targets if t in pass_names]
+        if not hits:
+            raise ValueError(f"--stabilise {spec}: no pass `{name}` in --passes.")
+        for t in hits:
+            out[t] = {"stabilise": mode, "stabilise_window": window}
+    reg = get_registry()
+    if out and not any(
+        "forward_flow" in (getattr(reg.get_pass(n), "provides_artifacts", None) or [])
+        for n in pass_names
+    ):
+        raise ValueError("--stabilise needs a motion pass: add `flow` to --passes.")
+    return out
 
 
 def _resolve_semantic_passes(
