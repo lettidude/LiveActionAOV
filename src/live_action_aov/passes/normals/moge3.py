@@ -16,7 +16,7 @@ Per-frame models wobble, so the pass fixes the shot-level parts:
 
 - **One FOV per shot.** Per frame MoGe's FOV drifts up to ~10 deg on a
   close-up. Priority: `fov_x_deg` param > the camera track (`camera_solve`,
-  unless its focal was a guess) > the median of MoGe's own estimate over
+  unless its focal was a guess or no real lens) > the median of MoGe's own estimate over
   `fov_samples` frames. Every frame then runs with that FOV.
 - **Scale.** The metric scale jitters 5-10% frame to frame. `Z` is divided
   by the frame's median-depth ratio to a rolling median over
@@ -51,6 +51,7 @@ from live_action_aov.core.pass_base import (
     UtilityPass,
 )
 from live_action_aov.core.runtime_env import load_local_first
+from live_action_aov.io.camera_schema import PLAUSIBLE_FOV_X_DEG, plausible_fov_x
 from live_action_aov.io.channels import (
     CH_DEPTH_CONFIDENCE,
     CH_N_X,
@@ -324,6 +325,13 @@ class MoGe3Pass(UtilityPass):
         if cam is not None:
             self.fov_source = "camera track"
             return crop_fov(cam)
+        raw = _raw_camera_fov(self._camera_solve)
+        if raw is not None:
+            _log.warning(
+                "MoGe-3: the camera track's lens (horizontal FOV %.1f deg) is not a real lens - "
+                "ignored, MoGe-3 estimates the FOV itself.",
+                raw,
+            )
         fovs = [e["fov_x"] for e in estimates.values()]
         self.fov_source = f"MoGe median of {len(fovs)} frames ({min(fovs):.1f}-{max(fovs):.1f})"
         return float(np.median(fovs))
@@ -397,7 +405,14 @@ def pad_result(
 
 def camera_fov(solve: Any) -> float | None:
     """Horizontal FOV (degrees, full plate) from a camera solve, or None when
-    there is none or its focal is a guess."""
+    there is none, its focal is a guess or no real lens (a failed track)."""
+    fov = _raw_camera_fov(solve)
+    # The range the camera pass judged it with (its `lens_fov_x_deg_range`).
+    bounds = getattr(solve, "_lens_fov_x_deg_range", PLAUSIBLE_FOV_X_DEG)
+    return fov if plausible_fov_x(fov, bounds) else None
+
+
+def _raw_camera_fov(solve: Any) -> float | None:
     if solve is None:
         return None
     intr = solve.intrinsics

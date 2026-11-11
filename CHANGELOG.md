@@ -62,6 +62,11 @@ uses [semantic versioning](https://semver.org/).
   template. The comp script points at the new name.
 
 ### Fixed
+- **Impossible lens values from a failed camera track are now rejected.** When the camera solve
+  comes back with a focal no real lens has, it is no longer handed on: the fallback camera and the
+  MoGe-3 depth / normals / position passes use MoGe-3's own lens estimate instead, the log says so,
+  and the camera is labelled WEAK (or FAILED - DO NOT USE) in its JSON and Nuke label. Cameras with
+  a normal lens are unchanged. `camera_pycolmap` param `lens_fov_x_deg_range` (None = off).
 - **Gaussian splat: one frame could come out washed out** while the others were fine. Fixed; the
   report gains `holdout_psnr_min_db` and `polish_steps`, and the log warns about a weak frame. Areas
   the camera never saw behind the masked objects are still a guess: check `splat.A`.

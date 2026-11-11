@@ -38,6 +38,7 @@ Honest limits:
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import json
 import logging
@@ -62,6 +63,7 @@ from live_action_aov.core.pass_base import (
 )
 from live_action_aov.core.work_dir import make_work_dir
 from live_action_aov.io.camera_schema import (
+    PLAUSIBLE_FOV_X_DEG,
     BackendInfo,
     CameraSolve,
     Conventions,
@@ -70,6 +72,8 @@ from live_action_aov.io.camera_schema import (
     Quality,
     ScenePoint,
     ShotRef,
+    fov_x_deg,
+    plausible_fov_x,
 )
 from live_action_aov.io.writers.nuke_script import render_nuke_camera_script
 from live_action_aov.io.writers.usd import write_usd
@@ -146,6 +150,11 @@ class PyColmapCameraPass(UtilityPass):
         # Nuke film back (mm). Focal in mm is derived from this; the
         # vertical aperture follows the plate aspect.
         "haperture_mm": 24.892,
+        # Horizontal FOV range (degrees) of a real lens. A focal outside it
+        # (a solver that went wrong) is rejected: SfM's goes to the
+        # fallbacks, a partial solve's is not handed to PnP (MoGe-3's FOV
+        # instead), a camera that still has one is marked FAILED. None = off.
+        "lens_fov_x_deg_range": PLAUSIBLE_FOV_X_DEG,
         # No parallax (tripod pan / tilt, or a locked-off camera): COLMAP's
         # mapper gives up, so solve rotation only from its verified matches
         # (passes/camera/nodal.py). Accepted only if it fits that well.
@@ -199,6 +208,9 @@ class PyColmapCameraPass(UtilityPass):
         self._masked_labels: list[str] = []
         self._lens_mm: float | None = None
         self._pnp_fov_source = ""
+        self._pnp_fov_hint: float | None = None
+        # Horizontal FOV of a partial solve rejected as no real lens, or None.
+        self._pnp_fov_rejected: float | None = None
         # Why the solve left plain SfM for the nodal / PnP route (run report).
         self._route_why = ""
 
@@ -271,10 +283,21 @@ class PyColmapCameraPass(UtilityPass):
             and self._solve.quality.registered_frame_count
             < min_frac * self._solve.quality.total_frame_count
         )
+        sfm_fov = _fov_x_deg(self._solve) if self._solve is not None else None
+        bad_lens = self._solve is not None and not self._lens_ok(sfm_fov)
+        if bad_lens:
+            _log.warning(
+                "Camera solve: COLMAP's focal (horizontal FOV %s) is not a real lens - "
+                "rejected, trying the fallbacks.",
+                _fov_text(sfm_fov),
+            )
+            short = True
         if self._solve is None or short:
             self._route_why = (
                 f"SfM failed: {failure}"
                 if self._solve is None
+                else f"SfM focal is not a real lens (horizontal FOV {_fov_text(sfm_fov)})"
+                if bad_lens
                 else f"SfM registered {self._solve.quality.registered_frame_count}/"
                 f"{self._solve.quality.total_frame_count} frames"
             )
@@ -287,14 +310,21 @@ class PyColmapCameraPass(UtilityPass):
                 return {}
         if (self._solve is None or short) and self.params.get("pnp_fallback", True):
             # COLMAP's focal from a partial solve beats MoGe-3's single-frame
-            # FOV (often 20-35 % wide on real plates).
-            self._pnp_fov_hint = _fov_x_deg(self._solve) if self._solve is not None else None
+            # FOV (often 20-35 % wide on real plates) - when it is a lens.
+            self._pnp_fov_hint, self._pnp_fov_rejected = sfm_fov, None
+            if bad_lens:
+                self._pnp_fov_hint, self._pnp_fov_rejected = None, sfm_fov
+                _log.warning(
+                    "Camera solve: the partial solve's focal is not handed to PnP; "
+                    "PnP uses MoGe-3's FOV estimate."
+                )
             pnp_solve = self._solve_pnp(reader, frame_list, plate_wh, solve_wh, image_dir, mask_dir)
             if pnp_solve is not None:
                 self._solve, self._sparse_dir = pnp_solve, None
                 return {}
         if self._solve is None:
             raise failure or RuntimeError("Camera track: no reconstruction.")
+        self._flag_impossible_lens(self._solve)
         q = self._solve.quality
         _log.info(
             "Camera solve: %d/%d frames registered, mean reprojection %.3f px (plate res), "
@@ -321,6 +351,8 @@ class PyColmapCameraPass(UtilityPass):
     def emit_artifacts(self) -> dict[str, dict[int, Any]]:
         if self._solve is None or not self._solve.extrinsics:
             return {}
+        # The camera's lens range goes with it: MoGe-3 judges its focal alike.
+        self._solve._lens_fov_x_deg_range = self._lens_bounds()
         # Shot-level artifact, stored under the first solved frame.
         return {"camera_solve": {self._solve.extrinsics[0].frame: self._solve}}
 
@@ -611,6 +643,14 @@ class PyColmapCameraPass(UtilityPass):
                 len(frame_list),
             )
             return None
+        nodal_fov = fov_x_deg(float(sol.focal_px), float(w))
+        if not self._lens_ok(nodal_fov):
+            _log.warning(
+                "Camera solve: rotation-only fallback rejected - its focal (horizontal FOV %s) "
+                "is not a real lens.",
+                _fov_text(nodal_fov),
+            )
+            return None
         if measured:
             focal_note = f"focal measured from the pan ({sol.focal_px * plate_wh[0] / w:.0f} px)"
         elif self._lens_mm:
@@ -774,6 +814,10 @@ class PyColmapCameraPass(UtilityPass):
             # (Nuke interpolates over the gap).
             keep = set(verdict.reliable)
             sol.poses = {k: v for k, v in sol.poses.items() if k in keep}
+        rejected = self._pnp_fov_rejected
+        if rejected is not None and verdict.verdict == "GOOD":
+            # The focal is MoGe-3's single-frame guess, not a measured one.
+            verdict = dataclasses.replace(verdict, verdict="WEAK")
         solve = build_solve_from_pnp(
             sol,
             frame_list=frame_list,
@@ -784,6 +828,15 @@ class PyColmapCameraPass(UtilityPass):
             fov_note=self._pnp_fov_source,
             verdict=verdict,
         )
+        if rejected is not None:
+            # The verdict line stays first (GUI light, Nuke label).
+            solve.quality.warnings.insert(
+                1,
+                f"COLMAP's partial solve gave an impossible lens (horizontal FOV "
+                f"{_fov_text(rejected)}): rejected, the FOV is MoGe-3's estimate - "
+                "check the focal against the camera report.",
+            )
+        self._flag_impossible_lens(solve)
         q = solve.quality
         _log.info(
             "Camera solve (depth-anchored PnP): %d/%d frames, %.3f px (plate res), focal %.1f px "
@@ -798,6 +851,30 @@ class PyColmapCameraPass(UtilityPass):
         for warn in q.warnings:
             _log.warning("Camera solve: %s", warn)
         return solve
+
+    def _lens_bounds(self) -> tuple[float, float] | None:
+        """`lens_fov_x_deg_range` as a (min, max) pair, None = no check."""
+        b = self.params.get("lens_fov_x_deg_range", PLAUSIBLE_FOV_X_DEG)
+        return None if b is None else (float(b[0]), float(b[1]))
+
+    def _lens_ok(self, fov: float | None) -> bool:
+        """True when `fov` (horizontal, degrees) is a real lens for
+        `lens_fov_x_deg_range`."""
+        return plausible_fov_x(fov, self._lens_bounds())
+
+    def _flag_impossible_lens(self, solve: CameraSolve) -> None:
+        """A camera whose focal is no real lens is FAILED, whatever its
+        held-out error: its verdict line goes first, "DO NOT USE"."""
+        fov = _fov_x_deg(solve)
+        if self._lens_ok(fov):
+            return
+        line = (
+            f"FAILED CANDIDATE - impossible lens: horizontal FOV {_fov_text(fov)} is no real "
+            "lens, the solve went wrong - DO NOT USE"
+        )
+        _log.warning("Camera solve: %s", line)
+        solve.quality.warnings.insert(0, line)
+        solve.quality.verdict = "FAILED"
 
     def _load_solve_frames(
         self,
@@ -1263,6 +1340,10 @@ def _fov_x_deg(solve: CameraSolve) -> float | None:
     if intr.fx_px <= 0 or intr.width_px <= 0:
         return None
     return float(np.degrees(2.0 * np.arctan(intr.width_px / (2.0 * intr.fx_px))))
+
+
+def _fov_text(fov: float | None) -> str:
+    return "undefined" if fov is None else f"{fov:.1f} deg"
 
 
 def sift_threads_for_ram(w: int, h: int, free_gb: float | None, cpus: int) -> int:

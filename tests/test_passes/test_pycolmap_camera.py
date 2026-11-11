@@ -745,3 +745,102 @@ def test_fov_from_a_partial_colmap_solve():
 
     assert mod._fov_x_deg(solve_with(960.0)) == pytest.approx(90.0)
     assert mod._fov_x_deg(solve_with(0.0)) is None
+
+
+def _tiny_focal_rec(names: list[str]) -> _Rec:
+    """A partial solve that went wrong: 1.7 px focal at 192 wide = a ~178 deg
+    horizontal FOV, no lens a camera has."""
+    rec = _Rec(names, cam_w=192, cam_h=108)
+    rec.cameras[1].params[0] = 1.7
+    return rec
+
+
+def test_partial_solve_with_an_impossible_lens_is_not_handed_on(monkeypatch: pytest.MonkeyPatch):
+    """A partial SfM solve with an absurd focal: PnP must not take its FOV
+    (it falls back to MoGe-3's own estimate)."""
+    pytest.importorskip("pycolmap")
+    seen: dict[str, Any] = {}
+
+    def fake_solve(self, workdir, image_dir, mask_dir, frame_list):
+        return _tiny_focal_rec([n for _, n in frame_list[:3]])
+
+    def fake_pnp(self, *a: Any) -> None:
+        seen["hint"], seen["rejected"] = self._pnp_fov_hint, self._pnp_fov_rejected
+        return None
+
+    monkeypatch.setattr(PyColmapCameraPass, "_solve_colmap", fake_solve)
+    monkeypatch.setattr(PyColmapCameraPass, "_solve_pnp", fake_pnp)
+    p = PyColmapCameraPass({"min_registered_fraction": 0.9, "nodal_fallback": False})
+    with pytest.raises(RuntimeError, match="3/4 frames could be solved"):
+        p.run_shot(_Reader(4), (1001, 1004))
+    assert seen["hint"] is None
+    assert seen["rejected"] == pytest.approx(178.0, abs=0.5)
+    # The bound turned off: the old behaviour, the partial solve's FOV goes on.
+    p = PyColmapCameraPass(
+        {"min_registered_fraction": 0.9, "nodal_fallback": False, "lens_fov_x_deg_range": None}
+    )
+    with pytest.raises(RuntimeError):
+        p.run_shot(_Reader(4), (1001, 1004))
+    assert seen["hint"] == pytest.approx(178.0, abs=0.5) and seen["rejected"] is None
+
+
+def test_a_full_solve_with_an_impossible_lens_is_failed(monkeypatch: pytest.MonkeyPatch):
+    """Every frame registered, but no real lens: the fallbacks get their turn
+    and, when none fits, the camera written is FAILED - DO NOT USE."""
+    pytest.importorskip("pycolmap")
+
+    def fake_solve(self, workdir, image_dir, mask_dir, frame_list):
+        return _tiny_focal_rec([n for _, n in frame_list])
+
+    tried: list[str] = []
+    monkeypatch.setattr(PyColmapCameraPass, "_solve_colmap", fake_solve)
+    monkeypatch.setattr(PyColmapCameraPass, "_solve_nodal", lambda *a: tried.append("nodal"))
+    monkeypatch.setattr(PyColmapCameraPass, "_solve_pnp", lambda *a: tried.append("pnp"))
+    p = PyColmapCameraPass()
+    assert p.run_shot(_Reader(4), (1001, 1004)) == {}
+    assert tried == ["nodal", "pnp"]
+    assert p._solve is not None and "not a real lens" in p._route_why
+    q = p._solve.quality
+    assert q.verdict == "FAILED"
+    assert q.warnings[0].startswith("FAILED CANDIDATE - impossible lens")
+    assert q.warnings[0].endswith("DO NOT USE")
+
+
+def test_a_normal_lens_passes_the_bound_untouched():
+    s = _build()  # 980 px at 1024 wide: ~55 deg
+    before = list(s.quality.warnings), s.quality.verdict
+    PyColmapCameraPass()._flag_impossible_lens(s)
+    assert (s.quality.warnings, s.quality.verdict) == before
+
+
+def test_plausible_lens_bounds():
+    from live_action_aov.io.camera_schema import PLAUSIBLE_FOV_X_DEG, fov_x_deg, plausible_fov_x
+
+    lo, hi = PLAUSIBLE_FOV_X_DEG
+    assert lo <= 10.0 and hi >= 120.0  # long lenses and wide primes are real
+    assert plausible_fov_x(fov_x_deg(1800.0, 2048.0))  # a ~59 deg lens
+    assert not plausible_fov_x(fov_x_deg(10.0, 2048.0))  # ~179 deg: a broken solve
+    assert not plausible_fov_x(fov_x_deg(1e6, 2048.0))  # ~0 deg
+    assert not plausible_fov_x(None) and not plausible_fov_x(float("nan"))
+    assert plausible_fov_x(178.0, None)  # bound off
+
+
+def test_moge3_follows_the_camera_pass_lens_range(monkeypatch: pytest.MonkeyPatch):
+    """With the camera's lens check off, the camera it hands on keeps its lens
+    downstream too: MoGe-3 takes the same FOV the camera was written with."""
+    pytest.importorskip("pycolmap")
+    from live_action_aov.passes.normals.moge3 import camera_fov
+
+    def fake_solve(self, workdir, image_dir, mask_dir, frame_list):
+        return _tiny_focal_rec([n for _, n in frame_list])
+
+    monkeypatch.setattr(PyColmapCameraPass, "_solve_colmap", fake_solve)
+    for bounds, expect_kept in ((None, True), (mod.PLAUSIBLE_FOV_X_DEG, False)):
+        p = PyColmapCameraPass(
+            {"lens_fov_x_deg_range": bounds, "nodal_fallback": False, "pnp_fallback": False}
+        )
+        p.run_shot(_Reader(4), (1001, 1004))
+        solve = next(iter(p.emit_artifacts()["camera_solve"].values()))
+        assert (camera_fov(solve) is not None) is expect_kept
+        # The range rides along in memory only: the JSON is unchanged.
+        assert "lens_fov" not in solve.model_dump_json()
