@@ -188,6 +188,14 @@ def _wrap_if_gated_repo(repo: str, exc: BaseException) -> RuntimeError | None:
     )
 
 
+def _area_fraction(m: Any) -> float:
+    """Share of the frame a 0/1 mask (BoxMask or dense) covers."""
+    crop = getattr(m, "crop", None)
+    shape = getattr(m, "shape", None) or (1, 1)
+    n = np.count_nonzero(crop) if crop is not None else np.count_nonzero(np.asarray(m))
+    return round(float(n) / float(max(1, int(shape[0]) * int(shape[1]))), 6)
+
+
 @dataclass
 class _DetectedInstance:
     """Internal scratch structure — one detected + tracked instance.
@@ -386,6 +394,8 @@ class SAM3MattePass(UtilityPass):
         # Which detector the last run used and why (log + run report).
         self.detector_used = ""
         self.detector_reason = ""
+        # SAM 3.1's error when "auto" redid the shot with SAM 3 (run report).
+        self.detector_fallback = ""
         self._priority: dict[int, int] = {}  # track_id -> 1 = user click, 0 = detector
         # track_id -> depth rank, 0 = front. Published in sam3_hard_masks so
         # the matte layering post knows whose edge defines a shared seam.
@@ -1566,6 +1576,7 @@ class SAM3MattePass(UtilityPass):
                 use31 = False
                 self.detector_used = "sam3"
                 self.detector_reason = "SAM 3.1 failed on this shot"
+                self.detector_fallback = str(e)[-300:]
                 fallback = seed_objs(self._detect_frame(frames, seed_local, concepts))
                 if fallback:
                     self._track_objects(frames, fallback, first, area_floor)
@@ -1751,6 +1762,54 @@ class SAM3MattePass(UtilityPass):
     # ------------------------------------------------------------------
     # Artifact emission
     # ------------------------------------------------------------------
+
+    def report_fields(self) -> dict[str, Any]:
+        """Run report: the detector that ran, every object (id, name, frames,
+        area per frame), concepts that matched nothing."""
+        objects: list[dict[str, Any]] = []
+        for inst in self._instances:
+            fr = sorted(inst.masks)
+            if not fr:
+                continue
+            area: list[float | None] = []
+            for f in range(fr[0], fr[-1] + 1):
+                m = inst.masks.get(f)
+                area.append(None if m is None else _area_fraction(m))
+            objects.append(
+                {
+                    "id": int(inst.track_id),
+                    "name": str(inst.label),
+                    "frames": [fr[0], fr[-1]],
+                    "frames_present": len(fr),
+                    "area": area,
+                    "parent": self._parent.get(inst.track_id),
+                    "from_click": self._priority.get(inst.track_id) == 1,
+                }
+            )
+        concepts = [str(c) for c in (self.params.get("concepts") or [])]
+        found = {i.label for i in self._instances}
+        out: dict[str, Any] = {
+            "engine": self.detector_used,
+            "engine_reason": self.detector_reason,
+            "objects": objects,
+            "metrics": {"matte.objects": len(objects)},
+            "extra": {"concepts": concepts},
+        }
+        if self.detector_fallback:
+            out["fallbacks"] = [
+                {"wanted": "sam3.1", "used": "sam3", "reason": self.detector_fallback}
+            ]
+        if self._user_concepts:
+            out["needs_human"] = [
+                {
+                    "source": "",
+                    "kind": "concept_not_found",
+                    "reason": f"concept {c!r} matched no object: no mask for it",
+                }
+                for c in concepts
+                if c not in found
+            ]
+        return out
 
     def emit_artifacts(self) -> dict[str, dict[int, Any]]:
         if not self._instances and not self._heroes:
