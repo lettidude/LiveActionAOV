@@ -148,3 +148,19 @@ def test_channel_kinds_and_defaults() -> None:
         "Z",
         "N.x",
     ]
+
+
+def test_glob_never_touches_confidence_channels() -> None:
+    frames = list(range(1, 8))
+    per_frame = {
+        f: {
+            "Z": np.full((H, W), 4.0, np.float32),
+            "depth.confidence": np.full((H, W), 0.5, np.float32),
+        }
+        for f in frames
+    }
+    per_frame[4]["Z"] = np.full((H, W), 9.0, np.float32)
+    per_frame[4]["depth.confidence"] = np.full((H, W), 0.9, np.float32)
+    out = _run(per_frame, _cache(frames), applied_to=["*"], window=5, mode="median")
+    assert np.allclose(out[4]["Z"], 4.0, atol=1e-4)
+    assert np.array_equal(out[4]["depth.confidence"], per_frame[4]["depth.confidence"])

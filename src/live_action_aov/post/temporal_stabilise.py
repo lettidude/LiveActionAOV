@@ -189,7 +189,7 @@ def _expand(patterns: list[str], channels: dict[str, np.ndarray]) -> list[str]:
     for p in patterns:
         hits = [p] if p in channels else sorted(fnmatch.filter(channels.keys(), p))
         for h in hits:
-            if h not in names and not h.startswith(_NEVER):
+            if h not in names and not h.startswith(_NEVER) and "confidence" not in h:
                 names.append(h)
     return names
 
