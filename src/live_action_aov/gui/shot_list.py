@@ -409,7 +409,7 @@ def _format_item_label(shot: ShotState) -> str:
     n = end - start + 1
     marker = _STATUS_MARKER.get(shot.status, "")
     suffix = f"   {marker}" if marker else ""
-    if shot.status in ("done", "failed") and shot.last_needs_human:
+    if shot.status in ("done", "failed", "cancelled") and shot.last_needs_human:
         # The run report's "needs a human" count: look before you comp.
         suffix += f"   ⚑ {len(shot.last_needs_human)}"
     return f"{shot.name}   ({n} fr){suffix}"

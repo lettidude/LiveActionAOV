@@ -29,6 +29,8 @@ def test_badge_and_tooltip() -> None:
     s.last_report_summary = "sh010_v001 done: 2 ran; 1 needs a human; 0m10s"
     s.last_needs_human = ["cam FAILED: held-out <b>4 px</b>"]
     assert _format_item_label(s).endswith("✓ done   ⚑ 1")
+    s.status = "cancelled"
+    assert _format_item_label(s).endswith("⚑ 1")
     tip = _format_item_tooltip(s)
     assert "Last run: sh010_v001 done" in tip
     assert "&lt;b&gt;4 px&lt;/b&gt;" in tip  # escaped, not rendered

@@ -534,6 +534,7 @@ def run_shot(
         live_action_aov.run(job, cancel=cancel)
     except CancelledError:
         console.print("[yellow]Cancelled.[/yellow]")
+        _print_run_report(shot)
         # 130 is the standard exit code for "terminated by SIGINT"
         # (128 + signal number). Lets shell scripts distinguish
         # user-cancelled runs from real failures.

@@ -178,7 +178,9 @@ class _SubmitTask(QRunnable):
         except CancelledError as e:
             # User-initiated abort — surface as a non-success result
             # but flag it so the MainWindow doesn't pop a "Submit
-            # failed" error dialog.
+            # failed" error dialog. The executor still wrote a
+            # "cancelled" run report for the passes that ran.
+            summary, human = read_run_report(self.job.shot)
             self._emit(
                 SubmitResult(
                     shot_state_id=self.shot_state_id,
@@ -186,6 +188,8 @@ class _SubmitTask(QRunnable):
                     sidecar_dir=None,
                     error=str(e) or "Cancelled",
                     cancelled=True,
+                    report_summary=summary,
+                    needs_human=human,
                 )
             )
         except Exception as e:
