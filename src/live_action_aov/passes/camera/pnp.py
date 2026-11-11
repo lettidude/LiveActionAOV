@@ -30,6 +30,15 @@ The scale is MoGe-3's metric estimate (approximate), the poses are as good as
 the anchor depth: good enough to line up a point cloud, a card or a matte
 painting, not a survey. Frames whose points are all gone (a whip pan away
 from the anchor view) stay unregistered.
+
+The same held-out verdict judges the SfM camera (`heldout_from_poses`,
+`assess_poses`): COLMAP's own reprojection error is measured on the SIFT
+features it fitted, so a solve that drifted or split can still report a
+clean number. The referee tracks independent KLT corners through the shot
+and, with COLMAP's poses held FIXED, triangulates every track from all the
+frames it is seen in except the one under test, then reprojects it into
+that frame (leave-one-frame-out). A frame whose pose disagrees with the
+rest of the camera shows up there whatever the fit error says.
 """
 
 from __future__ import annotations
@@ -320,13 +329,165 @@ def assess(
     )
 
 
+def heldout_from_poses(
+    K: np.ndarray,
+    poses: dict[int, tuple[np.ndarray, np.ndarray]],
+    tracks: np.ndarray,
+    anchor: int,
+    min_views: int = 3,
+    inf_tol_px: float = 0.5,
+) -> tuple[dict[int, float], np.ndarray]:
+    """Held-out check of FIXED poses (an SfM camera) against independent
+    tracks (T, N, 2), NaN where lost. `poses` maps a local frame index to
+    `(R_cw, t_cw)` (OpenCV, solve resolution, like `PnPSolve.poses`).
+
+    Leave-one-frame-out: each track is triangulated (DLT on normalised
+    coordinates) from every posed frame it is seen in EXCEPT the frame under
+    test (`min_views` of them, or 2 when the shot has no more), then
+    reprojected into that frame. A track whose finite point explains the
+    frames no better than a direction (within `inf_tol_px` per view: no
+    parallax, or a camera that only rotates) is a point at infinity, which
+    the rotation alone reprojects. Returns the per-frame median error in
+    solve px (inf where nothing could be tested, or the points land behind
+    the camera) and the triangulated points (N, 3) in the anchor camera's
+    frame: NaN where a point could not be triangulated, z = inf for a point
+    at infinity, so that `assess` reads the depth and the nodal flag from
+    them."""
+    T, N = int(tracks.shape[0]), int(tracks.shape[1])
+    frames = sorted(t for t in poses if 0 <= t < T)
+    errs = {t: float("inf") for t in frames}
+    pts = np.full((N, 3), np.nan)
+    if N == 0 or len(frames) < 2 or anchor not in poses:
+        return errs, pts
+    K = np.asarray(K, dtype=np.float64)
+    Kinv = np.linalg.inv(K)
+    tol = (float(inf_tol_px) / float(K[0, 0])) ** 2  # algebraic cost of one view's noise
+    P = {
+        t: np.hstack(
+            [np.asarray(R, dtype=np.float64), np.asarray(tv, dtype=np.float64).reshape(3, 1)]
+        )
+        for t, (R, tv) in poses.items()
+        if t in errs
+    }
+    vis = np.zeros((T, N), bool)
+    norm = np.zeros((T, N, 2))
+    for t in frames:
+        v = np.isfinite(tracks[t, :, 0]) & np.isfinite(tracks[t, :, 1])
+        xy = np.c_[np.nan_to_num(tracks[t].astype(np.float64)), np.ones(N)] @ Kinv.T
+        vis[t], norm[t] = v, xy[:, :2]
+
+    def rows(t: int) -> np.ndarray:
+        """(N, 4, 4) normal-equation block of frame t (zero where unseen)."""
+        r1 = norm[t, :, :1] * P[t][2] - P[t][0]
+        r2 = norm[t, :, 1:2] * P[t][2] - P[t][1]
+        r = np.stack([r1, r2], 1) * vis[t][:, None, None]
+        return np.einsum("nki,nkj->nij", r, r)
+
+    S = np.zeros((N, 4, 4))
+    for t in frames:
+        S += rows(t)
+    cnt = vis[frames].sum(0)
+    # Two views triangulate; `min_views` asks for more where the shot has them.
+    need = max(2, min(int(min_views), len(frames) - 1))
+    Pf = np.stack([P[t] for t in frames])  # (F, 3, 4)
+    use_all = vis[frames]  # (F, N)
+
+    def triangulate(S_sel: np.ndarray, use_sel: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Homogeneous points (M, 4) and an at-infinity flag (M,), sign fixed
+        so the fitted frames see them in front."""
+        cost_fin, V4 = np.linalg.eigh(S_sel)
+        X = V4[..., :, 0]
+        cost_inf, V3 = np.linalg.eigh(S_sel[:, :3, :3])
+        X_inf = np.c_[V3[..., :, 0], np.zeros(len(X))]
+        xc = np.einsum("fij,mj->fmi", Pf, X) * use_sel[..., None]  # (F, M, 3)
+        # A finite point that beats the direction by less than the noise, or
+        # one sitting on the (common) camera centre, is a point at infinity.
+        no_gain = cost_inf[:, 0] - cost_fin[:, 0] <= tol * use_sel.sum(0)
+        on_centre = np.linalg.norm(xc, axis=2).sum(0) <= 1e-6 * use_sel.sum(0)
+        at_inf = no_gain | on_centre
+        X = np.where(at_inf[:, None], X_inf, X)
+        z = np.einsum("fj,mj->fm", Pf[:, 2], X) * use_sel  # depth in each fitted frame
+        sign = np.where(z.sum(0) < 0, -1.0, 1.0)
+        return X * sign[:, None], at_inf
+
+    def project(t: int, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Pixels (M, 2) of homogeneous points in frame t and an in-front flag."""
+        xc = X @ P[t].T
+        z = xc[:, 2]
+        front = z > 1e-9 * np.linalg.norm(xc, axis=1)
+        uv = np.full((len(X), 2), np.inf)
+        uv[front] = ((xc[front] / z[front, None]) @ K.T)[:, :2]
+        return uv, front
+
+    for k, t in enumerate(frames):
+        other = cnt - vis[t]
+        ok = vis[t] & (other >= need)
+        if not ok.any():
+            continue
+        use = use_all[:, ok].copy()
+        use[k] = False
+        X, _inf = triangulate(S[ok] - rows(t)[ok], use)
+        uv, front = project(t, X)
+        e = np.linalg.norm(uv - tracks[t, ok].astype(np.float64), axis=1)
+        e[~front] = np.inf
+        errs[t] = float(np.median(e))
+
+    ok = cnt >= need
+    if ok.any():
+        X, at_inf = triangulate(S[ok], use_all[:, ok])
+        xc = X @ P[anchor].T
+        w = X[:, 3]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            cart = xc / w[:, None]
+        cart[~at_inf & ~(cart[:, 2] > 0)] = np.nan  # behind the anchor: not a scene point
+        cart[at_inf] = (np.nan, np.nan, np.inf)
+        pts[ok] = cart
+    return errs, pts
+
+
+def assess_poses(
+    K: np.ndarray,
+    poses: dict[int, tuple[np.ndarray, np.ndarray]],
+    tracks: np.ndarray,
+    anchor: int,
+    width: int,
+    n_frames: int,
+    good_frac: float = 0.0011,
+    weak_frac: float = 0.0027,
+    nodal_parallax: float = 0.02,
+) -> PnPVerdict:
+    """`assess` for FIXED poses (an SfM camera): the held-out errors come
+    from `heldout_from_poses`, the travel from `poses`, the depth from the
+    triangulated tracks seen from the anchor. Same limits, same verdict."""
+    errs, pts = heldout_from_poses(K, poses, tracks, anchor)
+    keep = ~np.isnan(pts[:, 2])
+    sol = PnPSolve(
+        K=np.asarray(K, dtype=np.float64),
+        anchor=anchor,
+        points=pts[keep],
+        colors=np.zeros((int(keep.sum()), 3), np.uint8),
+        poses={t: poses[t] for t in errs},
+        frame_heldout_px=errs,
+    )
+    return assess(
+        sol,
+        width,
+        n_frames,
+        good_frac=good_frac,
+        weak_frac=weak_frac,
+        nodal_parallax=nodal_parallax,
+    )
+
+
 __all__ = [
     "PnPSolve",
     "PnPVerdict",
     "anchor_corners",
     "assess",
+    "assess_poses",
     "back_project",
     "focal_from_fov",
+    "heldout_from_poses",
     "holdout_mask",
     "near_depth_edges",
     "solve_poses",
