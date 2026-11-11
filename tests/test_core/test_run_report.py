@@ -250,7 +250,7 @@ def test_metric_verdicts_and_pass_verdict_wins(tmp_path: Path) -> None:
     assert cam.verdict == "GOOD" and cam.checks[0].verdict == "FAILED"
     flag = next(n for n in rep.needs_human if n.kind == "verdict")
     assert flag.source == "splat" and flag.frames == (1005, 1005)
-    assert rep.summaries["splat"] == {"pass": "splat", "psnr": 22.0}
+    assert rep.summaries["splat"] == {"pass": "splat", "psnr": 22.0, "verdict": "FAILED"}
 
 
 def test_job_thresholds_change_the_verdict(tmp_path: Path) -> None:

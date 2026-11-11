@@ -463,6 +463,9 @@ class RunReportBuilder:
         for pr in self.passes.values():
             self._finish_objects(pr, pol, human)
             self._judge(pr)
+            for sec in self.summaries.values():  # the top block shows the final verdict
+                if sec.get("pass") == pr.name and pr.verdict and not sec.get("verdict"):
+                    sec["verdict"] = pr.verdict
             full = [f for f in pr.fallbacks if not f.partial]
             if pr.status == "ran" and full:
                 pr.status = "fell_back"
