@@ -62,9 +62,10 @@ uses [semantic versioning](https://semver.org/).
   whole-frame run, the named objects get their own LTX run on a rectangle around them, for the one
   subject that needs more pixels than the whole frame gives it.
 ### Changed
-- **Every COLMAP camera now gets a GOOD / WEAK / FAILED verdict**, like the fallback camera already
-  had: it shows in the GUI, in the Nuke camera's label and in `liveaov qc`, and a camera that only
-  rotates is flagged NODAL. The Gaussian splat skips a NODAL camera.
+- **Every camera now gets a GOOD / WEAK / FAILED verdict**, the COLMAP one and the rotation-only one
+  included, like the fallback camera already had: it shows in the GUI, in the Nuke camera's label and
+  in `liveaov qc`, and a camera that only rotates is flagged NODAL. The Gaussian splat skips a NODAL
+  camera.
 - **Masks tab: the preview is back in front.** *Preview* sits right under the object buttons, and
   with *Auto* on (the default) every click or box previews by itself: no more points on a plate with
   nothing to show for them. *with* switches what the preview is made with (run engine, ViTMatte,
