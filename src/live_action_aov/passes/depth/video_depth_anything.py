@@ -26,6 +26,9 @@ Outputs (spec §5.1, channels.py):
 - `Z`     — relative depth, per-clip normalised [0, 1] (1 = near, flipped
             to match Nuke PositionFromDepth convention).
 - `Z_raw` — raw model output, un-normalised.
+With `metric: True` the separate metric Small weights (Apache-2.0) run
+instead and `Z` is depth in metres as the model gives it (no normalisation).
+The `video_depth_steady` pass fits either output to MoGe-3's metres.
 
 Temporal: VIDEO_CLIP. VideoDepthAnything.infer_video_depth handles its own
 sliding-window inference (INFER_LEN=32 frames with OVERLAP=10, keyframe-
@@ -82,6 +85,15 @@ _VARIANT_WEIGHTS: dict[str, str] = {
     "vitl": "video_depth_anything_vitl.pth",
 }
 
+# Metric-depth weights live in their own repos. Only Small is Apache-2.0
+# (model card, checked 2026-11-11); Base / Large are CC-BY-NC-4.0.
+_METRIC_REPOS: dict[str, str] = {
+    "vits": "depth-anything/Metric-Video-Depth-Anything-Small",
+}
+_METRIC_WEIGHTS: dict[str, str] = {
+    "vits": "metric_video_depth_anything_vits.pth",
+}
+
 # Arch configs mirroring the upstream `run.py`.
 _VARIANT_CONFIGS: dict[str, dict[str, Any]] = {
     "vits": {"encoder": "vits", "features": 64, "out_channels": [48, 96, 192, 384]},
@@ -124,7 +136,7 @@ class VideoDepthAnythingPass(UtilityPass):
         "input_size": 518,  # ViT-14 training size
         "precision": "fp16",  # "fp16" | "fp32" — fp16 only if CUDA
         "depth_space": "relative",
-        "metric": False,  # True uses the separate metric weights
+        "metric": False,  # True: the separate metric Small weights, Z in metres
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -177,23 +189,15 @@ class VideoDepthAnythingPass(UtilityPass):
 
         variant = str(self.params["variant"]).lower()
         cfg = _VARIANT_CONFIGS[variant]
-        repo = _VARIANT_REPOS[variant]
-        weights_name = _VARIANT_WEIGHTS[variant]
-        if self.params.get("metric"):
-            # The upstream repo publishes metric weights in separate repos
-            # (`depth-anything/Metric-Video-Depth-Anything-{Small,Large}`).
-            # Not wired yet — fail loudly instead of silently loading the
-            # relative weights.
-            raise NotImplementedError(
-                "metric=True not yet wired — needs a separate HF repo id "
-                "mapping and a different checkpoint filename."
-            )
+        metric = bool(self.params.get("metric"))
+        repo = (_METRIC_REPOS if metric else _VARIANT_REPOS)[variant]
+        weights_name = (_METRIC_WEIGHTS if metric else _VARIANT_WEIGHTS)[variant]
 
         from live_action_aov.core.runtime_env import load_local_first
 
         ckpt = load_local_first(hf_hub_download, repo_id=repo, filename=weights_name)
 
-        model = VideoDepthAnything(**cfg, metric=False)
+        model = VideoDepthAnything(**cfg, metric=metric)
         state = torch.load(ckpt, map_location="cpu", weights_only=False)
         model.load_state_dict(state, strict=True)
 
@@ -251,6 +255,15 @@ class VideoDepthAnythingPass(UtilityPass):
         frames = np.stack(frames_list, axis=0)  # (N, H, W, 3) uint8
 
         raw = self._infer_clip(frames)  # (N, H, W) float32
+        self._frame_keys = list(range(first, last + 1))
+        if self.params.get("metric"):
+            # Metric weights output depth in metres (larger = farther): Z is
+            # the model output as is, no per-clip normalisation.
+            z_m = np.maximum(raw, 0.0).astype(np.float32, copy=False)
+            return {
+                f: {CH_Z: z_m[i], CH_Z_RAW: raw[i].astype(np.float32, copy=False)}
+                for i, f in enumerate(self._frame_keys)
+            }
 
         # Per-clip normalisation (trap 5). Unlike DA-V2 — which outputs
         # a depth-like scalar (larger == farther) and needs a `1 - x`
@@ -268,7 +281,6 @@ class VideoDepthAnythingPass(UtilityPass):
 
         self._norm_min = d_min
         self._norm_max = d_max
-        self._frame_keys = list(range(first, last + 1))
         out: dict[int, dict[str, np.ndarray]] = {}
         for i, f in enumerate(self._frame_keys):
             out[f] = {
@@ -297,6 +309,8 @@ class VideoDepthAnythingPass(UtilityPass):
         if not self._frame_keys:
             return {}
         any_frame = self._frame_keys[0]
+        if self.params.get("metric"):
+            return {"depth_metric": {any_frame: np.asarray([1.0], dtype=np.float32)}}
         return {
             "depth_norm_min": {any_frame: np.asarray([self._norm_min], dtype=np.float32)},
             "depth_norm_max": {any_frame: np.asarray([self._norm_max], dtype=np.float32)},

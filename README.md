@@ -23,7 +23,7 @@ From one plate folder, one run writes a version folder next to it:
 |---|---|---|
 | **Mattes** | Soft, roto-grade alpha per object, with hair and motion blur | SAM 3.1 (or SAM 3) finds and tracks the objects; **LTX-2.5 Alpha** on the whole frame gives the soft edge when your ComfyUI has it, ViTMatte when it does not |
 | **Cryptomatte** | Every object as a pickable ID, like a CG render | from the same tracks |
-| **Depth** | `Z` in metres, plus `P` world position | MoGe-3 (default), Depth Anything V2, Video Depth Anything |
+| **Depth** | `Z` in metres, plus `P` world position | MoGe-3 (default), Video Depth Anything in metres (steady), Depth Anything V2, Video Depth Anything |
 | **Normals** | Camera-space `N`, steady over the shot | MoGe-3 |
 | **Motion** | Forward and backward vectors in pixels, Nuke VectorBlur names included | RAFT or MegaFlow |
 | **Camera** | A Nuke `Camera2` with its error and coverage in the label, the same camera as **USD** for Houdini, Maya, Blender and Unreal, a coloured point cloud of the set, COLMAP model | COLMAP, with the masked people kept out of the solve; nodal and depth-anchored fallbacks when parallax is short |
@@ -138,6 +138,8 @@ LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup
 **MoGe-3** (Microsoft, MIT) is the default for normals and the best choice for depth. One pass gives depth in metres, camera-space normals and a `P` world-position pass you can drop into PositionToPoints or a relight. No halo around people, real structure in hair and faces, and normals much steadier frame to frame than DSINE's.
 
 The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (from the camera track when there is one), a stabilised metric scale, letterbox bars cropped before the model sees them, sky flagged in `depth.confidence`.
+
+When the depth has to hold still over time (a defocus, a fog, anything that reads `Z` on every frame), pick **Video Depth Anything, metres (steady)** in Depth: Video Depth Anything gives the steady shape, MoGe-3 gives the metres and the FOV, and `P` follows. Normals and the camera track keep using MoGe-3.
 
 <p align="center">
   <img src="docs/img/geometry.gif" alt="Depth in metres, camera-space normals and world position on a dark handheld shot with two people" width="900">

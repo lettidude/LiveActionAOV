@@ -131,6 +131,18 @@ def test_run_shot_fixes_one_fov_and_stabilises_scale() -> None:
     assert fx_norm * W == pytest.approx(W / (2 * math.tan(math.radians(25))), rel=1e-4)
 
 
+def test_depth_at_runs_only_the_asked_frames_with_the_shot_fov() -> None:
+    p = _FakePass({"fov_samples": 3, "emit_normals": False})
+    got = p.depth_at(_Reader(), (1, 10), [1, 5, 10])
+    model = p._model
+    assert sorted(got) == [1, 5, 10]
+    assert model.calls[:3] == [None, None, None] and len(model.calls) == 6
+    assert all(c == pytest.approx(50.0) for c in model.calls[3:])
+    z, mask = got[5]
+    assert z.shape == (H, W) and not mask[0].any() and mask[10].all()
+    assert p._intrinsics is not None
+
+
 def test_camera_track_fov_wins_and_letterbox_is_cropped() -> None:
     p = _FakePass({"fov_samples": 3})
     intr = SimpleNamespace(fx_px=1000.0, width_px=2000, source="colmap_solver")

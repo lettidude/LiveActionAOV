@@ -7,6 +7,11 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Steady depth in metres.** New Depth choice *Video Depth Anything, metres (steady)*
+  (`video_depth_steady`): the depth holds still from frame to frame like Video Depth Anything's,
+  and is in metres like MoGe-3's, so `P` stays in metres too and matches `Z`. MoGe-3 depth stays
+  available and is still the default; normals and the camera track are unchanged.
+- Video Depth Anything can use its metric Small weights (`metric: true`, Apache-2.0): `Z` in metres.
 - **Camera as USD.** Each camera solve also writes `camera/<shot>_v###.camera.usda` with the camera
   and a coloured point cloud, for Houdini, Maya, Blender, Unreal and Nuke's USD 3D system.
 - **A point cloud you can read.** With a depth pass in the run, the point cloud in the Nuke script
