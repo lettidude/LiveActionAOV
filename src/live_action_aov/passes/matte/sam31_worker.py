@@ -19,6 +19,9 @@ Small objects (the matte pass's `small_objects` on). Every flag below is
 optional; left out, the run above is unchanged:
 - `--max-objects N`: the model's object cap (left out: the builder's own
   default); detections over the cap are dropped.
+- `--post-batch N`: frames the model post-processes at once (left out: its
+  default). Its GPU memory grows with frames x objects x frame size, so a
+  bigger object cap on a big plate wants a smaller batch.
 - `--seeds '[0, 50, 99]'`: one session per seed frame instead of `--seed`
   (someone hidden or not yet in frame at one seed is prompted at another).
 - `--tiles '["dir1", ...]'`: more JPEG folders (crops of the plate), run
@@ -37,7 +40,7 @@ Two Windows shims, applied here instead of patching Meta's repo:
 
 Usage: python sam31_worker.py --frames DIR --out DIR --concepts '["person"]'
        --seed N [--checkpoint FILE] [--repo facebook/sam3.1]
-       [--max-objects N] [--seeds JSON] [--tiles JSON] [--crops]
+       [--max-objects N] [--post-batch N] [--seeds JSON] [--tiles JSON] [--crops]
 """
 
 from __future__ import annotations
@@ -169,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--checkpoint", default="")
     ap.add_argument("--repo", default="facebook/sam3.1")
     ap.add_argument("--max-objects", type=int, default=0, help="0 = the builder's default")
+    ap.add_argument("--post-batch", type=int, default=0, help="0 = the model's default")
     ap.add_argument("--seeds", default="", help="JSON list of seed frames (overrides --seed)")
     ap.add_argument("--tiles", default="", help="JSON list of more JPEG folders")
     ap.add_argument("--crops", action="store_true", help="store box crops, not stacks")
@@ -192,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
     build_kw = {"max_num_objects": a.max_objects} if a.max_objects > 0 else {}
     pred = build_sam3_multiplex_video_predictor(checkpoint_path=ckpt, use_fa3=False, **build_kw)
     _drop_unknown_kwargs(pred)
+    if a.post_batch > 0 and hasattr(pred.model, "postprocess_batch_size"):
+        pred.model.postprocess_batch_size = a.post_batch
     print(f"SAM 3.1 built in {time.time() - t0:.0f}s; {n} frames, seed {a.seed}", flush=True)
 
     os.makedirs(a.out, exist_ok=True)

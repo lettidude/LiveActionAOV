@@ -370,8 +370,12 @@ class SAM3MattePass(UtilityPass):
         # is lower than a crowd). One session per seed frame in
         # `sam31_seed_frames` ("multi" = first, middle, last, plus every
         # `sam31_seed_every` frames if > 0; "single" = `sample_frame` only).
-        # `sam31_tiles` "auto" = the plate's `small_objects` tiles each tracked
-        # as their own zoomed clip, "off" = whole frame only. Floor: present
+        # `sam31_tiles`: the plate's tiles each tracked as their own zoomed
+        # clip ("auto" = only with `small_objects` "max", "on", "off").
+        # `sam31_work_size`: long side (px) of every clip SAM 3.1 sees, 0 = as
+        # the pass reads it (its memory grows with objects x frames x clip
+        # size; a full-res plate with a high object cap can outgrow the
+        # card). Floor: present
         # on `sam31_min_frames` frames, `min_object_px` tall and
         # `sam31_small_min_peak_coverage` of the frame. The same object found
         # by two sessions / tiles is merged when the smaller lies
@@ -379,9 +383,11 @@ class SAM3MattePass(UtilityPass):
         # of their shared frames and is at least `sam31_merge_size_ratio` of
         # its size (a person inside a group mask is not merged).
         "sam31_max_objects": 64,
-        "sam31_seed_frames": "multi",
+        "sam31_post_batch": 0,  # frames post-processed at once; 0 = the model's
+        "sam31_seed_frames": "single",
         "sam31_seed_every": 0,
         "sam31_tiles": "auto",
+        "sam31_work_size": 1024,
         "sam31_small_min_peak_coverage": 0.0003,
         "sam31_merge_containment": 0.6,
         "sam31_merge_frames": 0.6,
@@ -976,7 +982,7 @@ class SAM3MattePass(UtilityPass):
 
     def _sam31_seeds(self, n: int, seed_local: int) -> list[int]:
         """Local seed frames of the small-objects SAM 3.1 run."""
-        if str(self.params.get("sam31_seed_frames", "multi")).lower() != "multi":
+        if str(self.params.get("sam31_seed_frames", "single")).lower() != "multi":
             return [seed_local]
         seeds = {0, seed_local, n - 1}
         every = int(self.params.get("sam31_seed_every", 0) or 0)
@@ -997,8 +1003,10 @@ class SAM3MattePass(UtilityPass):
         dh, dw = getattr(self, "_det_hw", None) or (h, w)
         tiles: list[tuple[int, int, int, int]] = []
         plate_frame: Any = None
-        if str(self.params.get("sam31_tiles", "auto")).lower() != "off":
-            g = self._tile_grid(dh, dw)
+        tmode = str(self.params.get("sam31_tiles", "auto")).lower()
+        big = str(self.params.get("small_objects", "auto")).lower() == "max"
+        if tmode == "on" or (tmode == "auto" and big):
+            g = self._tile_grid(dh, dw) if big else max(2, self._tile_grid(dh, dw))
             tiles = sam31_bridge.tile_windows(
                 dh, dw, g, float(self.params.get("tile_overlap", 0.2))
             )
@@ -1017,9 +1025,11 @@ class SAM3MattePass(UtilityPass):
             seeds,
             python,
             max_objects=int(self.params.get("sam31_max_objects", 64) or 0),
+            post_batch=int(self.params.get("sam31_post_batch", 0) or 0),
             tiles=tiles,
             plate_frame=plate_frame,
             plate_hw=(dh, dw),
+            work_size=int(self.params.get("sam31_work_size", 1024) or 0),
             timeout_s=float(self.params.get("sam31_timeout_s", 3600)),
             checkpoint=str(self.params.get("sam31_checkpoint", "") or ""),
         )

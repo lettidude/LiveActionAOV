@@ -7,6 +7,13 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **SAM 3.1 keeps small and late-entering people.** With `small_objects` on (the default), the
+  SAM 3.1 detector now keeps people far in the background and people who walk in after the seed
+  frame, in the masks and the Cryptomatte, instead of dropping them for being small. Big plates
+  run at a working size that fits the card (`sam31_work_size`). Optional: `small_objects` `max`
+  (or `sam31_tiles` `on`) also tracks the plate in zoomed tiles, and `sam31_seed_frames` `multi`
+  prompts several frames; the same person found twice is merged into one. `small_objects` `off`
+  gives exactly the previous result.
 - **The camera as USD.** `camera/<shot>_v###.camera.usda`: the solved camera (one matrix per solved
   frame, the Nuke camera's focal and film back) and the point cloud with colours, for Houdini, Maya,
   Blender, Unreal and Nuke's USD 3D system. Plain text, no USD library needed to write it. Checked

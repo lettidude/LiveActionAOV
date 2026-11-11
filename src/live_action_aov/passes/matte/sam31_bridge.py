@@ -192,6 +192,20 @@ def tile_windows(h: int, w: int, grid: int, overlap: float) -> list[tuple[int, i
     return out
 
 
+def _fit(img: np.ndarray, long_side: int) -> np.ndarray:
+    """`img` shrunk to `long_side` px on its long side (as is if smaller or 0)."""
+    h, w = int(img.shape[0]), int(img.shape[1])
+    if long_side <= 0 or max(h, w) <= long_side:
+        return img
+    import cv2
+
+    s = long_side / max(h, w)
+    size = (max(1, round(w * s)), max(1, round(h * s)))
+    return cv2.resize(
+        np.ascontiguousarray(img[..., :3], np.float32), size, interpolation=cv2.INTER_AREA
+    )
+
+
 def _save_jpg(img: np.ndarray, path: Path) -> None:
     from PIL import Image
 
@@ -207,9 +221,11 @@ def run_sam31_small(
     python: str,
     *,
     max_objects: int = 0,
+    post_batch: int = 0,
     tiles: list[tuple[int, int, int, int]] | None = None,
     plate_frame: Any = None,
     plate_hw: tuple[int, int] | None = None,
+    work_size: int = 0,
     timeout_s: float = 3600.0,
     checkpoint: str = "",
 ) -> list[Sam31Track]:
@@ -217,8 +233,10 @@ def run_sam31_small(
     session, `max_objects` lifts the model's object cap, and each window of
     `tiles` ((y0, x0, y1, x1) on the plate, `plate_hw`) is tracked as its
     own zoomed-in clip. Tile frames come from `plate_frame(k)` (the original
-    plate in proxy mode) else from `frames`. Masks come back as box crops
-    on the frames' (h, w), never as whole-clip stacks."""
+    plate in proxy mode) else from `frames`. `work_size` > 0: every clip
+    SAM 3.1 sees (the frames, each tile) is shrunk to that long side first;
+    its memory grows with objects x frames x clip size. Masks come back as
+    box crops on the frames' (h, w), never as whole-clip stacks."""
     from live_action_aov.passes.matte.boxmask import BoxMask
 
     n, h, w = int(frames.shape[0]), int(frames.shape[1]), int(frames.shape[2])
@@ -232,11 +250,11 @@ def run_sam31_small(
         for d in tdirs:
             d.mkdir()
         for i, f in enumerate(frames):
-            _save_jpg(f, fdir / f"{i:05d}.jpg")
+            _save_jpg(_fit(f, work_size), fdir / f"{i:05d}.jpg")
             if tiles:
                 src = np.asarray(plate_frame(i), np.float32) if plate_frame is not None else f
                 for d, (y0, x0, y1, x1) in zip(tdirs, tiles, strict=True):
-                    _save_jpg(src[y0:y1, x0:x1], d / f"{i:05d}.jpg")
+                    _save_jpg(_fit(src[y0:y1, x0:x1], work_size), d / f"{i:05d}.jpg")
         cmd = [
             python,
             "-I",
@@ -255,6 +273,8 @@ def run_sam31_small(
         ]
         if max_objects > 0:
             cmd += ["--max-objects", str(int(max_objects))]
+        if post_batch > 0:
+            cmd += ["--post-batch", str(int(post_batch))]
         if tdirs:
             cmd += ["--tiles", json.dumps([str(d) for d in tdirs])]
         if checkpoint:
@@ -305,8 +325,11 @@ def run_sam31_small(
                 if win is None:  # whole frame: SAM 3.1 answers at the JPEG size = (h, w)
                     m = BoxMask.from_crop(hw, y0, x0, crop)
                     masks.append(m if hw == (h, w) else m.resized((h, w)))
-                else:  # a tile of the plate: place it, then scale plate -> frames
-                    m = BoxMask.from_crop((ph, pw), win[0] + y0, win[1] + x0, crop)
+                else:  # a tile of the plate: back to its window, placed, plate -> frames
+                    wh = (win[2] - win[0], win[3] - win[1])
+                    t = BoxMask.from_crop(hw, y0, x0, crop)
+                    t = t if hw == wh else t.resized(wh)
+                    m = BoxMask.from_crop((ph, pw), win[0] + t.y0, win[1] + t.x0, t.crop)
                     masks.append(m if (ph, pw) == (h, w) else m.resized((h, w)))
             out.append(Sam31Track(str(o["concept"]), int(o["obj_id"]), src, int(o["seed"]), masks))
         return out

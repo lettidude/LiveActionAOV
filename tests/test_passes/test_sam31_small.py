@@ -94,10 +94,11 @@ def test_small_floor_keeps_small_people_and_drops_specks() -> None:
 
 
 def test_seed_frames() -> None:
-    p = SAM3MattePass({})
-    assert p._sam31_seeds(100, 50) == [0, 50, 99]
-    assert SAM3MattePass({"sam31_seed_every": 30})._sam31_seeds(100, 50) == [0, 30, 50, 60, 90, 99]
-    assert SAM3MattePass({"sam31_seed_frames": "single"})._sam31_seeds(100, 50) == [50]
+    assert SAM3MattePass({})._sam31_seeds(100, 50) == [50]  # default: the sample frame
+    multi = {"sam31_seed_frames": "multi"}
+    assert SAM3MattePass(multi)._sam31_seeds(100, 50) == [0, 50, 99]
+    every = {**multi, "sam31_seed_every": 30}
+    assert SAM3MattePass(every)._sam31_seeds(100, 50) == [0, 30, 50, 60, 90, 99]
 
 
 def test_tile_windows_cover_the_plate_with_overlap() -> None:
@@ -216,12 +217,19 @@ def test_pass_small_objects_keeps_small_people_and_merges(monkeypatch: pytest.Mo
     monkeypatch.setattr(sam31_bridge, "run_sam31_small", fake_small)
     monkeypatch.setattr(sam31_bridge, "run_sam31", no_default)
     monkeypatch.setattr(sam31_bridge, "find_python", lambda p: "py312")
-    p = _NoSAM3({"detector": "sam3.1", "concepts": ["person"], "layer_order": "area"})
+    p = _NoSAM3(
+        {
+            "detector": "sam3.1",
+            "concepts": ["person"],
+            "layer_order": "area",
+            "sam31_seed_frames": "multi",
+        }
+    )
     assert p.params["small_objects"] == "auto"
     frames = [np.full((H, W, 3), 0.5, np.float32) for _ in range(N)]
     p.run_shot(_Reader(frames), frame_range=(1, N))
     assert calls["seeds"] == [0, N // 2, N - 1] and calls["max_objects"] == 64
-    assert calls["tiles"] == []  # 200 px frames: no tiles under "auto"
+    assert calls["tiles"] == [] and calls["work_size"] == 1024  # tiles: only on "max"
     hard = next(iter(p.emit_artifacts()["sam3_hard_masks"].values()))
     assert len(hard) == 2  # small person + hero; duplicate merged, speck dropped
     heights = sorted(int(np.flatnonzero(d["stack"][10].any(1)).size) for d in hard.values())
@@ -270,8 +278,54 @@ def test_pass_proxy_tiles_read_the_plate(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(sam31_bridge, "run_sam31_small", fake_small)
     monkeypatch.setattr(sam31_bridge, "find_python", lambda p: "py312")
-    p = _NoSAM3({"detector": "sam3.1", "concepts": ["person"], "layer_order": "area"})
+    p = _NoSAM3(
+        {"detector": "sam3.1", "concepts": ["person"], "layer_order": "area", "sam31_tiles": "on"}
+    )
     monkeypatch.setattr(SAM3MattePass, "_full_hw", lambda self: (1200, 2000))
     p.run_shot(_ProxyReader([np.full((H, W, 3), 0.5, np.float32)] * N), frame_range=(1, N))
     assert calls["plate_hw"] == (1200, 2000) and len(calls["tiles"]) == 4
     assert calls["plate0"] == (1200, 2000, 3)
+
+
+def test_work_size_shrinks_what_sam31_sees_and_masks_come_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Frames 40 x 60 with `work_size` 30: the worker sees 20 x 30 JPEGs and
+    its 20 x 30 masks come back on 40 x 60; a tile's mask goes back to its
+    window before it is placed."""
+    worker = _load_worker()
+    seen: dict = {}
+
+    def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        a = dict(zip(cmd[3::2], cmd[4::2], strict=False))
+        dirs = [a["--frames"], *json.loads(cmd[cmd.index("--tiles") + 1])]
+        img = __import__("PIL.Image").Image
+        seen["px"] = [np.asarray(img.open(Path(d) / "00000.jpg")).shape[:2] for d in dirs]
+        out = Path(a["--out"])
+        out.mkdir()
+        th, tw = seen["px"][1]
+        worker._save_crops(str(out / "a.npz"), {0: (4, 6, np.ones((5, 2), np.uint8), 20, 30)}, 2)
+        worker._save_crops(str(out / "b.npz"), {0: (0, 0, np.ones((2, 2), np.uint8), th, tw)}, 2)
+        objs = [
+            {"file": "a.npz", "concept": "person", "obj_id": 0, "src": 0, "seed": 0},
+            {"file": "b.npz", "concept": "person", "obj_id": 1, "src": 1, "seed": 0},
+        ]
+        (out / "result.json").write_text(json.dumps({"objects": objs, "seconds": 1}))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(sam31_bridge.subprocess, "run", fake_run)
+    frames = np.full((2, 40, 60, 3), 0.5, np.float32)
+    tiles = sam31_bridge.tile_windows(40, 60, 2, 0.2)
+    a, b = sam31_bridge.run_sam31_small(frames, ["person"], [0], "py312", tiles=tiles, work_size=30)
+    assert seen["px"][0] == (20, 30) and max(seen["px"][1]) == 30
+    assert a.masks[0].shape == (40, 60) and a.masks[0].box == (8, 12, 18, 16)
+    ty, tx, ty1, tx1 = tiles[0]
+    sy = (ty1 - ty) / seen["px"][1][0]
+    assert b.masks[0].shape == (40, 60) and b.masks[0].box[:2] == (ty, tx)
+    assert b.masks[0].box[2] - ty == pytest.approx(2 * sy, abs=1)
+
+
+def test_work_size_zero_or_bigger_keeps_frames() -> None:
+    img = np.zeros((40, 60, 3), np.float32)
+    assert sam31_bridge._fit(img, 0) is img and sam31_bridge._fit(img, 60) is img
+    assert sam31_bridge._fit(img, 30).shape == (20, 30, 3)
