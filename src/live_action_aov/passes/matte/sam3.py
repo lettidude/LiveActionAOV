@@ -1037,7 +1037,12 @@ class SAM3MattePass(UtilityPass):
         min_cov = float(self.params.get("sam31_small_min_peak_coverage", 0.0003))
         # `min_object_px` is plate px: scaled to these frames (1K proxy of 4K).
         min_px = max(2.0, float(self.params.get("min_object_px", 10)) * h / float(dh))
-        small = [t for t in found if sam31_bridge.keep_small(t, min_px, min_cov, min_frames)]
+        # A tile track's coverage is of its tile (the clip SAM 3.1 saw), in frame px.
+        sy, sx = h / float(dh), w / float(dw)
+        seen = [0.0] + [(y1 - y0) * sy * (x1 - x0) * sx for y0, x0, y1, x1 in tiles]
+        small = [
+            t for t in found if sam31_bridge.keep_small(t, min_px, min_cov, min_frames, seen[t.src])
+        ]
         _log.info(
             "SAM 3.1: %d object(s) over the floor (%d frames, %.1f px tall, %.2f%% of frame) of %d.",
             len(small),

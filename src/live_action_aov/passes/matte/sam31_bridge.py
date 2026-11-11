@@ -338,17 +338,23 @@ def run_sam31_small(
 
 
 def keep_small(
-    t: Sam31Track, min_height_px: float, min_peak_coverage: float, min_frames: int
+    t: Sam31Track,
+    min_height_px: float,
+    min_peak_coverage: float,
+    min_frames: int,
+    seen_area: float = 0.0,
 ) -> bool:
     """The small-objects floor: present on `min_frames` frames, at least
-    `min_height_px` tall (box height) and `min_peak_coverage` of the frame
-    on its biggest frame. A relative floor, not 0.5 %: that one drops anyone
-    shorter than ~1/5 of the frame."""
+    `min_height_px` tall (box height) and `min_peak_coverage` of the clip
+    SAM 3.1 saw on its biggest frame. `seen_area`: that clip's area in
+    frame px (a tile's window; 0 = the whole frame). A relative floor, not
+    0.5 %: that one drops anyone shorter than ~1/5 of the frame."""
     pres = t.present()
     if len(pres) < min_frames:
         return False
     hw = t.masks[0].shape
-    peak = max(int(t.masks[k].sum()) for k in pres) / float(hw[0] * hw[1])
+    area = seen_area if seen_area > 0 else float(hw[0] * hw[1])
+    peak = max(int(t.masks[k].sum()) for k in pres) / area
     tall = max(t.masks[k].height for k in pres)
     return bool(peak >= min_peak_coverage and tall >= min_height_px)
 

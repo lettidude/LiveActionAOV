@@ -329,3 +329,11 @@ def test_work_size_zero_or_bigger_keeps_frames() -> None:
     img = np.zeros((40, 60, 3), np.float32)
     assert sam31_bridge._fit(img, 0) is img and sam31_bridge._fit(img, 60) is img
     assert sam31_bridge._fit(img, 30).shape == (20, 30, 3)
+
+
+def test_small_floor_of_a_tile_track_is_relative_to_its_tile() -> None:
+    """60 px is 0.25 % of the 120 x 200 frame (under a 0.4 % floor) but 0.6 %
+    of a 100 x 100 tile; without the tile's area the frame's floor applies."""
+    t = _track(10, 20, 10, 16, src=1)
+    assert not keep_small(t, 5, 0.004, 3)
+    assert keep_small(t, 5, 0.004, 3, seen_area=100 * 100)
