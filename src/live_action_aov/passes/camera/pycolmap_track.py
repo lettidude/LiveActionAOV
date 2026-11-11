@@ -351,6 +351,8 @@ class PyColmapCameraPass(UtilityPass):
     def emit_artifacts(self) -> dict[str, dict[int, Any]]:
         if self._solve is None or not self._solve.extrinsics:
             return {}
+        # The camera's lens range goes with it: MoGe-3 judges its focal alike.
+        self._solve._lens_fov_x_deg_range = self._lens_bounds()
         # Shot-level artifact, stored under the first solved frame.
         return {"camera_solve": {self._solve.extrinsics[0].frame: self._solve}}
 
@@ -850,11 +852,15 @@ class PyColmapCameraPass(UtilityPass):
             _log.warning("Camera solve: %s", warn)
         return solve
 
+    def _lens_bounds(self) -> tuple[float, float] | None:
+        """`lens_fov_x_deg_range` as a (min, max) pair, None = no check."""
+        b = self.params.get("lens_fov_x_deg_range", PLAUSIBLE_FOV_X_DEG)
+        return None if b is None else (float(b[0]), float(b[1]))
+
     def _lens_ok(self, fov: float | None) -> bool:
         """True when `fov` (horizontal, degrees) is a real lens for
-        `lens_fov_x_deg_range` (None = no check)."""
-        b = self.params.get("lens_fov_x_deg_range", PLAUSIBLE_FOV_X_DEG)
-        return plausible_fov_x(fov, None if b is None else (float(b[0]), float(b[1])))
+        `lens_fov_x_deg_range`."""
+        return plausible_fov_x(fov, self._lens_bounds())
 
     def _flag_impossible_lens(self, solve: CameraSolve) -> None:
         """A camera whose focal is no real lens is FAILED, whatever its

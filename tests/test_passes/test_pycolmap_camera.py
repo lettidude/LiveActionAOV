@@ -823,3 +823,24 @@ def test_plausible_lens_bounds():
     assert not plausible_fov_x(fov_x_deg(1e6, 2048.0))  # ~0 deg
     assert not plausible_fov_x(None) and not plausible_fov_x(float("nan"))
     assert plausible_fov_x(178.0, None)  # bound off
+
+
+def test_moge3_follows_the_camera_pass_lens_range(monkeypatch: pytest.MonkeyPatch):
+    """With the camera's lens check off, the camera it hands on keeps its lens
+    downstream too: MoGe-3 takes the same FOV the camera was written with."""
+    pytest.importorskip("pycolmap")
+    from live_action_aov.passes.normals.moge3 import camera_fov
+
+    def fake_solve(self, workdir, image_dir, mask_dir, frame_list):
+        return _tiny_focal_rec([n for _, n in frame_list])
+
+    monkeypatch.setattr(PyColmapCameraPass, "_solve_colmap", fake_solve)
+    for bounds, expect_kept in ((None, True), (mod.PLAUSIBLE_FOV_X_DEG, False)):
+        p = PyColmapCameraPass(
+            {"lens_fov_x_deg_range": bounds, "nodal_fallback": False, "pnp_fallback": False}
+        )
+        p.run_shot(_Reader(4), (1001, 1004))
+        solve = next(iter(p.emit_artifacts()["camera_solve"].values()))
+        assert (camera_fov(solve) is not None) is expect_kept
+        # The range rides along in memory only: the JSON is unchanged.
+        assert "lens_fov" not in solve.model_dump_json()
