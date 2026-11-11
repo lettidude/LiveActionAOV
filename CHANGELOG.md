@@ -62,25 +62,10 @@ uses [semantic versioning](https://semver.org/).
   whole-frame run, the named objects get their own LTX run on a rectangle around them, for the one
   subject that needs more pixels than the whole frame gives it.
 ### Changed
-- **The SfM camera carries the held-out verdict too.** When pycolmap registers the frames itself,
-  the camera JSON used to end with `verdict: ""` and `heldout_error_px: null` even on a clean solve,
-  so the GUI light, the Nuke label and `liveaov qc` only knew about the depth-anchored camera. Now a
-  KLT referee judges COLMAP's poses with the same machinery and limits (`pnp_good_frac` /
-  `pnp_weak_frac`): corners of the middle frame are tracked through the shot (tracked objects
-  masked out), each track is triangulated from every frame but the one under test and reprojected
-  into it, and the camera is **GOOD / WEAK / FAILED** with the held-out error in plate px, the
-  reliable-frame count and the NODAL flag leading its warnings and the Nuke label. The verdict is
-  not optional: `build_solve_from_reconstruction` refuses to build a camera without one. Schema
-  version unchanged (the two fields keep their meaning; the SfM line states the parallax instead of
-  metres, since an SfM solve has no scale). The referee's parallax call is also machine-readable
-  (`quality.nodal`), and the splat pass refuses a camera it called NODAL, not only the nodal mapper.
-- **The nodal camera carries it too.** The rotation-only fallback (pans, locked-off shots) was the
-  last camera written with `verdict: ""`, so its GUI light, Nuke label and `liveaov qc` stayed
-  blank. The same KLT referee now judges its rotations (zero translation, its own focal): every
-  track is a point at infinity under a camera that only turns, so a pan that fits is **GOOD** and
-  NODAL, and a rotation the plate disagrees with gets a finite held-out error and FAILED. The
-  verdict line leads the warnings, ahead of the "No parallax" note; `build_solve_from_nodal`
-  refuses to build a camera without one. Every camera JSON the pass writes now has a verdict.
+- **Every camera now gets a GOOD / WEAK / FAILED verdict**, the COLMAP one and the rotation-only one
+  included, like the fallback camera already had: it shows in the GUI, in the Nuke camera's label and
+  in `liveaov qc`, and a camera that only rotates is flagged NODAL. The Gaussian splat skips a NODAL
+  camera.
 - **Masks tab: the preview is back in front.** *Preview* sits right under the object buttons, and
   with *Auto* on (the default) every click or box previews by itself: no more points on a plate with
   nothing to show for them. *with* switches what the preview is made with (run engine, ViTMatte,
