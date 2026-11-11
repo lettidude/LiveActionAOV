@@ -186,6 +186,61 @@ def test_assess_travel_uses_reliable_frames_and_flags_nodal() -> None:
     assert pnp.assess(sol, W, 10).verdict == "WEAK"
 
 
+def _true_poses() -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """The scene's camera (world = anchor camera, OpenCV): right by TX a frame."""
+    return {t: (np.eye(3), np.array([-(t - ANCHOR) * TX, 0.0, 0.0])) for t in range(N_FR)}
+
+
+def _scene_tracks() -> tuple[np.ndarray, np.ndarray]:
+    frames, depth = _scene()
+    uv = pnp.anchor_corners(frames[ANCHOR], ~pnp.near_depth_edges(depth, radius=11), 2000, 4)
+    return uv, pnp.track_klt(frames, ANCHOR, uv, [None] * N_FR)
+
+
+def test_referee_passes_the_true_sfm_camera_and_flags_a_wrong_frame() -> None:
+    """Fixed poses (COLMAP's) judged against independent KLT tracks, each one
+    triangulated from every frame but the one under test."""
+    _uv, tracks = _scene_tracks()
+    errs, pts = pnp.heldout_from_poses(_K(), _true_poses(), tracks, ANCHOR)
+    assert set(errs) == set(range(N_FR)) and max(errs.values()) < 0.2
+    z = pts[:, 2]
+    assert Z_TOP * 0.9 < np.nanmedian(z) < Z_BOTTOM * 1.1  # the two planes, from the anchor
+    v = pnp.assess_poses(_K(), _true_poses(), tracks, ANCHOR, W, N_FR)
+    assert v.verdict == "GOOD" and v.reliable == list(range(N_FR)) and not v.nodal
+    assert v.travel_m == pytest.approx((N_FR - 1) * TX, abs=1e-6)
+    # One frame's pose off by a full frame step: that frame has the largest
+    # held-out error, drops out of the reliable set, and the camera is not GOOD.
+    bad = _true_poses()
+    bad[7] = (np.eye(3), bad[7][1] + np.array([TX, 0.0, 0.0]))
+    errs2, _ = pnp.heldout_from_poses(_K(), bad, tracks, ANCHOR)
+    assert max(errs2, key=errs2.get) == 7 and errs2[7] > 1.0
+    v2 = pnp.assess_poses(_K(), bad, tracks, ANCHOR, W, N_FR)
+    assert v2.verdict != "GOOD" and 7 not in v2.reliable
+
+
+def test_referee_calls_a_locked_off_camera_nodal_and_nothing_to_track_failed() -> None:
+    uv, tracks = _scene_tracks()
+    same = {t: (np.eye(3), np.zeros(3)) for t in range(N_FR)}
+    static = np.repeat(tracks[ANCHOR][None], N_FR, axis=0)
+    v = pnp.assess_poses(_K(), same, static, ANCHOR, W, N_FR)
+    assert v.verdict == "GOOD" and v.nodal and v.travel_m == 0.0
+    # Translating poses over a plate that does not move: consistent with a
+    # scene at infinity, so GOOD, and NODAL says the plate has no parallax.
+    v = pnp.assess_poses(_K(), _true_poses(), static, ANCHOR, W, N_FR)
+    assert v.verdict == "GOOD" and v.nodal
+    # Rotating poses over that plate: no scene explains them -> FAILED.
+    yaw = {
+        t: (cv2.Rodrigues(np.array([0.0, np.radians(2.0 * (t - ANCHOR)), 0.0]))[0], np.zeros(3))
+        for t in range(N_FR)
+    }
+    v = pnp.assess_poses(_K(), yaw, static, ANCHOR, W, N_FR)
+    assert v.verdict == "FAILED" and np.isfinite(v.heldout_px) and v.heldout_px > 5.0
+    # No corners at all: nothing measurable, FAILED (never an empty verdict).
+    none = np.zeros((N_FR, 0, 2), np.float32)
+    v = pnp.assess_poses(_K(), _true_poses(), none, ANCHOR, W, N_FR)
+    assert v.verdict == "FAILED" and v.heldout_px == float("inf") and v.reliable == []
+
+
 def test_build_solve_keeps_unsolved_frames_out() -> None:
     sol = pnp.PnPSolve(K=_K(), anchor=0, points=np.ones((5, 3)), colors=np.zeros((5, 3), np.uint8))
     sol.poses = {0: (np.eye(3), np.zeros(3)), 2: (np.eye(3), np.array([-1.0, 0.0, 0.0]))}

@@ -134,10 +134,17 @@ class Quality(BaseModel):
     total_frame_count: int = 0
     solve_confidence: float = 0.0
     warnings: list[str] = Field(default_factory=list)
-    # Solvers that hold points out of the fit (depth-anchored PnP): GOOD /
-    # WEAK / FAILED and the median held-out error at plate resolution.
+    # Independent held-out check of the camera: GOOD / WEAK / FAILED and the
+    # median held-out error at plate resolution. Points kept out of the fit
+    # (depth-anchored PnP) or KLT tracks held out frame by frame against
+    # COLMAP's poses (SfM); "" only for solvers without one (nodal).
     verdict: str = ""
     heldout_error_px: float | None = None
+    # The referee's parallax call: True = the camera travels less than 2 % of
+    # the scene depth (a pan, or a plate with no parallax), so depth, scale
+    # and a splat are off the table whatever `backend.mapper` says. None =
+    # no referee ran.
+    nodal: bool | None = None
 
 
 class CameraSolve(BaseModel):

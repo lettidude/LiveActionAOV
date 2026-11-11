@@ -20,6 +20,7 @@ from live_action_aov.passes.scene.gsplat_splat import (
     _frame_mask,
     _object_masks,
     _viewmat,
+    camera_gate,
     decode,
     encode,
     write_3dgs_ply,
@@ -112,6 +113,30 @@ def test_missing_camera_solve_is_actionable():
     p.ingest_artifacts({})
     with pytest.raises(RuntimeError, match="Camera track"):
         p.run_shot(None, (1, 3))
+
+
+def _solve(mapper: str = "incremental", verdict: str = "GOOD", nodal: bool | None = False):
+    return SimpleNamespace(
+        extrinsics=[_ext(np.eye(3), np.zeros(3))],
+        backend=SimpleNamespace(mapper=mapper),
+        quality=SimpleNamespace(verdict=verdict, nodal=nodal),
+    )
+
+
+def test_camera_gate_refuses_cameras_without_parallax_or_failed():
+    """A splat needs parallax: the nodal mapper is refused, and so is an SfM
+    or PnP camera whose referee called it NODAL even though it says GOOD
+    (`quality.nodal` is the machine-readable flag, not the warning text)."""
+    assert camera_gate(_solve()) is not None
+    assert camera_gate(_solve(nodal=None)) is not None  # no referee ran: not refused here
+    with pytest.raises(RuntimeError, match="no parallax"):
+        camera_gate(_solve(mapper="nodal"))
+    with pytest.raises(RuntimeError, match="no parallax"):
+        camera_gate(_solve(verdict="GOOD", nodal=True))
+    with pytest.raises(RuntimeError, match="FAILED"):
+        camera_gate(_solve(verdict="FAILED"))
+    with pytest.raises(RuntimeError, match="needs a camera solve"):
+        camera_gate(None)
 
 
 def test_contract():
