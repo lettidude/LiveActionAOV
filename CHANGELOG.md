@@ -7,6 +7,14 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Steady a pass over time (opt-in).** Any pass can be stabilised with the run's own motion
+  vectors: each frame is combined with its neighbours (window of 3, 5 or 7 frames) after warping
+  them onto it, with a **median** (removes one-frame pops), a **mean** (softer passes) or a
+  centre-weighted **blend**. Neighbours that the motion does not explain are left out, so moving
+  subjects do not smear. Normals stay unit length, depth keeps its scale, mattes stay 0-1. CLI
+  `run-shot --stabilise PASS[=MODE[:WINDOW]]` (e.g. `--stabilise normals=blend:5`), pass params
+  `stabilise` / `stabilise_window`. Needs the Motion pass in the run. Off by default: runs without
+  it are unchanged. Not in the app yet.
 - **Camera as USD.** Each camera solve also writes `camera/<shot>_v###.camera.usda` with the camera
   and a coloured point cloud, for Houdini, Maya, Blender, Unreal and Nuke's USD 3D system.
 - **A point cloud you can read.** With a depth pass in the run, the point cloud in the Nuke script
