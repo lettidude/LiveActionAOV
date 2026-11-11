@@ -121,7 +121,7 @@ Tick **Matte** and every person, vehicle and animal in the shot is found and tra
   <img src="docs/img/ltx-roto-hair.gif" alt="LTX Alpha roto: plate, soft matte with every strand of hair, and the subject over a flat colour" width="900">
 </p>
 
-LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup is in the works). Set its address in **Models > ComfyUI for LTX Alpha** and press **Test**. It checks the server, the nodes and the model files, and finds GGUF builds for smaller cards. Without ComfyUI the mattes come from ViTMatte (SAM finds the object, BiRefNet says where it is sure, ViTMatte resolves hair and blur), the log says so, and the run carries on. About a minute and a half per 100 frames at 2K on an RTX 5090.
+LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup is in the works). Set its address in **Models > ComfyUI for LTX Alpha** and press **Test**. It checks the server, the nodes and the model files, and finds GGUF builds for smaller cards. Without ComfyUI the mattes come from ViTMatte (SAM finds the object, BiRefNet says where it is sure, ViTMatte resolves hair and blur), the log says so, and the run carries on.
 
 <p align="center">
   <img src="docs/img/ltx-roto-motion.gif" alt="LTX Alpha roto on a running figure: the motion blur stays soft in the matte" width="900">
@@ -131,13 +131,13 @@ LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup
   <img src="docs/img/ltx-roto-water.gif" alt="LTX Alpha roto on two people wading: the splashes come through as semi-transparent matte" width="900">
 </p>
 
-> Three runs with the defaults, nothing painted, nothing clicked: plate, the `foreground.a` matte, and the comp over a flat colour. Hair, motion blur, water. About a minute and a half of LTX per 100 frames on an RTX 5090.
+> Three runs with the defaults, nothing painted, nothing clicked: plate, the `foreground.a` matte, and the comp over a flat colour. Hair, motion blur, water.
 
 ### Geometry: depth in metres, normals, position
 
-**MoGe-3** (Microsoft, MIT) is the default for normals and the best choice for depth. One pass gives depth in metres, camera-space normals and a `P` world-position pass you can drop into PositionToPoints or a relight. No halo around people, real structure in hair and faces, and normals 3-8x steadier frame to frame than DSINE's.
+**MoGe-3** (Microsoft, MIT) is the default for normals and the best choice for depth. One pass gives depth in metres, camera-space normals and a `P` world-position pass you can drop into PositionToPoints or a relight. No halo around people, real structure in hair and faces, and normals much steadier frame to frame than DSINE's.
 
-The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (from the camera track when there is one), a stabilised metric scale, letterbox bars cropped before the model sees them, sky flagged in `depth.confidence`. About 1 s per frame at 2K, 2.6 GB of VRAM at any resolution.
+The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (from the camera track when there is one), a stabilised metric scale, letterbox bars cropped before the model sees them, sky flagged in `depth.confidence`.
 
 <p align="center">
   <img src="docs/img/geometry.gif" alt="Depth in metres, camera-space normals and world position on a dark handheld shot with two people" width="900">
@@ -145,7 +145,7 @@ The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (
 
 ### Camera track
 
-Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motion, with the SAM 3 masks keeping the moving people out of the solve. You get a Nuke `Camera2`, the same camera as a `.usda` for other 3D software, a point cloud and the COLMAP model. With a depth pass in the same run the point cloud is dense and coloured from the plate, so the set is recognisable in the 3D viewer; without one it is the solve's feature points. Checked in Nuke 16 by reprojecting the solved points: 0.7-1.3 px on 2K to 6.5K test plates.
+Tick **Camera track** and the shot gets a matchmove: COLMAP structure-from-motion, with the SAM 3 masks keeping the moving people out of the solve. You get a Nuke `Camera2`, the same camera as a `.usda` for other 3D software, a point cloud and the COLMAP model. With a depth pass in the same run the point cloud is dense and coloured from the plate, so the set is recognisable in the 3D viewer; without one it is the solve's feature points. Checked in Nuke 16 by reprojecting the solved points.
 
 A camera needs parallax. When COLMAP registers only part of a shot, two fallbacks take over: a rotation-only solve for pans and locked-off shots, and a depth-anchored solve (MoGe-3 depth plus tracked corners) for fast handheld action. The depth-anchored camera is judged on held-out points it never saw during the solve and labelled **GOOD**, **WEAK** or **FAILED** in the Nuke node, with the error in pixels at a stated resolution; a FAILED one says "do not use" so it cannot end up in a comp by accident. The COLMAP camera gets the same verdict from an independent check, so a solve that drifted is caught even when its own error looks clean. Rotation-only cameras are judged the same way. Whatever happens to the camera, the other passes are still written.
 

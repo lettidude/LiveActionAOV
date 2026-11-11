@@ -53,5 +53,3 @@ for softer edges. Default 0 (faithful to SAM 3).
   spec hash + finite-float guarantee, header keys, a no-model `run_shot`
   manifest round-trip, and a real EXR-writer round-trip (write → read →
   pixel id decodes to the right object).
-- Proven end-to-end on a real ACTIONVFX plate: SAM 3 found person + 3
-  vehicles, all 4 ids round-tripped at coverage 1.0.
