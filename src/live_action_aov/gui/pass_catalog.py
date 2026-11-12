@@ -26,7 +26,10 @@ from dataclasses import dataclass
 class ModelEntry:
     key: str  # stored in ShotState.enabled_models — stable identifier
     label: str  # rendered in the inspector
-    license_tag: str  # short SPDX-ish string shown next to the label
+    # The licence shown in the tooltip: each expanded plugin's `License.spdx`,
+    # joined with " / " (tests/test_gui/test_licence_labels.py keeps them in
+    # sync). An entry whose submit adds more passes may append " + <note>".
+    license_tag: str
     commercial: bool  # gates the non-commercial consent dialog
     expansion: tuple[str, ...]  # concrete plugin names fed to the executor
     # Hidden entries stay resolvable (legacy sessions expand fine) but are
@@ -41,7 +44,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
     # `motion.x/y` channel names the executor actually emits. The
     # plugin name stays `flow` — only the user-facing label changed.
     "Motion": [
-        ModelEntry("flow", "RAFT", "Apache-2.0", True, ("flow",)),
+        ModelEntry("flow", "RAFT", "BSD-3-Clause", True, ("flow",)),
         # Large-displacement / textureless-robust alternative; ~5x slower
         # than RAFT and ~6 GB VRAM at 952 px. Bench: see passes/flow/megaflow.py.
         ModelEntry(
@@ -80,14 +83,14 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ModelEntry(
             "depthcrafter",
             "DepthCrafter",
-            "CC-BY-NC-4.0",
+            "LicenseRef-DepthCrafter-Tencent-NC",
             False,
             ("depthcrafter",),
         ),
         ModelEntry(
             "depthpro",
             "DepthPro",
-            "CC-BY-NC-4.0",
+            "Apple-ML-Research",
             False,
             ("depthpro",),
         ),
@@ -112,11 +115,11 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
     ],
     "Normals": [
         ModelEntry("moge3_normals", "MoGe-3 (sharp, stable)", "MIT", True, ("moge3",)),
-        ModelEntry("dsine", "DSINE", "Imperial-NC", False, ("dsine",)),
+        ModelEntry("dsine", "DSINE", "LicenseRef-DSINE-Imperial-NC", False, ("dsine",)),
         ModelEntry(
             "normalcrafter",
             "NormalCrafter",
-            "CC-BY-NC-4.0",
+            "MIT+Apache-2.0+SVD-Community",
             False,
             ("normalcrafter",),
         ),
@@ -129,7 +132,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ModelEntry(
             "sam3_matte_on",
             "Matte (SAM + soft-edge engine)",
-            "SAM-License / MIT",
+            "SAM-License-1.0 + the engine's own licence",
             True,
             ("sam3_matte",),
         ),
@@ -137,7 +140,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ModelEntry(
             "sam3_rvm",
             "SAM3 + RVM",
-            "SAM-License / MIT",
+            "SAM-License-1.0 / GPL-3.0-only",
             True,
             ("sam3_matte", "rvm_refiner"),
             hidden=True,
@@ -145,7 +148,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ModelEntry(
             "sam3_birefnet",
             "SAM3 + BiRefNet (soft edges)",
-            "SAM-License / MIT",
+            "SAM-License-1.0 / MIT",
             True,
             ("sam3_matte", "birefnet_refiner"),
             hidden=True,
@@ -153,7 +156,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ModelEntry(
             "sam3_vitmatte",
             "SAM3 + ViTMatte (trimap soft edges)",
-            "SAM-License / MIT",
+            "SAM-License-1.0 / MIT+Apache-2.0",
             True,
             ("sam3_matte", "vitmatte_refiner"),
             hidden=True,
@@ -161,7 +164,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ModelEntry(
             "sam3_chromakey",
             "SAM3 + Chroma Key (green/blue screen)",
-            "SAM-License / MIT",
+            "SAM-License-1.0 / MIT",
             True,
             ("sam3_matte", "chroma_key"),
             hidden=True,
@@ -173,7 +176,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ModelEntry(
             "sam3_all_refiners",
             "SAM3 + ALL refiners (compare, 3x slower)",
-            "SAM-License / MIT",
+            "SAM-License-1.0 / GPL-3.0-only / MIT / MIT+Apache-2.0",
             True,
             ("sam3_matte", "rvm_refiner", "birefnet_refiner", "vitmatte_refiner", "chroma_key"),
             hidden=True,
@@ -222,7 +225,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ModelEntry(
             "splat_gsplat",
             "Camera + Gaussian splat (background)",
-            "Apache-2.0",
+            "BSD-3-Clause / Apache-2.0",
             True,
             ("camera_pycolmap", "splat_gsplat"),
         ),
@@ -231,7 +234,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ModelEntry(
             "cryptomatte",
             "Cryptomatte (object IDs)",
-            "SAM-License / MIT",
+            "SAM-License-1.0 / MIT",
             True,
             ("sam3_matte", "cryptomatte"),
         ),

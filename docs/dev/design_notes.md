@@ -440,9 +440,9 @@ Shared intermediate: computed once per plate, consumed by everything else.
 ### 10.2 Depth
 
 **Backends** (triage from 8-candidate list):
-- **DepthCrafter** (primary) — video-native, temporally coherent. **License ambiguous** (Apache weights on SVD base; SVD is non-commercial). Treat as non-commercial pending author confirmation.
-- **Depth Pro** (commercial-clean) — metric, sharp edges, Apple ML Research License. Used as metric anchor for Phase 2 scale alignment.
-- **Depth Anything V2** (fallback) — per-frame, relative. Small/Base = Apache; **Large/Giant = CC-BY-NC 4.0**.
+- **DepthCrafter** (primary) — video-native, temporally coherent. **Non-commercial**: Tencent's own licence covers code and weights, research/education only (checked 2026-11-12).
+- **Depth Pro** — metric, sharp edges. Weights under the Apple ML Research licence (research only), so non-commercial. Used as metric anchor for Phase 2 scale alignment.
+- **Depth Anything V2** (fallback) — per-frame, relative. Small = Apache-2.0; **Base/Large/Giant = CC-BY-NC 4.0** (corrected 2026-11-10).
 
 **Skipped**: Marigold (superseded), DepthFM, Geowizard (per-frame diffusion, slow), Metric3D, Sapiens, Lotus-G (revisit for normals joint-output in v2).
 
@@ -456,8 +456,8 @@ Shared intermediate: computed once per plate, consumed by everything else.
 ### 10.3 Normals
 
 **Backends:**
-- **NormalCrafter** (primary) — ICCV 2025, video-native, SVD-based. Same license ambiguity as DepthCrafter. HF model card says Apache 2.0, but built on SVD (non-commercial). Treat as non-commercial pending confirmation.
-- **DSINE** (commercial-safe fallback) — CVPR 2024 Oral, MIT weights on HF. Per-frame ViT. Already has a Nuke integration (vinavfx/DSINE-for-Nuke) — useful reference. Pair with temporal smoother.
+- **NormalCrafter** (primary) — ICCV 2025, video-native, SVD-based. MIT code, Apache-2.0 weights, built on SVD (now the Stability AI Community License). Treated as non-commercial until cleared.
+- **DSINE** (fallback) — CVPR 2024 Oral. Imperial College licence, non-commercial (corrected 2026-11-10; the HF mirror carries no licence). Per-frame ViT. Already has a Nuke integration (vinavfx/DSINE-for-Nuke) — useful reference. Pair with temporal smoother.
 
 **Skipped**: StableNormal (middle ground, SD license issues), Lotus (v2 candidate for joint depth+normals).
 
@@ -489,7 +489,7 @@ Plate → SAM 3 (detect + track all concepts) → hard masks + IDs
 **Backends:**
 - **SAM 3 / SAM 3.1** (primary detector) — SAM License, commercial OK with restrictions.
 - **MatAnyone 2** (primary refiner, CVPR 2026 Highlight) — NTU S-Lab License 1.0 (**non-commercial**).
-- **RVM** (commercial-safe refiner) — MIT. Older (2021), human-focused, serviceable.
+- **RVM** (refiner) — GPL-3.0 (corrected 2026-11-10): mattes fine for paid work, never bundled. Older (2021), human-focused, serviceable.
 - **SAM 2** alone (alternative primary) — Apache 2.0, if avoiding SAM License entirely.
 
 **Auto-detect strategy (v1)**: curated concept list run against a sample frame, keep above-threshold + above-min-area detections.
@@ -710,16 +710,16 @@ Every pass declares license + commercial flag as first-class metadata. CLI refus
 | Model | License | Commercial? |
 |---|---|---|
 | RAFT | BSD-3 | ✅ |
-| DSINE | MIT (weights) | ✅ |
-| Depth Pro | Apple ML Research | ✅ (read terms) |
-| Depth Anything V2 Small/Base | Apache 2.0 | ✅ |
-| Depth Anything V2 Large/Giant | CC-BY-NC 4.0 | ❌ |
-| DepthCrafter | Apache weights / SVD base non-commercial | ⚠️ ambiguous — treat as ❌ pending confirmation |
-| NormalCrafter | Apache weights / SVD base non-commercial | ⚠️ ambiguous — treat as ❌ pending confirmation |
+| DSINE | Imperial College DSINE licence (corrected 2026-11-10) | ❌ |
+| Depth Pro | Apple sample-code licence (code) + Apple ML Research licence (weights, research only) | ❌ |
+| Depth Anything V2 Small | Apache 2.0 | ✅ |
+| Depth Anything V2 Base/Large/Giant | CC-BY-NC 4.0 | ❌ |
+| DepthCrafter | Tencent DepthCrafter licence: research/education only, code and weights (checked 2026-11-12) | ❌ |
+| NormalCrafter | MIT code, Apache-2.0 weights, SVD base (Stability AI Community License) | ⚠️ treated as ❌ until cleared |
 | SAM 2 | Apache 2.0 | ✅ |
 | SAM 3 / 3.1 | SAM License (custom) | ✅ with restrictions (no military/ITAR) |
 | MatAnyone / MatAnyone 2 | NTU S-Lab License 1.0 | ❌ (business contact available) |
-| RVM | MIT | ✅ |
+| RVM | GPL-3.0 (corrected 2026-11-10) | ✅ for its mattes; never ship it inside a closed bundle |
 | VGGT | Custom (checkpoint permits commercial) | ✅ (verify) |
 | MegaSAM | Apache 2.0 + CC-BY | ✅ |
 | MapAnything | TBD — verify | ⚠️ |
@@ -745,7 +745,7 @@ For traceability, the design decisions made and why:
 8. **Resize + renormalize + intrinsics-scaling per pass type** — prevents the "resolution-dependent results" bug in DSINE-class models.
 9. **Display transform with clip-wide auto-exposure + tonemap + sRGB EOTF** — single exposure avoids flicker in model input.
 10. **GUI viewport with original / transformed / compare modes** — TD must see what the model sees to trust the output.
-11. **License is first-class; commercial-safe fallback path exists for every pass** — DA V2 + DSINE + RVM + RAFT = complete commercial pipeline.
+11. **License is first-class; commercial-safe fallback path exists for every pass** — DA V2 Small + MoGe-3 + SAM 3 + ViTMatte + RAFT = complete commercial pipeline (DSINE is NC, corrected 2026-11-10).
 12. **SAM 3 obsoletes custom orchestrator for matte detection** — one model does detection + segmentation + video tracking with stable IDs.
 13. **Top-N ranking for matte RGBA packing uses flow for motion energy** — reusing the keystone intermediate again.
 14. **VGGT as ambient future capability** — declaring it early means v2 camera pass and v3 scene reconstruction slot in cleanly.

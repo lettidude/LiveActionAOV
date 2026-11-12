@@ -52,14 +52,15 @@ class DepthCrafterPass(UtilityPass):
     name = "depthcrafter"
     version = "0.1.0"
     license = License(
-        spdx="Apache-2.0+SVD-NC",
+        spdx="LicenseRef-DepthCrafter-Tencent-NC",
         commercial_use=False,
         commercial_tool_resale=False,
         notes=(
-            "Weights are Apache-2.0 but DepthCrafter is built on Stable Video "
-            "Diffusion, whose commercial terms are non-permissive. Gated "
-            "behind --allow-noncommercial. Verify with upstream authors "
-            "before any commercial deployment."
+            "DepthCrafter (Tencent) code and weights are under Tencent's own "
+            "DepthCrafter licence: academic, research and education use only, "
+            "no commercial or production use. It is also fine-tuned from Stable "
+            "Video Diffusion. Declared Apache-2.0 here until 2026-11-12, which "
+            "was wrong. Gated behind --allow-noncommercial."
         ),
     )
     pass_type = PassType.GEOMETRIC

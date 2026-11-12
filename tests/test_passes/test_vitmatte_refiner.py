@@ -26,7 +26,7 @@ class _FakeViTMatte(ViTMatteRefinerPass):
 
 def test_license_is_commercial_safe() -> None:
     lic = ViTMatteRefinerPass.declared_license()
-    assert lic.spdx == "MIT"
+    assert lic.spdx == "MIT+Apache-2.0"  # MIT code, Apache-2.0 HF weights
     assert lic.commercial_use is True
 
 

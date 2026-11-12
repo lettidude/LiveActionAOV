@@ -130,12 +130,12 @@ on PyPI), so the install string is a `git+https://…@<tag>` URL.
 # CORE — the commercial-safe default passes, nothing else:
 #   • Depth   → Depth Anything V2 (Apache-2.0)
 #   • Normals → MoGe-3 (MIT)
-#   • Matte   → SAM 3 + ViTMatte (SAM-License / MIT)
+#   • Matte   → SAM 3 + ViTMatte (SAM-License / MIT code, Apache-2.0 weights)
 uv tool install "git+https://github.com/lettidude/LiveActionAOV@v0.5.1" --torch-backend=auto
 
 # EVERY PASS — adds the optional backends (DepthCrafter, NormalCrafter,
 # Video Depth Anything, DepthPro, MatAnyone2). ~4 GB more for diffusers +
-# accelerate. Some of these are CC-BY-NC-4.0 (see licensing below).
+# accelerate. Some of these are non-commercial (see licensing below).
 uv tool install "live-action-aov[all] @ git+https://github.com/lettidude/LiveActionAOV@v0.5.1" --torch-backend=auto
 ```
 
@@ -180,12 +180,12 @@ what you use:
 
 ```bash
 uv sync --extra dev                                      # core only
-uv pip install 'live-action-aov[depthcrafter]'           # CC-BY-NC-4.0
-uv pip install 'live-action-aov[normalcrafter]'          # CC-BY-NC-4.0
+uv pip install 'live-action-aov[depthcrafter]'           # non-commercial (Tencent licence)
+uv pip install 'live-action-aov[normalcrafter]'          # non-commercial in the app (built on SVD)
 uv pip install 'live-action-aov[video_depth_anything]'   # Apache-2.0
-uv pip install 'live-action-aov[depthpro]'               # CC-BY-NC-4.0
+uv pip install 'live-action-aov[depthpro]'               # non-commercial (Apple ML Research licence)
 uv pip install 'live-action-aov[birefnet]'               # MIT (soft-edge matte refiner)
-uv pip install 'live-action-aov[matanyone2]'             # CC-BY-NC-4.0
+uv pip install 'live-action-aov[matanyone2]'             # non-commercial (NTU S-Lab licence)
 ```
 
 Combine later with the `all` meta if you want everything:
@@ -364,10 +364,12 @@ you have GPU access.
 
 ## Non-commercial model licensing
 
-Some models (DepthCrafter, DepthPro, NormalCrafter, MatAnyone2) are
-distributed under **CC-BY-NC-4.0**. This restricts the **model
-outputs** from being used commercially, regardless of what licence
-this tool itself ships under.
+Some models are not for paid work: DepthCrafter (Tencent's research-only
+licence), DepthPro (Apple ML Research licence), MatAnyone2 (NTU S-Lab
+licence), DSINE (Imperial College licence) and NormalCrafter (built on
+Stable Video Diffusion; kept non-commercial here until cleared). Their
+outputs are not for commercial work, regardless of what licence this
+tool itself ships under.
 
 The GUI flags these with a warning marker in the Passes tab and pops
 a per-submit consent dialog before running a batch that uses them.

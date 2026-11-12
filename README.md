@@ -214,7 +214,7 @@ LiveActionAOV is glue and comp sense on top of research that other people publis
 |---|---|---|---|---|
 | [SAM 3 / SAM 3.1](https://github.com/facebookresearch/sam3) | finding and tracking the objects | Meta AI (FAIR) | SAM License | yes (no military use; gated download) |
 | [LTX-2.5](https://github.com/Lightricks/LTX-2) + alpha-gen IC-LoRA | soft mattes, in your ComfyUI | Lightricks | LTX-2 Community License | yes under USD 10M of yearly revenue, a Lightricks licence above |
-| [ViTMatte](https://github.com/hustvl/ViTMatte) | soft mattes without ComfyUI | HUST Vision Lab | MIT | yes |
+| [ViTMatte](https://github.com/hustvl/ViTMatte) | soft mattes without ComfyUI | HUST Vision Lab | MIT (code), Apache-2.0 (weights) | yes |
 | [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) | guide for ViTMatte, portrait mattes | Peng Zheng and co-authors | MIT | yes |
 | [MoGe-3](https://github.com/microsoft/MoGe) | depth in metres, normals, position | Microsoft Research | MIT | yes |
 | [DINOv2](https://github.com/facebookresearch/dinov2) | backbone of MoGe-3 and MegaFlow | Meta AI | Apache-2.0 | yes |
@@ -226,11 +226,11 @@ LiveActionAOV is glue and comp sense on top of research that other people publis
 | [Cryptomatte](https://github.com/Psyop/Cryptomatte) | the ID matte format | Psyop | BSD-3-Clause | yes |
 | [Robust Video Matting](https://github.com/PeterL1n/RobustVideoMatting) | alternative matte engine | Shanchuan Lin and co-authors, ByteDance | GPL-3.0 | the mattes yes; the model is fetched from its repository and must not be shipped inside a closed bundle |
 
-Marked **NC** in the app and refused on the command line without `--allow-noncommercial`, because their licences do not allow paid work: [DSINE](https://github.com/baegwangbin/DSINE) (Imperial College London), [DepthCrafter](https://github.com/Tencent/DepthCrafter) and [NormalCrafter](https://github.com/Binyr/NormalCrafter) (both built on Stable Video Diffusion), [Depth Pro](https://github.com/apple/ml-depth-pro) (Apple), [MatAnyone](https://github.com/pq-yang/MatAnyone) (NTU S-Lab).
+Marked **NC** in the app and refused on the command line without `--allow-noncommercial`, because their licences do not allow paid work: [DSINE](https://github.com/baegwangbin/DSINE) (Imperial College London), [DepthCrafter](https://github.com/Tencent/DepthCrafter) (Tencent, research only), [NormalCrafter](https://github.com/Binyr/NormalCrafter) (built on Stable Video Diffusion; kept NC until its terms for paid work are cleared), [Depth Pro](https://github.com/apple/ml-depth-pro) (Apple ML Research licence for the weights), [MatAnyone](https://github.com/pq-yang/MatAnyone) (NTU S-Lab).
 
 Under the hood: [OpenImageIO](https://github.com/AcademySoftwareFoundation/OpenImageIO), [OpenColorIO](https://github.com/AcademySoftwareFoundation/OpenColorIO) and OpenEXR from the Academy Software Foundation, PyTorch, Hugging Face `transformers`, Qt for Python, `uv`, and [ComfyUI](https://github.com/comfyanonymous/ComfyUI), which runs LTX as your own separate server.
 
-Licences change. This table was checked against each repository on 10 November 2026; the terms in the model's own repository are the ones that count, and every sidecar EXR records which model and licence made each layer.
+Licences change. This table was checked against each repository on 12 November 2026; the terms in the model's own repository are the ones that count, and every sidecar EXR records which model and licence made each layer.
 
 ## License
 

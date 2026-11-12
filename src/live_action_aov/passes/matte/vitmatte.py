@@ -67,12 +67,13 @@ class ViTMatteRefinerPass(RVMRefinerPass):
     name = "vitmatte_refiner"
     version = "0.1.0"
     license = License(
-        spdx="MIT",
+        spdx="MIT+Apache-2.0",
         commercial_use=True,
         commercial_tool_resale=True,
         notes=(
-            "ViTMatte (hustvl) — MIT code and weights, native HF transformers "
-            "loader. Trimap-guided: only estimates alpha in the unknown band "
+            "ViTMatte (hustvl) — MIT code; the Hugging Face weights it loads "
+            "are Apache-2.0. Native HF transformers loader. Trimap-guided: "
+            "only estimates alpha in the unknown band "
             "derived from SAM 3's hard mask; known regions are respected by "
             "construction. Trained on Composition-1K (Adobe DIM research "
             "dataset) — same provenance bar as the BiRefNet fine-tunes."

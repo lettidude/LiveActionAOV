@@ -306,7 +306,7 @@ def run_shot(
         str,
         typer.Option(
             "--normals-backend",
-            help="Backend for the semantic `normals` pass. Default: moge3 (MIT; "
+            help="Backend for the semantic `normals` pass. Default: moge3 (MIT, "
             "sharp, stable). `dsine` is lighter but non-commercial.",
         ),
     ] = "moge3",
@@ -322,8 +322,10 @@ def run_shot(
         str,
         typer.Option(
             "--refiner",
-            help="Refiner for the semantic `matte` pass. `rvm_refiner` (MIT, "
-            "commercial-safe default) or `matanyone2` (NTU-S-Lab-1.0, NC).",
+            help="Refiner for the semantic `matte` pass. Default: rvm_refiner "
+            "(GPL-3.0-only; its mattes are fine for paid work, the model is "
+            "fetched from its own repository). `matanyone2` (NTU-S-Lab-1.0) is "
+            "non-commercial.",
         ),
     ] = "rvm_refiner",
     allow_noncommercial: Annotated[
