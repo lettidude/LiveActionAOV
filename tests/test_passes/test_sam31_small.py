@@ -95,10 +95,22 @@ def test_small_floor_keeps_small_people_and_drops_specks() -> None:
 
 def test_seed_frames() -> None:
     assert SAM3MattePass({})._sam31_seeds(100, 50) == [50]  # default: the sample frame
+    # "max" seeds several frames, the sample frame (the primary session) first.
+    assert SAM3MattePass({"small_objects": "max"})._sam31_seeds(200, 100) == [
+        100,
+        0,
+        199,
+        40,
+        80,
+        120,
+        160,
+    ]
     multi = {"sam31_seed_frames": "multi"}
-    assert SAM3MattePass(multi)._sam31_seeds(100, 50) == [0, 50, 99]
+    assert SAM3MattePass(multi)._sam31_seeds(100, 50) == [50, 0, 99]
     every = {**multi, "sam31_seed_every": 30}
-    assert SAM3MattePass(every)._sam31_seeds(100, 50) == [0, 30, 50, 60, 90, 99]
+    assert SAM3MattePass(every)._sam31_seeds(100, 50) == [50, 0, 99, 30]
+    single = {"small_objects": "max", "sam31_seed_frames": "single"}
+    assert SAM3MattePass(single)._sam31_seeds(100, 50) == [50]
 
 
 def test_tile_windows_cover_the_plate_with_overlap() -> None:
@@ -228,8 +240,8 @@ def test_pass_small_objects_keeps_small_people_and_merges(monkeypatch: pytest.Mo
     assert p.params["small_objects"] == "auto"
     frames = [np.full((H, W, 3), 0.5, np.float32) for _ in range(N)]
     p.run_shot(_Reader(frames), frame_range=(1, N))
-    assert calls["seeds"] == [0, N // 2, N - 1] and calls["max_objects"] == 64
-    assert calls["tiles"] == [] and calls["work_size"] == 1024  # tiles: only on "max"
+    assert calls["seeds"] == [N // 2, 0, N - 1] and calls["max_objects"] == 64
+    assert calls["tiles"] == [] and calls["work_size"] == 1024  # tiles: opt-in only
     hard = next(iter(p.emit_artifacts()["sam3_hard_masks"].values()))
     assert len(hard) == 2  # small person + hero; duplicate merged, speck dropped
     heights = sorted(int(np.flatnonzero(d["stack"][10].any(1)).size) for d in hard.values())
@@ -337,3 +349,182 @@ def test_small_floor_of_a_tile_track_is_relative_to_its_tile() -> None:
     t = _track(10, 20, 10, 16, src=1)
     assert not keep_small(t, 5, 0.004, 3)
     assert keep_small(t, 5, 0.004, 3, seen_area=100 * 100)
+
+
+# --- several sessions: skip guard, track merge, "max" ------------------------
+
+
+class _FakePredictor:
+    """Meta's multiplex predictor, enough for the worker: one object per
+    session (a box moving one px per frame). `fail` = (folder, seed frame)
+    pairs whose session raises like SAM 3.1's "No points are provided",
+    during propagation."""
+
+    def __init__(self, n: int, fail: set[tuple[str, int]]) -> None:
+        self.n, self.fail = n, fail
+        self.sessions: dict[str, tuple[str, int]] = {}
+        self.closed: list[str] = []
+        self.model = type("M", (), {"init_state": staticmethod(lambda **kw: None)})()
+
+    def handle_request(self, req: dict) -> dict:
+        if req["type"] == "start_session":
+            sid = f"s{len(self.sessions)}"
+            self.sessions[sid] = (Path(req["resource_path"]).name, -1)
+            return {"session_id": sid}
+        if req["type"] == "add_prompt":
+            sid = req["session_id"]
+            self.sessions[sid] = (self.sessions[sid][0], req["frame_index"])
+            return {"outputs": {"out_obj_ids": [7]}}
+        self.closed.append(req["session_id"])
+        return {}
+
+    def handle_stream_request(self, req: dict):  # type: ignore[no-untyped-def]
+        if self.sessions[req["session_id"]] in self.fail:
+            raise RuntimeError("No points are provided; please add points first")
+        for f in range(self.n):
+            m = np.zeros((16, 24), np.uint8)
+            m[4:12, f : f + 6] = 1
+            yield {"frame_index": f, "outputs": {"out_obj_ids": [7], "out_binary_masks": [m]}}
+
+
+def _run_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fail: set[tuple[str, int]]
+) -> tuple[int, Path, _FakePredictor]:
+    import sys
+    import types
+
+    n = 6
+    dirs = [tmp_path / "frames", tmp_path / "tile00"]
+    for d in dirs:
+        d.mkdir()
+        for i in range(n):
+            (d / f"{i:05d}.jpg").write_bytes(b"")
+    pred = _FakePredictor(n, fail)
+    builder = types.ModuleType("sam3.model_builder")
+    builder.build_sam3_multiplex_video_predictor = lambda **kw: pred  # type: ignore[attr-defined]
+    for name, mod in {
+        "sam3": types.ModuleType("sam3"),
+        "sam3.model": types.ModuleType("sam3.model"),
+        "sam3.model.decoder": types.ModuleType("sam3.model.decoder"),
+        "sam3.model_builder": builder,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    worker = _load_worker()
+    monkeypatch.setattr(worker, "_shims", lambda: None)
+    out = tmp_path / "out"
+    argv = ["--frames", str(dirs[0]), "--out", str(out), "--concepts", json.dumps(["person"])]
+    argv += ["--seed", "3", "--seeds", "[3, 0, 5]", "--tiles", json.dumps([str(dirs[1])])]
+    argv += ["--crops", "--checkpoint", "fake.pt"]
+    return worker.main(argv), out, pred
+
+
+def test_worker_skips_a_failing_tile_or_secondary_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    rc, out, pred = _run_worker(monkeypatch, tmp_path, {("tile00", 3), ("frames", 0)})
+    res = json.loads((out / "result.json").read_text())
+    assert rc == 0 and len(pred.closed) == 6  # failed sessions are closed too
+    skipped = [(s["src"], s["seed"]) for s in res["sessions"] if "skipped" in s]
+    assert skipped == [(0, 0), (1, 3)]
+    got = [(o["src"], o["seed"], o["session"]) for o in res["objects"]]
+    assert got == [(0, 3, 0), (0, 5, 2), (1, 0, 4), (1, 5, 5)]  # the primary is session 0
+
+
+def test_worker_primary_session_failure_still_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with pytest.raises(RuntimeError, match="No points"):
+        _run_worker(monkeypatch, tmp_path, {("frames", 3)})
+
+
+def test_bridge_logs_a_skipped_session(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        out = Path(cmd[cmd.index("--out") + 1])
+        out.mkdir()
+        skip = {"src": 1, "concept": "person", "seed": 0, "skipped": "No points"}
+        (out / "result.json").write_text(json.dumps({"objects": [], "sessions": [skip]}))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(sam31_bridge.subprocess, "run", fake_run)
+    frames = np.zeros((2, 8, 8, 3), np.float32)
+    with caplog.at_level("WARNING"):
+        assert sam31_bridge.run_sam31_small(frames, ["person"], [1], "py") == []
+    assert "skipped" in caplog.text and "No points" in caplog.text
+
+
+def _session(t: Sam31Track, session: int) -> Sam31Track:
+    return Sam31Track(t.label, t.obj_id, t.src, t.seed, t.masks, session)
+
+
+def test_merge_sessions_links_one_object_across_sessions_and_keeps_its_frames() -> None:
+    from live_action_aov.passes.matte.sam31_merge import MergeConfig
+
+    a = _session(_track(10, 110, 60, 100, frames=range(0, 12)), 0)  # primary loses it at 12
+    b = _session(_track(11, 110, 60, 101, frames=range(6, N), seed=N - 1), 1)
+    other = _session(_track(10, 60, 150, 170), 0)
+    merged, rep, frames = sam31_bridge.merge_sessions([a, b, other], MergeConfig())
+    assert len(merged) == 2 and rep.linked == 1
+    assert merged[0].present() == list(range(N)) and frames[0] == (N, 0, N)
+    assert merged[0].masks[3].box == a.masks[3].box  # the primary's mask where both exist
+
+
+def test_merge_sessions_keeps_a_thin_mask_frame_on_a_wide_plate() -> None:
+    """A person seen through a narrow gap (2 px wide on a 1920 px plate) is
+    under one px in the 480 px comparison copy: the frame must still count."""
+    from live_action_aov.passes.matte.sam31_merge import MergeConfig
+
+    n, h, w = 6, 270, 1920
+    masks = []
+    for k in range(n):
+        m = np.zeros((h, w), np.uint8)
+        m[50:250, 901 : 903 if k < 3 else 960] = 1
+        masks.append(BoxMask.from_dense(m))
+    track = Sam31Track("person", 0, 0, 0, masks)
+    merged, _, frames = sam31_bridge.merge_sessions([track], MergeConfig())
+    assert merged[0].present() == list(range(n)) and frames == [(n, 0, n)]
+
+
+def test_a_person_walking_up_to_the_camera_is_not_a_glitch() -> None:
+    from live_action_aov.passes.matte import sam31_merge
+
+    cov = np.r_[np.full(12, 0.002), np.full(8, 0.2)]  # far away, then close
+    assert sam31_merge.glitch_frames(cov, 6.0, 0.05, 8) == []
+    assert sam31_merge.glitch_frames(cov, 6.0, 0.05, 0) == list(range(12, 20))  # track median
+    spike = np.full(20, 0.002)
+    spike[9] = 0.2  # one frame read as a big scattered mask
+    assert sam31_merge.glitch_frames(spike, 6.0, 0.05, 8) == [9]
+
+
+def test_dense_track_keeps_a_thin_mask_frame() -> None:
+    from live_action_aov.passes.matte.sam31_merge import MergeConfig, make_track
+
+    st = np.zeros((4, 270, 1920), np.uint8)
+    st[:, 50:250, 901:903] = 1
+    t = make_track(st, "person", 0, 0, 1, lambda: st, MergeConfig())
+    assert t is not None and sorted(t.small) == [0, 1, 2, 3]
+
+
+def test_pass_max_seeds_several_frames_without_tiles_and_merges_tracks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict = {}
+    hero = _session(_track(10, 110, 60, 100, frames=range(0, 12)), 0)
+    hero_late = _session(_track(11, 110, 60, 101, frames=range(6, N), seed=N - 1), 1)
+    late = _session(_track(40, 52, 20, 25, frames=range(14, N), seed=N - 1), 1)  # enters late
+
+    def fake_small(frames, concepts, seeds, python, **kw):  # type: ignore[no-untyped-def]
+        calls.update(seeds=seeds, **kw)
+        return [hero, hero_late, late]
+
+    monkeypatch.setattr(sam31_bridge, "run_sam31_small", fake_small)
+    monkeypatch.setattr(sam31_bridge, "find_python", lambda p: "py312")
+    params = {"detector": "sam3.1", "concepts": ["person"], "layer_order": "area"}
+    p = _NoSAM3({**params, "small_objects": "max"})
+    frames = [np.full((H, W, 3), 0.5, np.float32) for _ in range(N)]
+    p.run_shot(_Reader(frames), frame_range=(1, N))
+    assert calls["seeds"] == [N // 2, 0, N - 1] and calls["tiles"] == []
+    hard = next(iter(p.emit_artifacts()["sam3_hard_masks"].values()))
+    held = sorted(int(d["stack"].reshape(N, -1).any(1).sum()) for d in hard.values())
+    assert held == [N - 14, N]  # the hero holds the whole clip, the late entrant is kept

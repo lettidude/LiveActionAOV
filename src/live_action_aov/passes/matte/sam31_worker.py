@@ -22,8 +22,10 @@ optional; left out, the run above is unchanged:
 - `--post-batch N`: frames the model post-processes at once (left out: its
   default). Its GPU memory grows with frames x objects x frame size, so a
   bigger object cap on a big plate wants a smaller batch.
-- `--seeds '[0, 50, 99]'`: one session per seed frame instead of `--seed`
+- `--seeds '[50, 0, 99]'`: one session per seed frame instead of `--seed`
   (someone hidden or not yet in frame at one seed is prompted at another).
+  The first seed's session on the plate is the primary one and must work;
+  any other session SAM 3.1 fails on is logged in `sessions` and skipped.
 - `--tiles '["dir1", ...]'`: more JPEG folders (crops of the plate), run
   with the same concepts and seeds after `--frames`; `src` in result.json
   says which folder an object came from (0 = `--frames`, 1.. = the tiles).
@@ -113,30 +115,60 @@ def _save_crops(path: str, fm: dict, n: int) -> None:
     np.savez_compressed(path, boxes=boxes, data=data, hw=np.asarray(hw, np.int32))
 
 
-def _run_small(pred, a, n: int) -> list:  # type: ignore[no-untyped-def]
+def _run_small(pred, a, n: int) -> tuple[list, list]:  # type: ignore[no-untyped-def]
     """The small-objects run: every folder (plate, then tiles) x concept x
-    seed frame is one session; masks kept as box crops."""
+    seed frame is one session; masks kept as box crops. The primary
+    session (the plate on `--seed`) must work; any other one that SAM 3.1
+    fails on is logged in `sessions` and skipped."""
+    import torch
+
+    # Seed frames in the order given: the first one is the primary seed.
     seeds = [int(s) for s in json.loads(a.seeds)] if a.seeds else [a.seed]
-    seeds = sorted({min(max(s, 0), n - 1) for s in seeds})
+    seeds = list(dict.fromkeys(min(max(s, 0), n - 1) for s in seeds))
     dirs = [a.frames, *(json.loads(a.tiles) if a.tiles else [])]
-    objects = []
+    objects, sessions = [], []
+    session = -1
     for src, fdir in enumerate(dirs):
         for ci, concept in enumerate(json.loads(a.concepts)):
             for si, seed in enumerate(seeds):
+                session += 1
                 t1 = time.time()
                 sid = pred.handle_request({"type": "start_session", "resource_path": fdir})[
                     "session_id"
                 ]
-                r = pred.handle_request(
-                    {"type": "add_prompt", "session_id": sid, "frame_index": seed, "text": concept}
-                )
-                n_seed = len(r["outputs"]["out_obj_ids"])
                 masks: dict = {}
                 try:
-                    _collect_crops(pred, sid, "both", masks)
-                except TypeError:
-                    _collect_crops(pred, sid, "forward", masks)
-                    _collect_crops(pred, sid, "backward", masks)
+                    r = pred.handle_request(
+                        {
+                            "type": "add_prompt",
+                            "session_id": sid,
+                            "frame_index": seed,
+                            "text": concept,
+                        }
+                    )
+                    n_seed = len(r["outputs"]["out_obj_ids"])
+                    try:
+                        _collect_crops(pred, sid, "both", masks)
+                    except TypeError:
+                        _collect_crops(pred, sid, "forward", masks)
+                        _collect_crops(pred, sid, "backward", masks)
+                except Exception as e:
+                    if src == 0 and si == 0:
+                        raise  # the primary session must work, as in the plain run
+                    print(
+                        f"src {src} '{concept}' seed {seed}: session SKIPPED - SAM 3.1 error: {e}",
+                        flush=True,
+                    )
+                    sessions.append(
+                        {"src": src, "concept": concept, "seed": seed, "skipped": str(e)[-500:]}
+                    )
+                    try:
+                        pred.handle_request({"type": "close_session", "session_id": sid})
+                    except Exception:
+                        pass
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    continue
                 pred.handle_request({"type": "close_session", "session_id": sid})
                 kept = 0
                 for oid, fm in sorted(masks.items()):
@@ -151,16 +183,26 @@ def _run_small(pred, a, n: int) -> list:  # type: ignore[no-untyped-def]
                             "obj_id": oid,
                             "src": src,
                             "seed": seed,
+                            "session": session,
                             "format": "crops",
                         }
                     )
                     kept += 1
+                sessions.append(
+                    {
+                        "src": src,
+                        "concept": concept,
+                        "seed": seed,
+                        "seeded": n_seed,
+                        "tracked": kept,
+                    }
+                )
                 print(
                     f"src {src} '{concept}' seed {seed}: {n_seed} seeded, {kept} tracked "
                     f"in {time.time() - t1:.0f}s",
                     flush=True,
                 )
-    return objects
+    return objects, sessions
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -202,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
 
     os.makedirs(a.out, exist_ok=True)
     small = bool(a.seeds or a.tiles or a.crops)
-    objects = _run_small(pred, a, n) if small else []
+    objects, sessions = _run_small(pred, a, n) if small else ([], [])
     for ci, concept in enumerate([] if small else json.loads(a.concepts)):
         t1 = time.time()
         sid = pred.handle_request({"type": "start_session", "resource_path": a.frames})[
@@ -242,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
                 "objects": objects,
                 "seconds": round(time.time() - t0),
                 "peak_vram_gb": round(peak, 1),
+                **({"sessions": sessions} if small else {}),
             },
             f,
             indent=1,

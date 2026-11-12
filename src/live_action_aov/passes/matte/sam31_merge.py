@@ -34,13 +34,18 @@ each propagated both ways, merged here into one track per object:
    contains it, plus the other members of that session on that frame.
 
 Before merging, each raw track loses its **glitch frames**: a frame whose
-coverage is over `glitch_factor` x the track's median and more than
+coverage is over `glitch_factor` x the median of the frames before it and
+of those after it (`glitch_window` each side; 0 = the whole track's) and more than
 `glitch_min_jump` of the frame above it (a small object suddenly read as a
-scattered mask over much of the frame). Those frames count as not seen.
+scattered mask over much of the frame). Measured against its neighbours, a
+person who walks up to the camera is not a glitch. Those frames count as
+not seen.
 
 The comparisons run on a copy at most `work_width` px wide, kept as
 bounding-box crops, so a crowd of small objects stays cheap in RAM and
-time; the full-resolution masks are loaded only to build the result.
+time; the full-resolution masks are loaded only to build the result. A
+mask too thin to survive the shrink keeps the pixels it touches there, so
+the frame still counts as seen.
 Everything here is numpy + OpenCV, with no model: tests run on synthetic
 masks.
 """
@@ -64,6 +69,7 @@ class MergeConfig:
     stitch_gap: int = 8
     glitch_factor: float = 6.0  # 0 = no glitch filter
     glitch_min_jump: float = 0.05
+    glitch_window: int = 8  # neighbouring frames either side; 0 = whole-track median
     dup_containment: float = 0.6
     dup_frames: float = 0.6
     dup_size_ratio: float = 0.5
@@ -88,15 +94,33 @@ def seed_frames(n: int, primary: int, every: int) -> list[int]:
     return seeds
 
 
-def glitch_frames(cov: np.ndarray, factor: float, min_jump: float) -> list[int]:
-    """Frames where a track's coverage jumps far above its median."""
+def glitch_frames(cov: np.ndarray, factor: float, min_jump: float, window: int = 0) -> list[int]:
+    """Frames where a track's coverage jumps far above the frames around it:
+    with `window` > 0, above the median of the `window` present frames
+    before it AND of those after it (one side at the clip's ends), so a
+    subject that grows and stays grown is not a glitch; 0 = above the
+    whole track's median."""
     if factor <= 0:
         return []
     present = np.flatnonzero(cov > 0)
     if len(present) < 2:
         return []
-    med = float(np.median(cov[present]))
-    return [int(f) for f in present if cov[f] > factor * med and cov[f] > med + min_jump]
+
+    def jumps(c: float, ref: np.ndarray) -> bool:
+        med = float(np.median(cov[ref]))
+        return c > factor * med and c > med + min_jump
+
+    out = []
+    for i, f in enumerate(present):
+        c = float(cov[f])
+        if window > 0:
+            sides = [present[max(0, i - window) : i], present[i + 1 : i + 1 + window]]
+            bad = all(jumps(c, side) for side in sides if len(side))
+        else:
+            bad = jumps(c, present)
+        if bad:
+            out.append(int(f))
+    return out
 
 
 # --- bounding-box crops ------------------------------------------------------
@@ -181,7 +205,7 @@ class RawTrack:
     session: int  # 0 = the primary seed
     seed: int
     obj_id: int
-    load: Callable[[], np.ndarray]  # the full (T, H, W) uint8 stack
+    load: Callable[[], np.ndarray] | None  # the full (T, H, W) uint8 stack
     small: dict[int, Crop]  # frame -> mask on the work copy (present frames only)
     glitches: list[int] = field(default_factory=list)
 
@@ -201,7 +225,7 @@ def make_track(
 
     n, h, w = stack.shape
     cov = stack.reshape(n, -1).astype(bool).mean(1)
-    bad = glitch_frames(cov, cfg.glitch_factor, cfg.glitch_min_jump)
+    bad = glitch_frames(cov, cfg.glitch_factor, cfg.glitch_min_jump, cfg.glitch_window)
     s = min(1.0, cfg.work_width / float(w)) if cfg.work_width > 0 else 1.0
     sw, sh = max(1, round(w * s)), max(1, round(h * s))
     small: dict[int, Crop] = {}
@@ -210,7 +234,10 @@ def make_track(
             continue
         m = stack[f] > 0
         if s < 1.0:
-            m = cv2.resize(m.astype(np.uint8), (sw, sh), interpolation=cv2.INTER_AREA) > 0
+            cov_s = cv2.resize(m.astype(np.float32), (sw, sh), interpolation=cv2.INTER_AREA)
+            m = cov_s >= 0.5
+            if not m.any():  # too thin for the shrink: keep the pixels it touches
+                m = cov_s > 0
         c = crop_of(m)
         if c is not None:
             small[int(f)] = c
@@ -359,22 +386,36 @@ def _merge_label(
     ]
 
 
+def _load(t: RawTrack) -> np.ndarray:
+    if t.load is None:
+        raise ValueError("this track keeps no full-resolution masks to assemble")
+    return t.load()
+
+
+def best_member(tracks: Sequence[RawTrack], own: Sequence[int], f: int, cfg: MergeConfig) -> int:
+    """Of a cluster's members present on frame `f` (`own`, priority order),
+    the one whose mask the object takes there: the first, or a bigger
+    member that contains it (its whole)."""
+    best = own[0]
+    for t in own[1:]:
+        mb, mt = tracks[best].small[f], tracks[t].small[f]
+        if mt.area > 1.5 * mb.area and mb.area:
+            if intersection(mb, mt) / mb.area >= cfg.dup_containment:
+                best = t
+    return best
+
+
 def assemble(tracks: Sequence[RawTrack], members: Sequence[int], cfg: MergeConfig) -> np.ndarray:
     """One full-resolution (T, H, W) uint8 stack for a cluster (members in
     priority order, as `merge_tracks` returns them)."""
-    full = {t: tracks[t].load() for t in members}
+    full = {t: _load(tracks[t]) for t in members}
     first = full[members[0]]
     out = np.zeros(first.shape, np.uint8)
     for f in range(first.shape[0]):
         own = [t for t in members if f in tracks[t].small]
         if not own:
             continue
-        best = own[0]
-        for t in own[1:]:
-            mb, mt = tracks[best].small[f], tracks[t].small[f]
-            if mt.area > 1.5 * mb.area and mb.area:
-                if intersection(mb, mt) / mb.area >= cfg.dup_containment:
-                    best = t  # a bigger member that contains it: its whole
+        best = best_member(tracks, own, f, cfg)
         for t in own:
             if tracks[t].session == tracks[best].session:
                 out[f] |= (full[t][f] > 0).astype(np.uint8)
@@ -388,6 +429,7 @@ __all__ = [
     "MergeReport",
     "RawTrack",
     "assemble",
+    "best_member",
     "glitch_frames",
     "make_track",
     "merge_tracks",

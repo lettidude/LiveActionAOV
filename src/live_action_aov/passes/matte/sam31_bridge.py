@@ -171,6 +171,7 @@ class Sam31Track:
     src: int  # 0 = the whole frame, 1.. = tile number
     seed: int  # local seed frame of its session
     masks: list[Any]
+    session: int = 0  # 0 = the primary session (the plate on the first seed)
 
     def present(self) -> list[int]:
         return [k for k, m in enumerate(self.masks) if m.crop.size]
@@ -236,7 +237,9 @@ def run_sam31_small(
     plate in proxy mode) else from `frames`. `work_size` > 0: every clip
     SAM 3.1 sees (the frames, each tile) is shrunk to that long side first;
     its memory grows with objects x frames x clip size. Masks come back as
-    box crops on the frames' (h, w), never as whole-clip stacks."""
+    box crops on the frames' (h, w), never as whole-clip stacks. `seeds[0]`
+    is the primary seed: its session on the frames must work, any other
+    session SAM 3.1 fails on is logged and skipped."""
     from live_action_aov.passes.matte.boxmask import BoxMask
 
     n, h, w = int(frames.shape[0]), int(frames.shape[1]), int(frames.shape[2])
@@ -308,6 +311,16 @@ def run_sam31_small(
             res.get("seconds"),
             res.get("peak_vram_gb"),
         )
+        for ss in res.get("sessions", []):
+            if "skipped" in ss:
+                _log.warning(
+                    "SAM 3.1: '%s' session (src %s, seed frame %s) skipped (SAM 3.1 error: %s); "
+                    "the other sessions are used.",
+                    ss.get("concept"),
+                    ss.get("src"),
+                    ss.get("seed"),
+                    str(ss["skipped"])[-300:],
+                )
         out: list[Sam31Track] = []
         for o in res["objects"]:
             src = int(o.get("src", 0))
@@ -331,7 +344,16 @@ def run_sam31_small(
                     t = t if hw == wh else t.resized(wh)
                     m = BoxMask.from_crop((ph, pw), win[0] + t.y0, win[1] + t.x0, t.crop)
                     masks.append(m if (ph, pw) == (h, w) else m.resized((h, w)))
-            out.append(Sam31Track(str(o["concept"]), int(o["obj_id"]), src, int(o["seed"]), masks))
+            out.append(
+                Sam31Track(
+                    str(o["concept"]),
+                    int(o["obj_id"]),
+                    src,
+                    int(o["seed"]),
+                    masks,
+                    int(o.get("session", 0)),
+                )
+            )
         return out
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -429,6 +451,107 @@ def merge_duplicates(
     return out, merged
 
 
+def merge_sessions(
+    tracks: list[Sam31Track], cfg: Any
+) -> tuple[list[Sam31Track], Any, list[tuple[int, int, int]]]:
+    """The tracks of several sessions (seed frames, tiles) merged into one
+    track per object by `sam31_merge` (link across sessions, stitch
+    fragments, duplicates of comparable size, glitch frames dropped), on
+    box crops. Returns (merged tracks in output order, the merge report,
+    per merged track (frames its members saw, glitch frames among them,
+    frames it holds))."""
+    from live_action_aov.passes.matte import sam31_merge
+    from live_action_aov.passes.matte.boxmask import BoxMask
+
+    raw: list[Any] = []
+    keep: list[int] = []
+    for i, t in enumerate(tracks):
+        r = _raw_track(t, cfg)
+        if r is not None:
+            raw.append(r)
+            keep.append(i)
+    if not raw:
+        return [], sam31_merge.MergeReport(raw_tracks=len(tracks)), []
+    clusters, rep = sam31_merge.merge_tracks(raw, cfg)
+    out: list[Sam31Track] = []
+    frames: list[tuple[int, int, int]] = []
+    for members in clusters:
+        src = [tracks[keep[m]] for m in members]
+        first = src[0]
+        n = len(first.masks)
+        masks: list[Any] = []
+        for f in range(n):
+            own = [m for m in members if f in raw[m].small]
+            if not own:
+                masks.append(BoxMask(first.masks[0].shape))
+                continue
+            best = sam31_merge.best_member(raw, own, f, cfg)
+            parts = [tracks[keep[m]].masks[f] for m in own if raw[m].session == raw[best].session]
+            masks.append(_union(parts))
+        seen = set().union(*(set(t.present()) for t in src))
+        bad = set().union(*(set(raw[m].glitches) for m in members))
+        held = sum(1 for m in masks if m.crop.size)
+        frames.append((len(seen), len(bad), held))
+        out.append(
+            Sam31Track(
+                first.label,
+                first.obj_id,
+                min(t.src for t in src),
+                first.seed,
+                masks,
+                first.session,
+            )
+        )
+    return out, rep, frames
+
+
+def _raw_track(t: Sam31Track, cfg: Any) -> Any:
+    """`sam31_merge.make_track` for a track kept as box crops: glitch frames
+    out, the comparison copy at `cfg.work_width` (a mask too thin for it
+    keeps the pixels it touches)."""
+    from live_action_aov.passes.matte import sam31_merge
+
+    h, w = t.masks[0].shape
+    cov = np.array([float(m.sum()) for m in t.masks]) / float(h * w)
+    bad = sam31_merge.glitch_frames(cov, cfg.glitch_factor, cfg.glitch_min_jump, cfg.glitch_window)
+    s = min(1.0, cfg.work_width / float(w)) if cfg.work_width > 0 else 1.0
+    shape = (max(1, round(h * s)), max(1, round(w * s)))
+    small = {}
+    for k in t.present():
+        if k in bad:
+            continue
+        m = t.masks[k] if s >= 1.0 else t.masks[k].resized(shape)
+        if m.crop.size and m.crop.any():
+            y0, x0, _, _ = m.box
+            small[k] = sam31_merge.Crop(y0, x0, m.crop > 0)
+    if not small:
+        return None
+    return sam31_merge.RawTrack(t.label, t.session, t.seed, t.obj_id, None, small, bad)
+
+
+def _union(masks: list[Any]) -> Any:
+    """One BoxMask holding every mask of `masks` (same plate)."""
+    from live_action_aov.passes.matte.boxmask import BoxMask, union_box
+
+    if len(masks) == 1:
+        return masks[0]
+    shape = masks[0].shape
+    box = union_box(masks, 0, shape)
+    if box is None:
+        return BoxMask(shape)
+    y0, x0, y1, x1 = box
+    out = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    for m in masks:
+        if m.crop.size:
+            my0, mx0, my1, mx1 = m.box
+            np.maximum(
+                out[my0 - y0 : my1 - y0, mx0 - x0 : mx1 - x0],
+                m.crop.astype(np.uint8),
+                out=out[my0 - y0 : my1 - y0, mx0 - x0 : mx1 - x0],
+            )
+    return BoxMask.from_crop(shape, y0, x0, out)
+
+
 __all__ = [
     "Sam31Object",
     "Sam31Track",
@@ -436,6 +559,7 @@ __all__ = [
     "keep_object",
     "keep_small",
     "merge_duplicates",
+    "merge_sessions",
     "read_results",
     "run_sam31",
     "run_sam31_small",
