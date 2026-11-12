@@ -69,7 +69,7 @@ class MergeConfig:
     stitch_gap: int = 8
     glitch_factor: float = 6.0  # 0 = no glitch filter
     glitch_min_jump: float = 0.05
-    glitch_window: int = 8  # neighbouring frames either side; 0 = whole-track median
+    glitch_window: int = 0  # neighbouring frames either side; 0 = whole-track median
     dup_containment: float = 0.6
     dup_frames: float = 0.6
     dup_size_ratio: float = 0.5

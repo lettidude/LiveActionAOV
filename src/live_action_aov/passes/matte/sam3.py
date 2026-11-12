@@ -384,10 +384,11 @@ class SAM3MattePass(UtilityPass):
         # `sam31_tiles`: "on" = the plate's tiles each tracked as their own
         # zoomed clip too (opt-in: a big subject can come back as one
         # object per tile), "off".
-        # `sam31_work_size`: long side (px) of every clip SAM 3.1 sees, 0 = as
-        # the pass reads it (its memory grows with objects x frames x clip
-        # size; a full-res plate with a high object cap can outgrow the
-        # card). Floor: present
+        # `sam31_work_size`: long side (px) a clip SAM 3.1 sees is shrunk to
+        # when its long side is over `sam31_work_size_above` (big plates
+        # only: its memory grows with objects x frames x clip size, and a
+        # full-res big plate with a high object cap can outgrow the card;
+        # smaller input runs as is). 0 = never shrink. Floor: present
         # on `sam31_min_frames` frames, `min_object_px` tall and
         # `sam31_small_min_peak_coverage` of the frame.
         # `sam31_merge`: how the sessions' tracks become one per object.
@@ -408,6 +409,7 @@ class SAM3MattePass(UtilityPass):
         "sam31_seed_every": 40,
         "sam31_tiles": "off",
         "sam31_work_size": 1024,
+        "sam31_work_size_above": 1920,
         "sam31_small_min_peak_coverage": 0.0003,
         "sam31_merge": "auto",
         "sam31_merge_containment": 0.6,
@@ -419,7 +421,7 @@ class SAM3MattePass(UtilityPass):
         "sam31_stitch_gap": 8,  # 0 = no stitch
         "sam31_glitch_factor": 6.0,  # 0 = no glitch filter
         "sam31_glitch_min_jump": 0.05,
-        "sam31_glitch_window": 8,  # frames either side; 0 = whole-track median
+        "sam31_glitch_window": 0,  # frames either side; 0 = whole-track median
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -1034,7 +1036,7 @@ class SAM3MattePass(UtilityPass):
             stitch_gap=int(g("sam31_stitch_gap", 8) or 0),
             glitch_factor=float(g("sam31_glitch_factor", 6.0) or 0.0),
             glitch_min_jump=float(g("sam31_glitch_min_jump", 0.05)),
-            glitch_window=int(g("sam31_glitch_window", 8) or 0),
+            glitch_window=int(g("sam31_glitch_window", 0) or 0),
             dup_containment=float(g("sam31_merge_containment", 0.6)),
             dup_frames=float(g("sam31_merge_frames", 0.6) or 0.0),
             dup_size_ratio=float(g("sam31_merge_size_ratio", 0.5)),
@@ -1080,6 +1082,7 @@ class SAM3MattePass(UtilityPass):
             plate_frame=plate_frame,
             plate_hw=(dh, dw),
             work_size=int(self.params.get("sam31_work_size", 1024) or 0),
+            work_above=int(self.params.get("sam31_work_size_above", 1920) or 0),
             timeout_s=float(self.params.get("sam31_timeout_s", 3600)),
             checkpoint=str(self.params.get("sam31_checkpoint", "") or ""),
         )

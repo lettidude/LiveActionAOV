@@ -193,10 +193,11 @@ def tile_windows(h: int, w: int, grid: int, overlap: float) -> list[tuple[int, i
     return out
 
 
-def _fit(img: np.ndarray, long_side: int) -> np.ndarray:
-    """`img` shrunk to `long_side` px on its long side (as is if smaller or 0)."""
+def _fit(img: np.ndarray, long_side: int, above: int = 0) -> np.ndarray:
+    """`img` shrunk to `long_side` px on its long side when that side is
+    over `above` (and over `long_side`); as is otherwise, or with 0."""
     h, w = int(img.shape[0]), int(img.shape[1])
-    if long_side <= 0 or max(h, w) <= long_side:
+    if long_side <= 0 or max(h, w) <= max(long_side, above):
         return img
     import cv2
 
@@ -227,6 +228,7 @@ def run_sam31_small(
     plate_frame: Any = None,
     plate_hw: tuple[int, int] | None = None,
     work_size: int = 0,
+    work_above: int = 0,
     timeout_s: float = 3600.0,
     checkpoint: str = "",
 ) -> list[Sam31Track]:
@@ -235,8 +237,9 @@ def run_sam31_small(
     `tiles` ((y0, x0, y1, x1) on the plate, `plate_hw`) is tracked as its
     own zoomed-in clip. Tile frames come from `plate_frame(k)` (the original
     plate in proxy mode) else from `frames`. `work_size` > 0: every clip
-    SAM 3.1 sees (the frames, each tile) is shrunk to that long side first;
-    its memory grows with objects x frames x clip size. Masks come back as
+    SAM 3.1 sees (the frames, each tile) whose long side is over
+    `work_above` is shrunk to that long side first; its memory grows with
+    objects x frames x clip size. Masks come back as
     box crops on the frames' (h, w), never as whole-clip stacks. `seeds[0]`
     is the primary seed: its session on the frames must work, any other
     session SAM 3.1 fails on is logged and skipped."""
@@ -253,11 +256,11 @@ def run_sam31_small(
         for d in tdirs:
             d.mkdir()
         for i, f in enumerate(frames):
-            _save_jpg(_fit(f, work_size), fdir / f"{i:05d}.jpg")
+            _save_jpg(_fit(f, work_size, work_above), fdir / f"{i:05d}.jpg")
             if tiles:
                 src = np.asarray(plate_frame(i), np.float32) if plate_frame is not None else f
                 for d, (y0, x0, y1, x1) in zip(tdirs, tiles, strict=True):
-                    _save_jpg(_fit(src[y0:y1, x0:x1], work_size), d / f"{i:05d}.jpg")
+                    _save_jpg(_fit(src[y0:y1, x0:x1], work_size, work_above), d / f"{i:05d}.jpg")
         cmd = [
             python,
             "-I",

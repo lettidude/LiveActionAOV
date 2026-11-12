@@ -242,6 +242,7 @@ def test_pass_small_objects_keeps_small_people_and_merges(monkeypatch: pytest.Mo
     p.run_shot(_Reader(frames), frame_range=(1, N))
     assert calls["seeds"] == [N // 2, 0, N - 1] and calls["max_objects"] == 64
     assert calls["tiles"] == [] and calls["work_size"] == 1024  # tiles: opt-in only
+    assert calls["work_above"] == 1920
     hard = next(iter(p.emit_artifacts()["sam3_hard_masks"].values()))
     assert len(hard) == 2  # small person + hero; duplicate merged, speck dropped
     heights = sorted(int(np.flatnonzero(d["stack"][10].any(1)).size) for d in hard.values())
@@ -341,6 +342,15 @@ def test_work_size_zero_or_bigger_keeps_frames() -> None:
     img = np.zeros((40, 60, 3), np.float32)
     assert sam31_bridge._fit(img, 0) is img and sam31_bridge._fit(img, 60) is img
     assert sam31_bridge._fit(img, 30).shape == (20, 30, 3)
+
+
+def test_work_size_leaves_input_up_to_the_threshold_untouched() -> None:
+    """A 1920 proxy runs as is; only bigger clips (4K) are shrunk."""
+    hd = np.zeros((108, 192, 3), np.float32)  # stands for 1920 x 1080
+    big = np.zeros((216, 410, 3), np.float32)  # stands for a 4K plate
+    assert sam31_bridge._fit(hd, 102, above=192) is hd
+    assert sam31_bridge._fit(big, 102, above=192).shape[1] == 102
+    assert sam31_bridge._fit(hd, 102, above=0).shape[1] == 102  # no threshold: as before
 
 
 def test_small_floor_of_a_tile_track_is_relative_to_its_tile() -> None:
@@ -528,3 +538,7 @@ def test_pass_max_seeds_several_frames_without_tiles_and_merges_tracks(
     hard = next(iter(p.emit_artifacts()["sam3_hard_masks"].values()))
     held = sorted(int(d["stack"].reshape(N, -1).any(1).sum()) for d in hard.values())
     assert held == [N - 14, N]  # the hero holds the whole clip, the late entrant is kept
+
+
+def test_glitch_rule_defaults_to_the_whole_track_median() -> None:
+    assert SAM3MattePass({})._sam31_merge_config().glitch_window == 0
