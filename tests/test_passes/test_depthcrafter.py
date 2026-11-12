@@ -60,7 +60,8 @@ def _varying_frames(n: int, h: int = 16, w: int = 24) -> list[np.ndarray]:
 def test_license_is_noncommercial_gated() -> None:
     lic = DepthCrafterPass.declared_license()
     assert lic.commercial_use is False
-    assert "SVD" in lic.spdx
+    # Tencent's own licence (research only) covers code and weights.
+    assert lic.spdx == "LicenseRef-DepthCrafter-Tencent-NC"
     assert "Stable Video Diffusion" in lic.notes
 
 

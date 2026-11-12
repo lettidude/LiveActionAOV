@@ -63,7 +63,7 @@ def _flat_frames(n: int, h: int = 16, w: int = 24) -> list[np.ndarray]:
 def test_license_is_noncommercial_gated() -> None:
     lic = NormalCrafterPass.declared_license()
     assert lic.commercial_use is False
-    assert "SVD" in lic.spdx
+    assert lic.spdx == "MIT+Apache-2.0+SVD-Community"
     assert "Stable Video Diffusion" in lic.notes
 
 

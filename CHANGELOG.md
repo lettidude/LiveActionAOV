@@ -39,6 +39,9 @@ uses [semantic versioning](https://semver.org/).
   detail.
 
 ### Changed
+- **The command line's default matte engine is now ViTMatte** (`run-shot --refiner`, used by the
+  `matte` pass name), the same engine the app uses without ComfyUI. RVM is still there:
+  `--refiner rvm_refiner`.
 - **Every camera now gets a GOOD / WEAK / FAILED verdict**, the COLMAP one and the rotation-only one
   included, like the fallback camera already had: it shows in the GUI, in the Nuke camera's label and
   in `liveaov qc`, and a camera that only rotates is flagged NODAL. The Gaussian splat skips a NODAL
@@ -71,6 +74,11 @@ uses [semantic versioning](https://semver.org/).
   not MIT: its mattes can be delivered, its code must not ship inside a closed bundle.
   **Depth Anything V2 Base** and **Video Depth Anything Base / Large** are CC-BY-NC-4.0: the passes
   now load the Apache-2.0 Small models only. The README has the full table.
+- **Corrected licence labels** in the app's Passes tooltips, the CLI help, the EXR licence stamp and
+  the docs: RAFT is BSD-3-Clause; RVM is GPL-3.0, not MIT; DepthCrafter
+  is under Tencent's research-only licence; Depth Pro under Apple's ML Research licence; NormalCrafter
+  is MIT / Apache-2.0 on top of Stable Video Diffusion (still marked NC); ViTMatte's weights are
+  Apache-2.0. Nothing changes in what runs by default or in what is marked NC.
 - **An object LTX does not see as foreground no longer gets an empty matte** (a car, a prop): it falls
   back to ViTMatte or SAM's edge, with a warning.
 - **Scenery no longer takes a hero slot.** The `matte.rgba` slots go to subjects first (people,
