@@ -77,6 +77,15 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
             True,
             ("video_depth_anything",),
         ),
+        # VDA Small's steadiness, fitted to MoGe-3's metres: Z in metres that
+        # does not move frame to frame, P from it with MoGe-3's FOV.
+        ModelEntry(
+            "video_depth_steady",
+            "Video Depth Anything, metres (steady, softer)",
+            "Apache-2.0 / MIT",
+            True,
+            ("video_depth_steady",),
+        ),
         ModelEntry(
             "depthcrafter",
             "DepthCrafter",
