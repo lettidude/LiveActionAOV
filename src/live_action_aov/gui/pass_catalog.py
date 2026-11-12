@@ -81,7 +81,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         # does not move frame to frame, P from it with MoGe-3's FOV.
         ModelEntry(
             "video_depth_steady",
-            "Video Depth Anything, metres (steady)",
+            "Video Depth Anything, metres (steady, softer)",
             "Apache-2.0 / MIT",
             True,
             ("video_depth_steady",),

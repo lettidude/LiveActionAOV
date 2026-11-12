@@ -7,10 +7,16 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Steady depth in metres.** New Depth choice *Video Depth Anything, metres (steady)*
+- **Steady depth in metres.** New Depth choice *Video Depth Anything, metres (steady, softer)*
   (`video_depth_steady`): the depth holds still from frame to frame like Video Depth Anything's,
   and is in metres like MoGe-3's, so `P` stays in metres too and matches `Z`. MoGe-3 depth stays
   available and is still the default; normals and the camera track are unchanged.
+  It is softer than MoGe-3: thin and distant detail is lost, so mattes stay the holdout.
+  MoGe-3's own per-frame depth comes along as a separate `moge` layer (`keep_moge_z`).
+  When a shot gives no trustworthy metres (dense smoke or fog, say), the pass delivers relative
+  depth instead, in the right near-to-far order, and says so in the run report; it also warns when
+  MoGe-3's own scale wanders through the shot. It maps to metres with a monotone curve that keeps the
+  far range (`fit: mono`, the default) or a straight line in disparity (`fit: affine`).
 - Video Depth Anything can use its metric Small weights (`metric: true`, Apache-2.0): `Z` in metres.
 - **Camera as USD.** Each camera solve also writes `camera/<shot>_v###.camera.usda` with the camera
   and a coloured point cloud, for Houdini, Maya, Blender, Unreal and Nuke's USD 3D system.

@@ -139,7 +139,7 @@ LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup
 
 The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (from the camera track when there is one), a stabilised metric scale, letterbox bars cropped before the model sees them, sky flagged in `depth.confidence`.
 
-When the depth has to hold still over time (a defocus, a fog, anything that reads `Z` on every frame), pick **Video Depth Anything, metres (steady)** in Depth: Video Depth Anything gives the steady shape, MoGe-3 gives the metres and the FOV, and `P` follows. Normals and the camera track keep using MoGe-3.
+When the depth has to hold still over time (a defocus, a fog, anything that reads `Z` on every frame), pick **Video Depth Anything, metres (steady, softer)** in Depth: Video Depth Anything gives the steady shape, MoGe-3 gives the metres and the FOV, and `P` follows. Normals and the camera track keep using MoGe-3. It is softer than MoGe-3 (thin and distant detail is lost, so mattes stay the holdout), MoGe-3's own depth comes along as a `moge` layer, and a shot with no trustworthy metres (dense smoke, say) gets relative depth, flagged in the run report.
 
 <p align="center">
   <img src="docs/img/geometry.gif" alt="Depth in metres, camera-space normals and world position on a dark handheld shot with two people" width="900">
