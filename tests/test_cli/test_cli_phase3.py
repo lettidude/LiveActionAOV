@@ -19,7 +19,7 @@ def test_matte_alias_expands_to_detector_plus_refiner() -> None:
     )
     # Detector first (deterministic expansion order), refiner second. The
     # DAG re-sorts, but the resolver's output order is stable here.
-    assert out == ["flow", "sam3_matte", "rvm_refiner"]
+    assert out == ["flow", "sam3_matte", "vitmatte_refiner"]
 
 
 def test_matte_alias_respects_detector_and_refiner_choice() -> None:
@@ -40,7 +40,7 @@ def test_matte_alias_deduplicates_with_explicit_passes() -> None:
         depth_backend="depth_anything_v2",
         normals_backend="dsine",
     )
-    assert out == ["sam3_matte", "rvm_refiner"]
+    assert out == ["sam3_matte", "vitmatte_refiner"]
 
 
 def test_plugins_list_includes_matte_backends() -> None:

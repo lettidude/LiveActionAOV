@@ -322,12 +322,12 @@ def run_shot(
         str,
         typer.Option(
             "--refiner",
-            help="Refiner for the semantic `matte` pass. Default: rvm_refiner "
-            "(GPL-3.0-only; its mattes are fine for paid work, the model is "
-            "fetched from its own repository). `matanyone2` (NTU-S-Lab-1.0) is "
-            "non-commercial.",
+            help="Refiner for the semantic `matte` pass. Default: vitmatte_refiner "
+            "(MIT+Apache-2.0, commercial OK). `rvm_refiner` (GPL-3.0-only; its "
+            "mattes are fine for paid work, the model is fetched from its own "
+            "repository). `matanyone2` (NTU-S-Lab-1.0) is non-commercial.",
         ),
-    ] = "rvm_refiner",
+    ] = "vitmatte_refiner",
     allow_noncommercial: Annotated[
         bool,
         typer.Option(
@@ -767,7 +767,7 @@ def _resolve_semantic_passes(
     depth_backend: str,
     normals_backend: str,
     matte_detector: str = "sam3_matte",
-    refiner: str = "rvm_refiner",
+    refiner: str = "vitmatte_refiner",
 ) -> list[str]:
     """Rewrite semantic names (`depth`, `normals`, `matte`) to real pass names.
 

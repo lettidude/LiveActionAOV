@@ -89,7 +89,7 @@ def test_real_sam3_plus_rvm_end_to_end(_integration_plate: Path) -> None:
     """The full commercial-safe matte pipeline runs and produces valid
     sidecar EXRs. Pixel-level correctness is upstream's job; we verify
     plumbing only."""
-    # `matte` alias expands to sam3_matte + rvm_refiner; both commercial-safe.
+    # `matte` + `--refiner rvm_refiner` -> sam3_matte + rvm_refiner (RVM is opt-in).
     result = runner.invoke(
         app,
         [
@@ -99,6 +99,8 @@ def test_real_sam3_plus_rvm_end_to_end(_integration_plate: Path) -> None:
             str(_integration_plate.parent / "out"),
             "--passes",
             "flow,matte",
+            "--refiner",
+            "rvm_refiner",
         ],
     )
     # Any non-zero exit is a plumbing failure we want to catch at release cut.

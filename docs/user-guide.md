@@ -52,7 +52,7 @@ Channels (11):
 liveaov metadata:
   matte/commercial       = "true"
   matte/detector         = "sam3_matte"
-  matte/refiner          = "rvm_refiner"
+  matte/refiner          = "vitmatte_refiner"
   matte/concepts         = "person,vehicle"
   matte/hero_r/label     = "person"
   matte/hero_r/track_id  = 3

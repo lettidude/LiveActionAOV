@@ -39,6 +39,9 @@ uses [semantic versioning](https://semver.org/).
   detail.
 
 ### Changed
+- **The command line's default matte engine is now ViTMatte** (`run-shot --refiner`, used by the
+  `matte` pass name), the same engine the app uses without ComfyUI. RVM is still there:
+  `--refiner rvm_refiner`.
 - **Every camera now gets a GOOD / WEAK / FAILED verdict**, the COLMAP one and the rotation-only one
   included, like the fallback camera already had: it shows in the GUI, in the Nuke camera's label and
   in `liveaov qc`, and a camera that only rotates is flagged NODAL. The Gaussian splat skips a NODAL
@@ -72,7 +75,7 @@ uses [semantic versioning](https://semver.org/).
   **Depth Anything V2 Base** and **Video Depth Anything Base / Large** are CC-BY-NC-4.0: the passes
   now load the Apache-2.0 Small models only. The README has the full table.
 - **Corrected licence labels** in the app's Passes tooltips, the CLI help, the EXR licence stamp and
-  the docs: RAFT is BSD-3-Clause; RVM (the CLI's default refiner) is GPL-3.0, not MIT; DepthCrafter
+  the docs: RAFT is BSD-3-Clause; RVM is GPL-3.0, not MIT; DepthCrafter
   is under Tencent's research-only licence; Depth Pro under Apple's ML Research licence; NormalCrafter
   is MIT / Apache-2.0 on top of Stable Video Diffusion (still marked NC); ViTMatte's weights are
   Apache-2.0. Nothing changes in what runs by default or in what is marked NC.
