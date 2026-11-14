@@ -7,6 +7,11 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The camera check, frame by frame.** The camera `.json` now lists every frame of the solve under
+  `quality.frames`: the held-out error on that frame (plate pixels, `heldout_median_px`), how many
+  points it was measured on (`n_points`) and `ok` (the camera has a pose there and the check could
+  test it). A few bad frames inside a camera that is GOOD overall show up here. The GOOD / WEAK /
+  FAILED verdict and everything else in the camera files are unchanged.
 - **Camera as USD.** Each camera solve also writes `camera/<shot>_v###.camera.usda` with the camera
   and a coloured point cloud, for Houdini, Maya, Blender, Unreal and Nuke's USD 3D system.
 - **A point cloud you can read.** With a depth pass in the run, the point cloud in the Nuke script

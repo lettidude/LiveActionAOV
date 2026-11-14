@@ -68,6 +68,7 @@ from live_action_aov.io.camera_schema import (
     Extrinsic,
     Intrinsics,
     Quality,
+    RefereeFrame,
     ScenePoint,
     ShotRef,
 )
@@ -169,6 +170,9 @@ class PyColmapCameraPass(UtilityPass):
         "pnp_good_frac": 0.0011,
         "pnp_weak_frac": 0.0027,
         "pnp_keep_failed": True,
+        # Per-frame referee in the camera json (`quality.frames`): a frame is
+        # `ok` when the referee tested it with at least this many points.
+        "referee_min_points": 20,
         "pnp_fov_x_deg": None,  # horizontal FOV of the plate; None = MoGe-3's estimate
         "pnp_max_corners": 6000,
         # FOV sweep x0.85..x1.15 scored on held-out points (skipped when
@@ -1476,6 +1480,7 @@ def build_solve_from_reconstruction(
     total = len(frame_list)
     quality = _quality(per_frame_err, per_frame_count, len(registered), total, intr, extrinsics)
     _apply_verdict(quality, verdict, px_scale, total, metric=False)
+    quality.frames = referee_frames(verdict, frame_list, registered, px_scale, params)
     return CameraSolve(
         shot=ShotRef(),
         backend=BackendInfo(
@@ -1626,6 +1631,7 @@ def build_solve_from_nodal(
     registered = {e.frame for e in extrinsics}
     quality = _quality(per_err, per_count, len(registered), len(frame_list), intr, extrinsics)
     _apply_verdict(quality, verdict, scale, len(frame_list), metric=False)
+    quality.frames = referee_frames(verdict, frame_list, registered, scale, params)
     return CameraSolve(
         shot=ShotRef(),
         backend=BackendInfo(
@@ -1718,6 +1724,7 @@ def build_solve_from_pnp(
     )
     if verdict is not None:
         _apply_verdict(quality, verdict, scale, len(frame_list), metric=True)
+        quality.frames = referee_frames(verdict, frame_list, registered, scale, params)
     return CameraSolve(
         shot=ShotRef(),
         backend=BackendInfo(
@@ -1801,6 +1808,36 @@ def _apply_verdict(
     quality.verdict = verdict.verdict
     quality.heldout_error_px = held_plate
     quality.nodal = bool(verdict.nodal)
+
+
+def referee_frames(
+    verdict: Any,
+    frame_list: list[tuple[int, str]],
+    posed: set[int],
+    scale: float,
+    params: dict[str, Any],
+) -> dict[int, RefereeFrame]:
+    """`Quality.frames`: the referee's per-frame result (`verdict`, a
+    `pnp.PnPVerdict` keyed by local frame index at solve resolution) for
+    every frame of `frame_list`, keyed by plate frame, in plate px (solve px
+    x `scale`). `posed`: the plate frames the written camera has a pose on;
+    a frame the referee measured but the camera left out (an unreliable PnP
+    frame) keeps its number and is not `ok`. A frame is `ok` with a pose, a
+    finite error and at least `referee_min_points` points."""
+    min_points = int(params.get("referee_min_points", 20))
+    errs = getattr(verdict, "frame_heldout_px", {}) or {}
+    counts = getattr(verdict, "frame_points", {}) or {}
+    out: dict[int, RefereeFrame] = {}
+    for k, (frame, _name) in enumerate(frame_list):
+        e = errs.get(k)
+        n = int(counts.get(k, 0))
+        px = round(float(e) * scale, 3) if e is not None and math.isfinite(e) else None
+        out[int(frame)] = RefereeFrame(
+            heldout_median_px=px,
+            n_points=n,
+            ok=bool(frame in posed and px is not None and n >= min_points),
+        )
+    return out
 
 
 def _quality(

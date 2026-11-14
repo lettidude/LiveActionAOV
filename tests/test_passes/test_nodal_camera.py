@@ -135,6 +135,10 @@ def test_nodal_camera_solve_sits_at_the_origin_at_plate_res() -> None:
     assert solve.quality.heldout_error_px == pytest.approx(2 * verdict.heldout_px)
     assert solve.quality.nodal is True  # the splat gate reads this, not the mapper
     assert solve.quality.warnings[0].startswith("GOOD CANDIDATE - NODAL: held-out error")
+    # ... and frame by frame, in plate px.
+    fr = solve.quality.frames
+    assert sorted(fr) == [f for f, _ in frames] and all(x.ok for x in fr.values())
+    assert fr[1002].heldout_median_px == pytest.approx(2 * verdict.frame_heldout_px[1], abs=1e-3)
 
 
 def test_a_nodal_camera_without_a_verdict_is_impossible() -> None:

@@ -486,6 +486,10 @@ def test_run_shot_then_emit_sidecars(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert q.heldout_error_px is not None and math.isfinite(q.heldout_error_px)
     assert q.warnings[0].startswith(f"{q.verdict} CANDIDATE")
     assert f"{q.verdict} CANDIDATE" in paths["camera_nk"].read_text(encoding="utf-8")
+    # The referee frame by frame, every frame of the shot: 1004 has no pose.
+    assert sorted(q.frames) == [1001, 1002, 1003, 1004]
+    assert not q.frames[1004].ok
+    assert any(fr.heldout_median_px is not None for fr in q.frames.values())
 
 
 def test_run_shot_rejects_under_three_frames():
