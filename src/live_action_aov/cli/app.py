@@ -401,6 +401,15 @@ def run_shot(
             "that many frames; `off` = always one go.",
         ),
     ] = "auto",
+    stability_qc: Annotated[
+        bool,
+        typer.Option(
+            "--stability-qc",
+            help="Add a stability block to the run report: how much the delivered depth "
+            "moves from frame to frame on static pixels and on depth edges. Needs the flow "
+            "pass; reads the written EXRs again. The EXRs do not change.",
+        ),
+    ] = False,
 ) -> None:
     """Run passes on the EXR sequence in `folder` and write sidecar EXRs."""
     raw_names = [p.strip() for p in passes.split(",") if p.strip()]
@@ -477,6 +486,7 @@ def run_shot(
             folder=folder,
             proxy_long_edge=proxy_long_edge,
             window_frames=window,
+            stability_qc=stability_qc,
             apply_display_transform=display_transform,
             colorspace=colorspace or "auto",
             sequence_pattern=pattern,

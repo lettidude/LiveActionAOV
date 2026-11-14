@@ -17,6 +17,10 @@ uses [semantic versioning](https://semver.org/).
   depth instead, in the right near-to-far order, and says so in the run report; it also warns when
   MoGe-3's own scale wanders through the shot. It maps to metres with a monotone curve that keeps the
   far range (`fit: mono`, the default) or a straight line in disparity (`fit: affine`).
+- **Stability check in the run report** (`Shot.stability_qc`, CLI `--stability-qc`, off by default):
+  how much the delivered depth moves from frame to frame, on still background and on depth edges,
+  both as a relative change and as a share of the shot's depth range, plus whole-frame pumping.
+  Needs the flow pass and reads the written EXRs again; the EXRs themselves do not change.
 - Video Depth Anything can use its metric Small weights (`metric: true`, Apache-2.0): `Z` in metres.
 - **Camera as USD.** Each camera solve also writes `camera/<shot>_v###.camera.usda` with the camera
   and a coloured point cloud, for Houdini, Maya, Blender, Unreal and Nuke's USD 3D system.
