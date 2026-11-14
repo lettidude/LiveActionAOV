@@ -337,6 +337,19 @@ class RunReportBuilder:
             _log.debug("run report: declare %s failed", name, exc_info=True)
             self.passes[name] = PassReport(name=name)
 
+    def stability(
+        self, pass_name: str, channel: str, metrics: dict[str, float], warnings: list[str]
+    ) -> None:
+        """The stability QC block of one delivered channel: under
+        `summaries["stability"][channel]`, its warnings on the pass."""
+        sec = self.summaries.setdefault("stability", {})
+        sec[channel] = {"pass": pass_name, **metrics}
+        pr = self.passes.get(pass_name)
+        if pr is not None:
+            for w in warnings:
+                if w not in pr.warnings:
+                    pr.warnings.append(w)
+
     def pass_started(self, name: str) -> None:
         self._pass_t0[name] = time.time()
         self.ram.window_start()
