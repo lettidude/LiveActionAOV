@@ -53,7 +53,9 @@ import numpy as np
 
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -75,6 +77,7 @@ class ScreenPullPass(UtilityPass):
             "— commercial-safe with no provenance caveats."
         ),
     )
+    device_support = DeviceSupport(devices=("cpu",), mac=MacSupport.CPU)
     pass_type = PassType.SEMANTIC
     temporal_mode = TemporalMode.VIDEO_CLIP  # run_shot streams frame-by-frame
     # SCENE-LINEAR input — see module docstring. The executor recognises

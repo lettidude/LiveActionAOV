@@ -43,7 +43,9 @@ import numpy as np
 
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -210,6 +212,11 @@ class RVMRefinerPass(UtilityPass):
             "`liveaov/matte/commercial = true` so downstream QC can "
             "distinguish them from MatAnyone 2 (NTU-S-Lab-1.0, NC) deliverables."
         ),
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="fp16 is CUDA-only.",
     )
     pass_type = PassType.SEMANTIC
     temporal_mode = TemporalMode.VIDEO_CLIP

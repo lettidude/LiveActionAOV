@@ -38,7 +38,11 @@ from typing import Any
 
 import numpy as np
 
-from live_action_aov.core.pass_base import License
+from live_action_aov.core.pass_base import (
+    DeviceSupport,
+    License,
+    MacSupport,
+)
 from live_action_aov.core.runtime_env import load_local_first
 from live_action_aov.io.channels import (
     CH_MATTE_A,
@@ -69,6 +73,11 @@ class BiRefNetRefinerPass(RVMRefinerPass):
             "BiRefNet' (DIS5K) is the most provenance-clean fallback but gives "
             "harder edges. Soft alpha, per-frame — pair with temporal_smooth."
         ),
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="fp16 is CUDA-only.",
     )
 
     # Per-frame model → flicker is possible → let the flow-guided smoother

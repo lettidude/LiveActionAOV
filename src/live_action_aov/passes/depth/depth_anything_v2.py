@@ -45,7 +45,9 @@ import numpy as np
 
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -74,6 +76,11 @@ class DepthAnythingV2Pass(UtilityPass):
             "CC-BY-NC-4.0 and must be loaded through a separate non-commercial "
             "pass — this pass refuses those identifiers."
         ),
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="fp16 is CUDA-only.",
     )
     pass_type = PassType.GEOMETRIC
     temporal_mode = TemporalMode.PER_FRAME

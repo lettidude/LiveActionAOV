@@ -39,7 +39,9 @@ import numpy as np
 
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -66,6 +68,11 @@ class RAFTPass(UtilityPass):
         commercial_use=True,
         commercial_tool_resale=True,
         notes="RAFT (Teed & Deng 2020). Weights ship with torchvision under BSD-3.",
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="fp16 is CUDA-only.",
     )
     pass_type = PassType.MOTION
     temporal_mode = TemporalMode.PAIR

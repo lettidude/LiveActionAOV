@@ -31,7 +31,11 @@ from typing import Any
 
 import numpy as np
 
-from live_action_aov.core.pass_base import License
+from live_action_aov.core.pass_base import (
+    DeviceSupport,
+    License,
+    MacSupport,
+)
 from live_action_aov.core.runtime_env import load_local_first
 from live_action_aov.passes.flow.raft import RAFTPass, _linear_to_display
 
@@ -50,6 +54,11 @@ class MegaFlowPass(RAFTPass):
             "MegaFlow code + weights Apache-2.0 (ETH CVG, 2026); frozen DINOv2 "
             "ViT-L/14 backbone (Apache-2.0, Meta); torchvision ResNet-34 stem (BSD-3)."
         ),
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="bf16 / fp16 autocast is CUDA-only.",
     )
 
     DEFAULT_PARAMS: dict[str, Any] = {

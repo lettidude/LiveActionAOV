@@ -81,7 +81,11 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from live_action_aov.core.pass_base import License
+from live_action_aov.core.pass_base import (
+    DeviceSupport,
+    License,
+    MacSupport,
+)
 from live_action_aov.core.work_dir import make_work_dir
 from live_action_aov.io.channels import CH_MATTE_A, CH_MATTE_B, CH_MATTE_G, CH_MATTE_R
 from live_action_aov.passes.matte.boxmask import stack_box
@@ -146,6 +150,11 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
             "USD 10M annual revenue; above that a commercial licence from "
             "Lightricks is required. Weights are not bundled."
         ),
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="LTX runs in ComfyUI, which can be another machine; here only the ViTMatte trimap and fallback run.",
     )
 
     # Video model, temporally coherent by itself - but cross-faded chunks

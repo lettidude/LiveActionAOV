@@ -45,7 +45,9 @@ import numpy as np
 
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -77,6 +79,10 @@ class MoGe3Pass(UtilityPass):
         commercial_use=True,
         commercial_tool_resale=True,
         notes="MoGe-3 (Microsoft, 2026). MIT code + weights; DINOv2 backbone Apache-2.0.",
+    )
+    device_support = DeviceSupport(
+        mac=MacSupport.UNAVAILABLE,
+        mac_notes="Its sparse refiner (FlexGEMM) needs Triton, which has no Mac build.",
     )
     pass_type = PassType.GEOMETRIC
     temporal_mode = TemporalMode.PER_FRAME

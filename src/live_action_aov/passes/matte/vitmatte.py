@@ -52,7 +52,11 @@ from typing import Any
 
 import numpy as np
 
-from live_action_aov.core.pass_base import License
+from live_action_aov.core.pass_base import (
+    DeviceSupport,
+    License,
+    MacSupport,
+)
 from live_action_aov.core.runtime_env import load_local_first
 from live_action_aov.io.channels import (
     CH_MATTE_A,
@@ -77,6 +81,11 @@ class ViTMatteRefinerPass(RVMRefinerPass):
             "construction. Trained on Composition-1K (Adobe DIM research "
             "dataset) — same provenance bar as the BiRefNet fine-tunes."
         ),
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="fp16 is CUDA-only.",
     )
 
     # Per-frame model → flicker possible → smoothable (same as BiRefNet).

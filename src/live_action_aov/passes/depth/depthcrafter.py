@@ -35,7 +35,9 @@ import numpy as np
 
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -62,6 +64,7 @@ class DepthCrafterPass(UtilityPass):
             "before any commercial deployment."
         ),
     )
+    device_support = DeviceSupport(mac=MacSupport.UNAVAILABLE, mac_notes="fp16 video diffusion.")
     pass_type = PassType.GEOMETRIC
     temporal_mode = TemporalMode.VIDEO_CLIP
     temporal_window = 110

@@ -54,7 +54,9 @@ from typing import Any
 import numpy as np
 
 from live_action_aov.core.pass_base import (
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -229,6 +231,11 @@ class SAM3MattePass(UtilityPass):
             "but military / ITAR applications are prohibited. Consult the "
             "upstream LICENSE before any defense-adjacent deployment."
         ),
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="SAM 3 runs in this process (bf16 is CUDA-only). The SAM 3.1 detector runs in its own CUDA environment: not on Mac.",
     )
     pass_type = PassType.SEMANTIC
     temporal_mode = TemporalMode.VIDEO_CLIP
