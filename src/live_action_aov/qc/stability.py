@@ -51,7 +51,10 @@ DEFAULTS: dict[str, float] = {
     "min_round_trip": 0.5,  # warn below this share of round-trip-valid pixels
     "sky_m": 5000.0,  # depths at or beyond this are sky fill, not measured
 }
-_SAMPLES = 50_000  # pixels kept per pair and set (deterministic stride)
+#: Samples kept per pixel set over the WHOLE shot (float32), split evenly over
+#: the frame pairs, so memory does not grow with the clip length.
+_SAMPLES_TOTAL = 2_000_000
+_SAMPLES_MIN = 500  # per pair, however long the shot
 
 Frame = dict[str, np.ndarray]
 
@@ -83,8 +86,8 @@ def _objects(f: Frame, kernel: np.ndarray) -> np.ndarray:
     return cv2.dilate(u, kernel).astype(bool)
 
 
-def _sub(a: np.ndarray) -> np.ndarray:
-    return a[:: max(1, a.size // _SAMPLES)]
+def _sub(a: np.ndarray, cap: int) -> np.ndarray:
+    return a[:: max(1, a.size // cap)].astype(np.float32)
 
 
 def frozen_range(frames: list[int], get: Callable[[int], Frame], sky: float) -> tuple[float, float]:
@@ -132,6 +135,7 @@ def depth_stability(
     acc: dict[str, list[np.ndarray]] = {k: [] for k in ("s_dlnz", "s_rng", "e_dlnz", "e_rng")}
     jitter, rt_share, edge_share, static_share = [], [], [], []
     pairs = 0
+    cap = max(_SAMPLES_MIN, _SAMPLES_TOTAL // max(1, len(frames) - 1))
     prev = first
     _zsample(first)
     for t, t1 in pairwise(frames):
@@ -160,19 +164,20 @@ def depth_stability(
         edge_share.append(float(edge.mean()))
         if static.sum() >= 1000:
             d = np.log(zb[static]) - np.log(za[static])
-            acc["s_dlnz"].append(_sub(np.abs(d)))
-            acc["s_rng"].append(_sub(np.abs(zb[static] - za[static])))
+            acc["s_dlnz"].append(_sub(np.abs(d), cap))
+            acc["s_rng"].append(_sub(np.abs(zb[static] - za[static]), cap))
             jitter.append(float(abs(np.median(d))))
             pairs += 1
         if band.sum() >= 1000:
-            acc["e_dlnz"].append(_sub(np.abs(np.log(zb[band]) - np.log(za[band]))))
-            acc["e_rng"].append(_sub(np.abs(zb[band] - za[band])))
+            acc["e_dlnz"].append(_sub(np.abs(np.log(zb[band]) - np.log(za[band])), cap))
+            acc["e_rng"].append(_sub(np.abs(zb[band] - za[band]), cap))
 
     pooled = np.concatenate(zvals) if zvals else np.zeros(0)
     rng = float(np.subtract(*np.percentile(pooled, [99.0, 1.0]))) if pooled.size else 0.0
     out: dict[str, float] = {
         "pairs": float(pairs),
-        "range_m": round(rng, 4),
+        # In Z's own units: metres for a metric depth, arbitrary for a relative one.
+        "range_z": round(rng, 4),
         "round_trip_valid": round(float(np.median(rt_share)) * 100, 2) if rt_share else 0.0,
         "static_share": round(float(np.median(static_share)) * 100, 2) if static_share else 0.0,
         "edge_share": round(float(np.median(edge_share)) * 100, 2) if edge_share else 0.0,

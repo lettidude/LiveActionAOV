@@ -35,7 +35,7 @@ def test_a_still_depth_reads_zero_and_the_range_is_frozen_over_the_clip() -> Non
     assert not w
     assert m["pairs"] == 4.0 and m["static_dlnz_med"] == 0.0 and m["jitter_med"] == 0.0
     lo, hi = qc.frozen_range(list(clip), clip.__getitem__, 5000.0)
-    assert m["range_m"] == pytest.approx(hi - lo, rel=1e-6)
+    assert m["range_z"] == pytest.approx(hi - lo, rel=1e-6)
     assert lo == pytest.approx(2.0) and hi == pytest.approx(10.0)
 
 
@@ -95,4 +95,22 @@ def test_sky_and_invalid_pixels_are_not_measured() -> None:
         fr["Z"][10:20] = float(f)  # junk under zero confidence
     m, _ = qc.depth_stability(list(clip), clip.__getitem__)
     assert m["static_dlnz_p95"] == 0.0
-    assert m["range_m"] < 10.0
+    assert m["range_z"] < 10.0
+
+
+def test_samples_stay_bounded_on_a_long_shot(monkeypatch) -> None:
+    kept: list[int] = []
+    real = qc._sub
+
+    def spy(a, cap):
+        out = real(a, cap)
+        kept.append(out.size)
+        return out
+
+    monkeypatch.setattr(qc, "_sub", spy)
+    monkeypatch.setattr(qc, "_SAMPLES_TOTAL", 4000)
+    monkeypatch.setattr(qc, "_SAMPLES_MIN", 10)
+    clip = _clip(41, noise=0.01)
+    qc.depth_stability(list(clip), clip.__getitem__)
+    # 40 pairs share 4000 samples per set: about 100 per pair, whatever the frame size.
+    assert kept and max(kept) <= 4000 // 40 * 1.1
