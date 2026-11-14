@@ -152,6 +152,11 @@ Paths are relative to the script, so a whole version folder can be copied to ano
 
 Nuke caps a script at **1023 channels in total** (every layer of every Read). One Read with 600 masks, 600 Shuffles and the every-mask matte loads and checks fine in Nuke 16; keep a run (plus whatever else is in your script) under ~1000 channels.
 
+The camera's GOOD / WEAK / FAILED verdict is for the whole shot. `camera/<shot>_v###.camera.json` also has it frame by
+frame under `quality.frames`, keyed by plate frame: `heldout_median_px` (the error of points the camera was not fitted
+to, at plate resolution; `null` where the frame could not be tested), `n_points` and `ok` (`false` where the camera has
+no pose or too few points to test). Sort by `heldout_median_px` to find the frames to look at first.
+
 The Gaussian splat itself (`splat/<shot>_v###.splat.ply`) is for splat-capable tools; in Nuke 16 use the `splat` EXR layer (background, coverage, depth), which is already rendered through the shot camera.
 
 ## Nuke plugin — UtilityRelight

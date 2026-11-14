@@ -135,6 +135,10 @@ def test_fallback_recovers_the_camera_in_metres(tmp_path: Path) -> None:
     assert solve.conventions.units == "metres"
     # Points in front of the camera = -Z in the Y-up world.
     assert all(p.xyz[2] < 0 for p in solve.points)
+    # The referee frame by frame: every frame tested on held-out points, at plate px.
+    fr = q.frames
+    assert sorted(fr) == [1001 + t for t in range(N_FR)] and all(x.ok for x in fr.values())
+    assert max(x.heldout_median_px or 0.0 for x in fr.values()) < 0.0011 * 2 * W
 
 
 def test_a_failed_camera_is_labelled_or_refused(tmp_path: Path) -> None:

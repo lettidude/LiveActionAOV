@@ -65,6 +65,8 @@ class PnPSolve:
     frame_inliers: dict[int, int] = field(default_factory=dict)
     # median reprojection error of the held-out points, solve res
     frame_heldout_px: dict[int, float] = field(default_factory=dict)
+    # how many held-out points `frame_heldout_px` is the median of
+    frame_heldout_n: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -75,6 +77,10 @@ class PnPVerdict:
     travel_m: float  # extent of the camera centres over the reliable frames
     depth_m: float  # median anchor depth of the static points
     nodal: bool  # travel < `nodal_parallax` x depth
+    # Per posed frame (local index): the held-out median (solve res, inf when
+    # untestable) and the number of points it is over. Not used by the verdict.
+    frame_heldout_px: dict[int, float] = field(default_factory=dict)
+    frame_points: dict[int, int] = field(default_factory=dict)
 
     @property
     def parallax(self) -> float:
@@ -255,6 +261,7 @@ def solve_poses(
             sol.frame_error_px[t] = 0.0
             sol.frame_inliers[t] = int(vis.sum())
             sol.frame_heldout_px[t] = 0.0
+            sol.frame_heldout_n[t] = int((vis & held).sum())
             continue
         fit = vis & ~held
         if fit.sum() < max(min_inliers, 6):
@@ -282,6 +289,7 @@ def solve_poses(
         sol.frame_error_px[t] = float(np.median(err))
         sol.frame_inliers[t] = int(len(inl))
         test = vis & held
+        sol.frame_heldout_n[t] = int(test.sum())
         if test.any():
             hp, _ = cv2.projectPoints(sol.points[test].astype(np.float64), rvec, tvec, sol.K, None)
             herr = np.linalg.norm(hp[:, 0] - tracks[t, test], axis=1)
@@ -326,6 +334,8 @@ def assess(
         travel_m=travel,
         depth_m=depth,
         nodal=travel < nodal_parallax * depth,
+        frame_heldout_px=errs,
+        frame_points={t: int(sol.frame_heldout_n.get(t, 0)) for t in errs},
     )
 
 
@@ -336,6 +346,7 @@ def heldout_from_poses(
     anchor: int,
     min_views: int = 3,
     inf_tol_px: float = 0.5,
+    counts: dict[int, int] | None = None,
 ) -> tuple[dict[int, float], np.ndarray]:
     """Held-out check of FIXED poses (an SfM camera) against independent
     tracks (T, N, 2), NaN where lost. `poses` maps a local frame index to
@@ -352,10 +363,13 @@ def heldout_from_poses(
     the camera) and the triangulated points (N, 3) in the anchor camera's
     frame: NaN where a point could not be triangulated, z = inf for a point
     at infinity, so that `assess` reads the depth and the nodal flag from
-    them."""
+    them. `counts`, when given, is filled with the number of points tested
+    on each frame (0 where none)."""
     T, N = int(tracks.shape[0]), int(tracks.shape[1])
     frames = sorted(t for t in poses if 0 <= t < T)
     errs = {t: float("inf") for t in frames}
+    if counts is not None:
+        counts.update(dict.fromkeys(frames, 0))
     pts = np.full((N, 3), np.nan)
     if N == 0 or len(frames) < 2 or anchor not in poses:
         return errs, pts
@@ -431,6 +445,8 @@ def heldout_from_poses(
         e = np.linalg.norm(uv - tracks[t, ok].astype(np.float64), axis=1)
         e[~front] = np.inf
         errs[t] = float(np.median(e))
+        if counts is not None:
+            counts[t] = int(ok.sum())
 
     ok = cnt >= need
     if ok.any():
@@ -459,7 +475,8 @@ def assess_poses(
     """`assess` for FIXED poses (an SfM camera): the held-out errors come
     from `heldout_from_poses`, the travel from `poses`, the depth from the
     triangulated tracks seen from the anchor. Same limits, same verdict."""
-    errs, pts = heldout_from_poses(K, poses, tracks, anchor)
+    counts: dict[int, int] = {}
+    errs, pts = heldout_from_poses(K, poses, tracks, anchor, counts=counts)
     keep = ~np.isnan(pts[:, 2])
     sol = PnPSolve(
         K=np.asarray(K, dtype=np.float64),
@@ -468,6 +485,7 @@ def assess_poses(
         colors=np.zeros((int(keep.sum()), 3), np.uint8),
         poses={t: poses[t] for t in errs},
         frame_heldout_px=errs,
+        frame_heldout_n=counts,
     )
     return assess(
         sol,
