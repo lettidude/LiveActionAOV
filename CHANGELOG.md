@@ -7,6 +7,17 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Held objects go to the person holding them** (LTX Alpha whole frame, `held_objects`, off by
+  default). A bag, a phone or a tool that LTX mattes but SAM does not track was split between the
+  nearest people; with the option on it goes whole to the person whose hand (a `hand` part) or body
+  touches it. Something several people touch with no hand on it (water spray, the ground) keeps the
+  old split.
+- **One soft matte per object, named like its Cryptomatte object** (`object_channels` on the
+  refiners, off by default): `mask_object.person_1`, `mask_object.person_2` ... next to the hard ID in
+  the Cryptomatte, so the soft and the hard matte of an actor line up by name in comp.
+- **Cryptomatte IDs stay clean on proxy runs** (`proxy_upscale: "nearest"` on the cryptomatte pass,
+  off by default). The proxy result is scaled back to the plate without blending neighbouring IDs,
+  so every ID in the EXR is an object of the manifest.
 - **Camera as USD.** Each camera solve also writes `camera/<shot>_v###.camera.usda` with the camera
   and a coloured point cloud, for Houdini, Maya, Blender, Unreal and Nuke's USD 3D system.
 - **A point cloud you can read.** With a depth pass in the run, the point cloud in the Nuke script
