@@ -108,6 +108,38 @@ def _total_vram_gb() -> float | None:
         return None
 
 
+def _free_vram_gb() -> tuple[float, float] | None:
+    """(free, total) GB of the first CUDA card as the driver sees it, all
+    processes included, or None when it can't be read. Asks nvidia-smi
+    (no CUDA context of our own); torch when that is missing."""
+    import shutil
+    import subprocess
+
+    exe = shutil.which("nvidia-smi")
+    if exe:
+        try:
+            out = subprocess.run(
+                [exe, "--query-gpu=memory.free,memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            ).stdout.splitlines()
+            free, total = (float(v) / 1024.0 for v in out[0].split(","))
+            return free, total
+        except Exception:
+            pass
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        free_b, total_b = torch.cuda.mem_get_info(0)
+        return free_b / 2**30, total_b / 2**30
+    except Exception:
+        return None
+
+
 def _mask_ram_message(n_inst: int, n_frames: int, h: int, w: int, peak_bytes: int) -> str:
     """Actionable OOM guidance — what's needed, and the levers to fit it."""
     need_gib = peak_bytes / 2**30
@@ -365,7 +397,7 @@ class SAM3MattePass(UtilityPass):
         # memory on a long clip), the shot is redone with SAM 3 and the log
         # says so. Asking for "sam3.1" by name never falls back.
         "detector": "auto",
-        "sam31_min_vram_gb": 22.0,
+        "sam31_min_vram_gb": 24.0,
         "sam31_python": "",  # its python.exe; "" = $LAOV_SAM31_PYTHON
         "sam31_checkpoint": "",  # "" = sam3.1_multiplex.pt from the HF cache
         "sam31_timeout_s": 3600,
@@ -422,6 +454,20 @@ class SAM3MattePass(UtilityPass):
         "sam31_glitch_factor": 6.0,  # 0 = no glitch filter
         "sam31_glitch_min_jump": 0.05,
         "sam31_glitch_window": 0,  # frames either side; 0 = whole-track median
+        # Over-merge guard of "tracks": a merge is refused when the two
+        # tracks together split into more large separate blobs (each at
+        # least this share of their area) than one of them alone, on
+        # `sam31_split_frames` shared frames: one ID would hold two people.
+        "sam31_split_guard": 0.15,  # 0 = off
+        "sam31_split_frames": 1,
+        # Several SAM 3.1 sessions (`small_objects` "max") need the card to
+        # themselves: with less than `sam31_max_free_vram_gb` free on the
+        # GPU (another job on it, or a smaller card) SAM 3.1 spills into
+        # system RAM and runs many times slower. "warn" logs it, "refuse"
+        # stops SAM 3.1 for the shot (`detector` "auto" then uses SAM 3),
+        # "off" skips the check.
+        "sam31_max_vram_check": "warn",
+        "sam31_max_free_vram_gb": 28.0,
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -962,10 +1008,10 @@ class SAM3MattePass(UtilityPass):
         ok, _ = sam31_bridge.available(self.params)
         if not ok:
             return "sam3", "SAM 3.1 is not installed: `liveaov setup-sam31`"
-        need = float(self.params.get("sam31_min_vram_gb", 22.0))
+        need = float(self.params.get("sam31_min_vram_gb", 24.0))
         vram = _total_vram_gb()
         if vram is not None and vram < need:
-            return "sam3", f"SAM 3.1 wants a {need:.0f} GB card, this one has {vram:.0f} GB"
+            return "sam3", f"SAM 3.1 wants a {need:.0f} GB card, this one has {vram:.1f} GB"
         return "sam3.1", "installed"
 
     def _add_sam31(
@@ -1040,7 +1086,33 @@ class SAM3MattePass(UtilityPass):
             dup_containment=float(g("sam31_merge_containment", 0.6)),
             dup_frames=float(g("sam31_merge_frames", 0.6) or 0.0),
             dup_size_ratio=float(g("sam31_merge_size_ratio", 0.5)),
+            split_guard=float(g("sam31_split_guard", 0.15) or 0.0),
+            split_frames=int(g("sam31_split_frames", 1) or 1),
         )
+
+    def _sam31_vram_preflight(self, n_sessions: int) -> None:
+        """Before a several-session SAM 3.1 run: warn (or refuse) when the
+        GPU has less free memory than it needs (`sam31_max_vram_check`)."""
+        mode = str(self.params.get("sam31_max_vram_check", "warn")).lower()
+        if mode == "off" or n_sessions <= 1:
+            return
+        got = _free_vram_gb()
+        if got is None:
+            return
+        free, total = got
+        need = float(self.params.get("sam31_max_free_vram_gb", 28.0))
+        if free >= need:
+            return
+        used = total - free
+        msg = (
+            f"SAM 3.1 Max: the GPU has {free:.1f} GB free of {total:.1f} GB ({used:.1f} GB in "
+            f"use by other programs or jobs); it wants about {need:.0f} GB. Short of that it "
+            f"spills into system RAM and runs many times slower. Free the GPU (close other "
+            f"GPU jobs), or use small_objects auto for this shot."
+        )
+        if mode == "refuse":
+            raise RuntimeError(msg)
+        _log.warning(msg)
 
     def _add_sam31_small(
         self, frames: np.ndarray, concepts: list[str], seed_local: int, first: int
@@ -1071,6 +1143,7 @@ class SAM3MattePass(UtilityPass):
                 else:
                     plate_frame = lambda k: np.asarray(full(first + k)[0], dtype=np.float32)  # noqa: E731
         seeds = self._sam31_seeds(n, seed_local)
+        self._sam31_vram_preflight(len(seeds) * (1 + len(tiles)))
         found = sam31_bridge.run_sam31_small(
             frames,
             concepts,
@@ -1163,13 +1236,15 @@ class SAM3MattePass(UtilityPass):
         merged, rep, frames = sam31_bridge.merge_sessions(found, self._sam31_merge_config())
         _log.info(
             "SAM 3.1: %d raw track(s) -> %d object(s) (%d linked across sessions, "
-            "%d fragments stitched, %d duplicates merged, %d glitch frames dropped).",
+            "%d fragments stitched, %d duplicates merged, %d glitch frames dropped, "
+            "%d merge(s) refused by the over-merge guard).",
             rep.raw_tracks,
             rep.objects,
             rep.linked,
             rep.stitched,
             rep.duplicates,
             rep.glitch_frames,
+            rep.refused_split,
         )
         kept = []
         for t, (saw, bad, held) in zip(merged, frames, strict=True):

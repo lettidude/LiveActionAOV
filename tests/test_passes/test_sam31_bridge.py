@@ -154,7 +154,7 @@ def test_auto_detector_picks_sam31_only_when_it_can_run(monkeypatch: pytest.Monk
     assert p._resolve_detector() == ("sam3.1", "installed")
     monkeypatch.setattr(sam3, "_total_vram_gb", lambda: 15.9)
     det, why = p._resolve_detector()
-    assert det == "sam3" and "16 GB" in why  # small card: SAM 3, and it says why
+    assert det == "sam3" and "15.9 GB" in why  # small card: SAM 3, and it says why
     assert SAM3MattePass({"detector": "sam3"})._resolve_detector()[0] == "sam3"
     assert SAM3MattePass({"detector": "sam3.1"})._resolve_detector()[0] == "sam3.1"
 
