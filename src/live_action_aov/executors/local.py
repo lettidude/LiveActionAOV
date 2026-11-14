@@ -993,22 +993,19 @@ def _vram_peak_gib() -> float | None:
 
 
 def _free_gpu_memory() -> None:
-    """Run a GC pass + release torch's cached CUDA blocks back to the driver.
+    """Run a GC pass + release torch's cached GPU blocks back to the driver
+    (CUDA, or the Apple GPU on a Mac).
 
     Called after each pass unloads its model so the freed allocations are
     actually returned (torch caches them otherwise) before the next pass —
-    or the next shot — loads. No-op when torch/CUDA aren't present.
+    or the next shot — loads. No-op when torch or a GPU aren't present.
     """
     import gc
 
-    gc.collect()
-    try:
-        import torch
+    from live_action_aov.core.device import empty_cache
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
+    gc.collect()
+    empty_cache()
 
 
 def _smooth_wanted(value: Any) -> bool:
