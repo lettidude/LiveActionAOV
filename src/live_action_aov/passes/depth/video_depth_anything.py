@@ -287,7 +287,9 @@ class VideoDepthAnythingPass(UtilityPass):
     def _infer_clip(self, frames_u8: np.ndarray) -> np.ndarray:
         """Drive the model on the full clip. Overridable in tests."""
         assert self._model is not None
-        device_str = "cuda" if self._device.type == "cuda" else "cpu"
+        # The model's own autocast follows this string, so it must be the
+        # device the weights are on. fp16 stays CUDA-only (fp32 on a Mac).
+        device_str = self._device.type
         # target_fps argument is only used internally for FPS bookkeeping
         # when saving MP4s; we pass a nominal value and drop the returned
         # fps since we write EXRs.
@@ -296,7 +298,7 @@ class VideoDepthAnythingPass(UtilityPass):
             target_fps=24.0,
             input_size=int(self.params["input_size"]),
             device=device_str,
-            fp32=self._fp32,
+            fp32=self._fp32 or device_str == "mps",
         )
         return depth.astype(np.float32, copy=False)
 

@@ -31,6 +31,7 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.device import autocast_device_type
 from live_action_aov.core.pass_base import (
     DeviceSupport,
     License,
@@ -133,7 +134,8 @@ class MegaFlowPass(RAFTPass):
             and self._device.type == "cuda"
             and self._dtype != torch.float32
         )
-        with torch.no_grad(), torch.autocast("cuda", dtype=self._dtype, enabled=use_ac):
+        ac_type = autocast_device_type(self._device)
+        with torch.no_grad(), torch.autocast(ac_type, dtype=self._dtype, enabled=use_ac):
             fwd = self._model(v, num_reg_refine=iters)["flow_preds"][-1]  # (1, 1, 2, h, w)
             bwd = self._model(v.flip(1), num_reg_refine=iters)["flow_preds"][-1]
         return {
