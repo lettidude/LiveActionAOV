@@ -31,12 +31,12 @@ each propagated both ways, merged here into one track per object:
    part / whole logic (`part_containment`) handles them.
 Over-merge guard (`split_guard` > 0): a link or duplicate merge is refused
 when, on at least `split_frames` shared frames, the two clusters' masks
-together fall into more large separate blobs (each at least `split_guard`
-of the pair's area) than one of them has alone: one ID would then hold
+together fall into separate blobs and one of them, at least `split_guard`
+of the pair's area, belongs to one cluster only: one ID would then hold
 two objects. A track that briefly reads two people as one (smoke, motion
-blur) and gets linked to one of them shows exactly that. A person cut in
-two by a pole is two blobs in both tracks already, so the guard leaves
-them alone.
+blur) and gets linked to one of them shows exactly that. A limb that comes
+loose in the comparison copy is too small to count, and a person cut in
+two by a pole is two blobs in both tracks, so the guard leaves them alone.
 
 4. **Assembly.** Per frame, an object takes the mask of its highest
    priority member (primary session first), or a bigger member mask that
@@ -195,6 +195,34 @@ def union(crops: Sequence[Crop]) -> Crop:
     return Crop(y0, x0, out)
 
 
+def foreign_blob(a: Crop, b: Crop, share: float) -> bool:
+    """`a` and `b` together fall into two or more separate blobs and one of
+    them, at least `share` of their joint area, belongs to one mask only
+    (the other does not touch it): a second object, not a loose limb or a
+    slightly different edge."""
+    import cv2
+
+    u = union([a, b])
+    if not u.area:
+        return False
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(u.m.astype(np.uint8), connectivity=8)
+    big = [k for k in range(1, n) if stats[k, cv2.CC_STAT_AREA] >= share * u.area]
+    if n < 3 or not big:
+        return False
+
+    def placed(c: Crop) -> np.ndarray:
+        out = np.zeros(u.m.shape, bool)
+        out[c.y0 - u.y0 : c.y1 - u.y0, c.x0 - u.x0 : c.x1 - u.x0] = c.m
+        return out
+
+    pa, pb = placed(a), placed(b)
+    for k in big:
+        blob = lab == k
+        if bool((blob & pa).any()) != bool((blob & pb).any()):
+            return True
+    return False
+
+
 def large_blobs(c: Crop, min_area: float) -> int:
     """Separate (8-connected) blobs of `c` of at least `min_area` px."""
     import cv2
@@ -327,9 +355,8 @@ def _merge_label(
         return union(ms) if ms else None
 
     def splits(ca: int, cb: int) -> bool:
-        """The over-merge guard: together, the two clusters fall apart into
-        more large blobs than one of them has alone, on `split_frames`
-        shared frames."""
+        """The over-merge guard: on `split_frames` shared frames, one cluster
+        holds a large separate blob the other does not touch at all."""
         if cfg.split_guard <= 0:
             return False
         hit = 0
@@ -337,10 +364,7 @@ def _merge_label(
             ma, mb = at(ca, f), at(cb, f)
             if ma is None or mb is None:
                 continue
-            u = union([ma, mb])
-            floor = cfg.split_guard * u.area
-            n = large_blobs(u, floor)
-            if n >= 2 and n > min(large_blobs(ma, floor), large_blobs(mb, floor)):
+            if foreign_blob(ma, mb, cfg.split_guard):
                 hit += 1
                 if hit >= max(1, cfg.split_frames):
                     return True
@@ -483,6 +507,7 @@ __all__ = [
     "RawTrack",
     "assemble",
     "best_member",
+    "foreign_blob",
     "glitch_frames",
     "large_blobs",
     "make_track",

@@ -15,7 +15,7 @@ from live_action_aov.passes.matte.sam3 import SAM3MattePass
 from live_action_aov.passes.matte.sam31_merge import MergeConfig, make_track, merge_tracks
 
 N, H, W = 12, 60, 80
-GUARD = MergeConfig(split_guard=0.15)
+GUARD = MergeConfig(split_guard=0.25)
 
 
 def _box(y0: int, y1: int, x0: int, x1: int, frames: range | None = None) -> np.ndarray:
@@ -87,6 +87,16 @@ def test_the_guard_keeps_a_real_link_and_a_person_cut_by_a_pole() -> None:
     assert clusters == [[0, 1]] and rep.refused_split == 0
 
 
+def test_the_guard_keeps_a_link_where_one_track_has_a_loose_limb() -> None:
+    """Another session's track of the same person also holds a hand that
+    comes loose from the body: one small extra blob, not a second person."""
+    a = _box(10, 50, 10, 30)
+    b = _box(10, 50, 10, 30)
+    b[:, 30:36, 33:37] = 1  # a hand, apart from the body, only in b
+    clusters, rep = merge_tracks(_tracks((a, 0, 0), (b, 1, 0)), GUARD)
+    assert clusters == [[0, 1]] and rep.refused_split == 0
+
+
 def test_the_guard_also_stops_a_duplicate_merge() -> None:
     whole = _box(10, 50, 10, 30)
     dup = _box(12, 48, 11, 29)
@@ -96,7 +106,7 @@ def test_the_guard_also_stops_a_duplicate_merge() -> None:
 
 
 def test_the_pass_turns_the_guard_on_for_max_only_through_its_config() -> None:
-    assert SAM3MattePass({})._sam31_merge_config().split_guard == 0.15
+    assert SAM3MattePass({})._sam31_merge_config().split_guard == 0.25
     assert SAM3MattePass({"sam31_split_guard": 0})._sam31_merge_config().split_guard == 0.0
     assert MergeConfig().split_guard == 0.0  # the module alone: off
 

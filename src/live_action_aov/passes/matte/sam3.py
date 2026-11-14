@@ -454,11 +454,11 @@ class SAM3MattePass(UtilityPass):
         "sam31_glitch_factor": 6.0,  # 0 = no glitch filter
         "sam31_glitch_min_jump": 0.05,
         "sam31_glitch_window": 0,  # frames either side; 0 = whole-track median
-        # Over-merge guard of "tracks": a merge is refused when the two
-        # tracks together split into more large separate blobs (each at
-        # least this share of their area) than one of them alone, on
-        # `sam31_split_frames` shared frames: one ID would hold two people.
-        "sam31_split_guard": 0.15,  # 0 = off
+        # Over-merge guard of "tracks": a merge is refused when, on
+        # `sam31_split_frames` shared frames, the two tracks together fall
+        # into separate blobs and one of them (at least this share of their
+        # area) belongs to one track only: one ID would hold two people.
+        "sam31_split_guard": 0.25,  # 0 = off
         "sam31_split_frames": 1,
         # Several SAM 3.1 sessions (`small_objects` "max") need the card to
         # themselves: with less than `sam31_max_free_vram_gb` free on the
@@ -1086,7 +1086,7 @@ class SAM3MattePass(UtilityPass):
             dup_containment=float(g("sam31_merge_containment", 0.6)),
             dup_frames=float(g("sam31_merge_frames", 0.6) or 0.0),
             dup_size_ratio=float(g("sam31_merge_size_ratio", 0.5)),
-            split_guard=float(g("sam31_split_guard", 0.15) or 0.0),
+            split_guard=float(g("sam31_split_guard", 0.25) or 0.0),
             split_frames=int(g("sam31_split_frames", 1) or 1),
         )
 
