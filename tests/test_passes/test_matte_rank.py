@@ -166,8 +166,8 @@ def test_user_priority_contributes_when_weighted() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scenery never takes a hero slot while a subject is unslotted (A65 plate,
-# 2026-11-09: car, person, building, tree got RGBA; the second person none).
+# Scenery never takes a hero slot while a subject is unslotted (a car plate:
+# car, person, building, tree got RGBA; the second person none).
 # ---------------------------------------------------------------------------
 
 
@@ -183,7 +183,7 @@ def test_is_scenery_label_matches_words_not_substrings() -> None:
 
 
 def test_scenery_ranks_after_every_subject() -> None:
-    """The A65 car plate: big sky / buildings / trees outscore the second
+    """A car plate: big sky / buildings / trees outscore the second
     person on area, but the four slots go to the three subjects first."""
     insts = [
         _inst(1, "person", area=0.04),

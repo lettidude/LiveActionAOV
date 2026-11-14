@@ -251,8 +251,8 @@ class SAM3MattePass(UtilityPass):
         # and up, "max" on 3x3 (each tile reaches the model zoomed in); "off"
         # = full frame only. Tiles on, the size floor is `min_object_px` (box
         # height in plate px) instead of `min_area_fraction`, which dropped
-        # anyone shorter than ~1/5 of the frame (ALEXA 65 beach plate: 0 of
-        # ~180 people; 3x3 tiles find ~90% of those 12-96 px tall).
+        # anyone shorter than ~1/5 of the frame: large crowds of small people
+        # are mostly missed at full frame; tiling recovers most of them.
         "small_objects": "auto",
         "tile_overlap": 0.2,
         "min_object_px": 10,
@@ -509,8 +509,8 @@ class SAM3MattePass(UtilityPass):
         """Detect on local frame `k`. In proxy mode the detector reads the
         ORIGINAL plate (same colour transform) and the masks are scaled to
         the proxy: SAM 3's tracker works at ~1008 px either way, but a 1K
-        proxy hides people the 4K plate shows (beach plate, 24-48 px tall:
-        6/31 found on the proxy, 31/31 on the plate)."""
+        proxy hides people the 4K plate shows (very small people on a wide
+        plate are mostly lost on the proxy and found on the plate)."""
         h, w = int(frames.shape[1]), int(frames.shape[2])
         reader = getattr(self, "_reader", None)
         full = getattr(reader, "read_frame_full_res", None)

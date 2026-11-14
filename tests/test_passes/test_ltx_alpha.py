@@ -578,7 +578,7 @@ def test_ltx_cache_skips_the_second_run(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scenery and the crop box (A65 couple-car plate, 2026-11-09: with the default
+# Scenery and the crop box (a two-person car plate: with the default
 # concepts every object's box grew to the whole 2K proxy, and LTX, one salient
 # foreground per crop, gave every object somebody else's alpha).
 # ---------------------------------------------------------------------------
