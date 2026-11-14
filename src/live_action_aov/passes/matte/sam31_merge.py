@@ -83,7 +83,8 @@ class MergeConfig:
     dup_frames: float = 0.6
     dup_size_ratio: float = 0.5
     split_guard: float = 0.0  # over-merge guard: large-blob share; 0 = off
-    split_frames: int = 1  # ...refuse on this many shared frames showing it
+    split_frames: int = 1  # ...refuse on at least this many shared frames showing it
+    split_share: float = 0.0  # ...and on at least this share of the shared frames
     work_width: int = 480
 
 
@@ -354,21 +355,21 @@ def _merge_label(
         ms = [tracks[t].small[f] for t in clusters[c] if f in tracks[t].small]
         return union(ms) if ms else None
 
-    def splits(ca: int, cb: int) -> bool:
+    def splits(ca: int, cb: int) -> tuple[int, int] | None:
         """The over-merge guard: on `split_frames` shared frames, one cluster
-        holds a large separate blob the other does not touch at all."""
+        holds a large separate blob the other does not touch at all (and on
+        `split_share` of them). (frames showing it, shared frames) when the
+        merge is refused, else None."""
         if cfg.split_guard <= 0:
-            return False
+            return None
+        shared = sorted(frames_of(ca) & frames_of(cb))
         hit = 0
-        for f in sorted(frames_of(ca) & frames_of(cb)):
+        for f in shared:
             ma, mb = at(ca, f), at(cb, f)
-            if ma is None or mb is None:
-                continue
-            if foreign_blob(ma, mb, cfg.split_guard):
+            if ma is not None and mb is not None and foreign_blob(ma, mb, cfg.split_guard):
                 hit += 1
-                if hit >= max(1, cfg.split_frames):
-                    return True
-        return False
+        need = max(1, cfg.split_frames, int(np.ceil(cfg.split_share * len(shared))))
+        return (hit, len(shared)) if hit >= need else None
 
     def join(a: int, b: int, why: str, score: float, force: bool = False) -> bool:
         ca, cb = of[a], of[b]
@@ -376,11 +377,13 @@ def _merge_label(
             return False
         if not force and any(conflict(x, y) for x in clusters[ca] for y in clusters[cb]):
             return False
-        if splits(ca, cb):
+        refused = splits(ca, cb)
+        if refused is not None:
             rep.refused_split += 1
             ta, tb = tracks[a], tracks[b]
+            why_not = f"refused-split {refused[0]}/{refused[1]} f ({why})"
             rep.merges.append(
-                ("refused-split", round(score, 3), (ta.seed, ta.obj_id), (tb.seed, tb.obj_id))
+                (why_not, round(score, 3), (ta.seed, ta.obj_id), (tb.seed, tb.obj_id))
             )
             return False
         clusters[ca] |= clusters.pop(cb)

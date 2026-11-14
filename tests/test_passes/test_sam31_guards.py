@@ -105,7 +105,25 @@ def test_the_guard_also_stops_a_duplicate_merge() -> None:
     assert clusters == [[0], [1]] and rep.duplicates == 0 and rep.refused_split >= 1
 
 
+def test_split_share_needs_the_split_on_that_share_of_shared_frames() -> None:
+    """3 of 12 shared frames split: a stray stretch at share 0.5, refused at
+    0.25; split on 7 of 12: refused at 0.5 too."""
+    a, b = _two_people_late()  # split on frames 9-11
+    half = MergeConfig(split_guard=0.25, split_frames=3, split_share=0.5)
+    clusters, rep = merge_tracks(_tracks((a, 0, 0), (b, 1, 0), cfg=half), half)
+    assert clusters == [[0, 1]] and rep.refused_split == 0
+    quarter = MergeConfig(split_guard=0.25, split_frames=3, split_share=0.25)
+    clusters, rep = merge_tracks(_tracks((a, 0, 0), (b, 1, 0), cfg=quarter), quarter)
+    assert clusters == [[0], [1]] and rep.refused_split >= 1
+    b[5:, 10:50, 50:70] = 1  # now split on frames 5-11
+    clusters, rep = merge_tracks(_tracks((a, 0, 0), (b, 1, 0), cfg=half), half)
+    assert clusters == [[0], [1]]
+    assert any(m[0].startswith("refused-split 7/12") for m in rep.merges)
+
+
 def test_the_pass_turns_the_guard_on_for_max_only_through_its_config() -> None:
+    cfg = SAM3MattePass({})._sam31_merge_config()
+    assert (cfg.split_frames, cfg.split_share) == (3, 0.5)
     assert SAM3MattePass({})._sam31_merge_config().split_guard == 0.25
     assert SAM3MattePass({"sam31_split_guard": 0})._sam31_merge_config().split_guard == 0.0
     assert MergeConfig().split_guard == 0.0  # the module alone: off

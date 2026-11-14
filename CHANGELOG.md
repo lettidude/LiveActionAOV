@@ -15,7 +15,8 @@ uses [semantic versioning](https://semver.org/).
   found twice stays one object. `sam31_tiles` `on` adds a zoomed tile search (opt-in).
   `small_objects` `off` gives exactly the previous result.
 - **SAM 3.1 Max: one ID per person, and a GPU check first.** A merge that would put two people in one
-  ID (a track that briefly read them as one, in smoke or motion blur) is refused. Before a Max run,
+  ID (a track that read them as one, in smoke or motion blur) is refused, and the log names each
+  refused merge; `sam31_split_frames` and `sam31_split_share` set how strict it is. Before a Max run,
   the log warns when other jobs hold the GPU's memory, which makes SAM 3.1 many times slower;
   `sam31_max_vram_check` `refuse` uses SAM 3 for the shot instead.
 - **Camera as USD.** Each camera solve also writes `camera/<shot>_v###.camera.usda` with the camera

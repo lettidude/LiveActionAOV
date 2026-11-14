@@ -454,12 +454,15 @@ class SAM3MattePass(UtilityPass):
         "sam31_glitch_factor": 6.0,  # 0 = no glitch filter
         "sam31_glitch_min_jump": 0.05,
         "sam31_glitch_window": 0,  # frames either side; 0 = whole-track median
-        # Over-merge guard of "tracks": a merge is refused when, on
-        # `sam31_split_frames` shared frames, the two tracks together fall
-        # into separate blobs and one of them (at least this share of their
-        # area) belongs to one track only: one ID would hold two people.
+        # Over-merge guard of "tracks": a merge is refused when, on at least
+        # `sam31_split_frames` shared frames and `sam31_split_share` of them,
+        # the two tracks together fall into separate blobs and one of them
+        # (at least `sam31_split_guard` of their area) belongs to one track
+        # only: one ID would hold two people most of the time they meet.
+        # Defaults are cautious: a split now and then is a stray frame.
         "sam31_split_guard": 0.25,  # 0 = off
-        "sam31_split_frames": 1,
+        "sam31_split_frames": 3,
+        "sam31_split_share": 0.5,
         # Several SAM 3.1 sessions (`small_objects` "max") need the card to
         # themselves: with less than `sam31_max_free_vram_gb` free on the
         # GPU (another job on it, or a smaller card) SAM 3.1 spills into
@@ -1087,7 +1090,8 @@ class SAM3MattePass(UtilityPass):
             dup_frames=float(g("sam31_merge_frames", 0.6) or 0.0),
             dup_size_ratio=float(g("sam31_merge_size_ratio", 0.5)),
             split_guard=float(g("sam31_split_guard", 0.25) or 0.0),
-            split_frames=int(g("sam31_split_frames", 1) or 1),
+            split_frames=int(g("sam31_split_frames", 3) or 1),
+            split_share=float(g("sam31_split_share", 0.5) or 0.0),
         )
 
     def _sam31_vram_preflight(self, n_sessions: int) -> None:
@@ -1246,6 +1250,17 @@ class SAM3MattePass(UtilityPass):
             rep.glitch_frames,
             rep.refused_split,
         )
+        for why, score, ta, tb in rep.merges:
+            if why.startswith("refused-split"):
+                _log.info(
+                    "SAM 3.1: %s merge refused (score %.2f, seed %d obj %d + seed %d obj %d): "
+                    "%s frames showed a second object.",
+                    why.split("(")[-1].rstrip(")"),
+                    score,
+                    *ta,
+                    *tb,
+                    why.split()[1],
+                )
         kept = []
         for t, (saw, bad, held) in zip(merged, frames, strict=True):
             ok = sam31_bridge.keep_small(t, min_px, min_cov, min_frames, seen[t.src])
