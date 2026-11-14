@@ -121,9 +121,11 @@ class PyColmapCameraPass(UtilityPass):
         "mapper": "incremental",  # "incremental" | "global" (GLOMAP-style, pycolmap 4)
         # Fewer solved frames than this = no camera (the run keeps the rest).
         "min_registered_fraction": 0.5,
-        # The incremental mapper's initial pair is random: one car plate
-        # solved 100/100 or 3/100 half the time. Each attempt uses
-        # a fixed seed and re-runs only the mapping.
+        # The incremental mapper's initial pair is random, so the same plate
+        # can register every frame on one run and lose the track on the next.
+        # A short model is re-mapped with the next fixed seed (only the
+        # mapping re-runs), which keeps most frames registered where a single
+        # plain solve lost the track.
         "mapping_attempts": 4,
         "camera_model": "SIMPLE_PINHOLE",
         # Long edge of the images SIFT sees. PF0081 (2048 wide): 2048 ->
