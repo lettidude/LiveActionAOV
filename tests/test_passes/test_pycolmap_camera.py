@@ -568,7 +568,7 @@ class _FakeModel:
 def test_mapping_retries_another_seed_when_it_covers_too_little(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The incremental mapper's initial pair is random: the A65 car solved
+    """The incremental mapper's initial pair is random: one car plate solved
     100/100 or 3/100 at random. A short model -> re-map with the next seed."""
     import types
 

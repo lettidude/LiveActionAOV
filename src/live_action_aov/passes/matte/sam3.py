@@ -251,7 +251,7 @@ class SAM3MattePass(UtilityPass):
         # and up, "max" on 3x3 (each tile reaches the model zoomed in); "off"
         # = full frame only. Tiles on, the size floor is `min_object_px` (box
         # height in plate px) instead of `min_area_fraction`, which dropped
-        # anyone shorter than ~1/5 of the frame (ALEXA 65 beach plate: 0 of
+        # anyone shorter than ~1/5 of the frame (a 4K beach crowd plate: 0 of
         # ~180 people; 3x3 tiles find ~90% of those 12-96 px tall).
         "small_objects": "auto",
         "tile_overlap": 0.2,

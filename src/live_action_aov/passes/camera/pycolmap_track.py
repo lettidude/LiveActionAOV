@@ -121,8 +121,8 @@ class PyColmapCameraPass(UtilityPass):
         "mapper": "incremental",  # "incremental" | "global" (GLOMAP-style, pycolmap 4)
         # Fewer solved frames than this = no camera (the run keeps the rest).
         "min_registered_fraction": 0.5,
-        # The incremental mapper's initial pair is random: on the A65 car the
-        # same plate solved 100/100 or 3/100 half the time. Each attempt uses
+        # The incremental mapper's initial pair is random: one car plate
+        # solved 100/100 or 3/100 half the time. Each attempt uses
         # a fixed seed and re-runs only the mapping.
         "mapping_attempts": 4,
         "camera_model": "SIMPLE_PINHOLE",
