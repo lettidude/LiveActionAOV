@@ -41,6 +41,7 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.device import pick_device
 from live_action_aov.core.pass_base import (
     ChannelSpec,
     DeviceSupport,
@@ -317,7 +318,7 @@ class RVMRefinerPass(UtilityPass):
             trust_repo=True,
             skip_validation=True,
         )
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         self._dtype = (
             torch.float16
             if self.params.get("precision") == "fp16" and self._device.type == "cuda"

@@ -59,6 +59,7 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.device import pick_device
 from live_action_aov.core.pass_base import (
     ChannelSpec,
     DeviceSupport,
@@ -204,7 +205,7 @@ class VideoDepthAnythingPass(UtilityPass):
         state = torch.load(ckpt, map_location="cpu", weights_only=False)
         model.load_state_dict(state, strict=True)
 
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         model = model.to(self._device).eval()
         self._model = model
 

@@ -53,6 +53,7 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.device import pick_device
 from live_action_aov.core.pass_base import (
     DeviceSupport,
     License,
@@ -462,7 +463,7 @@ class SAM3MattePass(UtilityPass):
         )
 
         repo = str(self.params["model_id"])
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         self._dtype = torch.float32
 
         # SAM 3 (and other Meta releases) are gated on the HF Hub. The raw

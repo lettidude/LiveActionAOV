@@ -43,6 +43,7 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.device import pick_device
 from live_action_aov.core.pass_base import (
     ChannelSpec,
     DeviceSupport,
@@ -140,7 +141,7 @@ class DepthAnythingV2Pass(UtilityPass):
         repo = _COMMERCIAL_VARIANTS[str(self.params["variant"]).lower()]
         self._processor = load_local_first(AutoImageProcessor.from_pretrained, repo)
         model = load_local_first(AutoModelForDepthEstimation.from_pretrained, repo)
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         self._dtype = (
             torch.float16
             if self.params["precision"] == "fp16" and self._device.type == "cuda"

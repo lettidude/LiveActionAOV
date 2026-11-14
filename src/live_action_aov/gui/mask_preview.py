@@ -133,7 +133,10 @@ class _PreviewTask(QRunnable):
             import torch
             from transformers import Sam3TrackerVideoModel, Sam3TrackerVideoProcessor
 
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            from live_action_aov.core.device import pick_device
+            from live_action_aov.passes.matte.sam3 import SAM3MattePass
+
+            device = pick_device(SAM3MattePass.device_support)
             dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
             eng["processor"] = load_local_first(
                 Sam3TrackerVideoProcessor.from_pretrained, "facebook/sam3"

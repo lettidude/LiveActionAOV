@@ -31,7 +31,7 @@ from typing import Any
 
 import numpy as np
 
-from live_action_aov.core.device import autocast_device_type
+from live_action_aov.core.device import autocast_device_type, pick_device
 from live_action_aov.core.pass_base import (
     DeviceSupport,
     License,
@@ -86,7 +86,7 @@ class MegaFlowPass(RAFTPass):
         ckpt = load_local_first(hf_hub_download, repo_id=_HF_REPO, filename=_HF_FILE)
         model = MegaFlow(fuse_cnn=True, use_temporal_attn=True, fix_width=True)
         model.load_state_dict(load_file(str(ckpt), device="cpu"), strict=False)
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         prec = str(self.params.get("precision", "bf16"))
         self._dtype = (
             {"bf16": torch.bfloat16, "fp16": torch.float16}.get(prec, torch.float32)
