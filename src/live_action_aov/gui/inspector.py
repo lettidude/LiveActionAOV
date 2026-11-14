@@ -500,7 +500,9 @@ class InspectorPanel(QWidget):
             "and is missed. Auto/Max also run detection on overlapping zoomed tiles "
             "(the tracker always follows the full frame), and keep objects down to "
             "~10 px tall. Max finds ~90% of 12-96 px people; costs a few seconds per "
-            "re-detection frame. Small objects keep SAM's edge (anti-aliased)."
+            "re-detection frame. Small objects keep SAM's edge (anti-aliased). "
+            "With SAM 3.1, Max looks on several frames instead of tiles and joins each "
+            "person into one track; slower."
         )
         self._small_objects_combo.currentIndexChanged.connect(self._on_small_objects_changed)
         small_row = QHBoxLayout()
