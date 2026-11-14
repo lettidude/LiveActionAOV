@@ -83,11 +83,11 @@ class RAFTPass(UtilityPass):
             name=CH_FLOW_OCCLUSION,
             description="Occlusion mask (1 - flow.confidence), [0,1] — 1 = occluded",
         ),
-        # Nuke-native aliases (same data, VectorBlur-friendly naming).
-        ChannelSpec(name=CH_FORWARD_U, description="Alias of motion.x for Nuke VectorBlur"),
-        ChannelSpec(name=CH_FORWARD_V, description="Alias of motion.y for Nuke VectorBlur"),
-        ChannelSpec(name=CH_BACKWARD_U, description="Alias of back.x for Nuke VectorBlur"),
-        ChannelSpec(name=CH_BACKWARD_V, description="Alias of back.y for Nuke VectorBlur"),
+        # Nuke-native aliases (VectorBlur-friendly naming, Nuke axes: v up).
+        ChannelSpec(name=CH_FORWARD_U, description="motion.x for Nuke VectorBlur"),
+        ChannelSpec(name=CH_FORWARD_V, description="-motion.y for Nuke VectorBlur (v up)"),
+        ChannelSpec(name=CH_BACKWARD_U, description="back.x for Nuke VectorBlur"),
+        ChannelSpec(name=CH_BACKWARD_V, description="-back.y for Nuke VectorBlur (v up)"),
     ]
     provides_artifacts = [
         "forward_flow",
@@ -248,12 +248,8 @@ class RAFTPass(UtilityPass):
             # compers who want "mask where the vectors are unreliable"
             # shouldn't have to invert in Nuke.
             CH_FLOW_OCCLUSION: (1.0 - conf_np).astype(np.float32),
-            # Nuke-native aliases (same arrays — EXR zip compresses the
-            # duplication to near-zero disk overhead).
-            CH_FORWARD_U: motion_x,
-            CH_FORWARD_V: motion_y,
-            CH_BACKWARD_U: back_x,
-            CH_BACKWARD_V: back_y,
+            # Nuke-native aliases. Nuke's y axis points up, so v is negated.
+            **_nuke_aliases(motion_x, motion_y, back_x, back_y),
         }
 
     # ------------------------------------------------------------------
@@ -322,11 +318,8 @@ class RAFTPass(UtilityPass):
                 CH_BACK_Y: bwd[1],
                 CH_FLOW_CONFIDENCE: conf,
                 CH_FLOW_OCCLUSION: (1.0 - conf).astype(np.float32),
-                # Nuke-native aliases (same arrays)
-                CH_FORWARD_U: fwd[0],
-                CH_FORWARD_V: fwd[1],
-                CH_BACKWARD_U: bwd[0],
-                CH_BACKWARD_V: bwd[1],
+                # Nuke-native aliases (v up)
+                **_nuke_aliases(fwd[0], fwd[1], bwd[0], bwd[1]),
             }
             # Stash for artifact emission.
             self._forward[f] = fwd
@@ -357,6 +350,22 @@ class RAFTPass(UtilityPass):
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
+
+
+def _nuke_aliases(
+    fwd_x: np.ndarray, fwd_y: np.ndarray, bwd_x: np.ndarray, bwd_y: np.ndarray
+) -> dict[str, np.ndarray]:
+    """forward/backward .u/.v in Nuke's axes: u right, v UP.
+
+    motion.* / back.* stay in image space (y down). VectorBlur, IDistort and
+    VectorGenerator all treat +v as up, so the aliases negate y.
+    """
+    return {
+        CH_FORWARD_U: fwd_x,
+        CH_FORWARD_V: (-fwd_y).astype(np.float32),
+        CH_BACKWARD_U: bwd_x,
+        CH_BACKWARD_V: (-bwd_y).astype(np.float32),
+    }
 
 
 def _linear_to_display(x: np.ndarray) -> np.ndarray:
