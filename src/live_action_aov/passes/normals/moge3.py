@@ -43,9 +43,12 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.device import pick_device
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -77,6 +80,10 @@ class MoGe3Pass(UtilityPass):
         commercial_use=True,
         commercial_tool_resale=True,
         notes="MoGe-3 (Microsoft, 2026). MIT code + weights; DINOv2 backbone Apache-2.0.",
+    )
+    device_support = DeviceSupport(
+        mac=MacSupport.UNAVAILABLE,
+        mac_notes="Its sparse refiner (FlexGEMM) needs Triton, which has no Mac build.",
     )
     pass_type = PassType.GEOMETRIC
     temporal_mode = TemporalMode.PER_FRAME
@@ -143,14 +150,13 @@ class MoGe3Pass(UtilityPass):
     def _load_model(self) -> None:
         if self._model is not None:
             return
-        import torch
 
         try:
             from live_action_aov.vendored.moge.model.v3 import MoGeModel
         except ImportError as e:
             raise RuntimeError(f"{_MISSING_DEPS} ({e})") from e
         ckpt = self.prefetch_weights()
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         self._model = MoGeModel.from_pretrained(ckpt).to(self._device).eval()
 
     def ingest_artifacts(self, artifacts: dict[str, dict[int, Any]]) -> None:

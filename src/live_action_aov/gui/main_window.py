@@ -37,12 +37,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from live_action_aov.core import device
 from live_action_aov.core.output_layout import latest_version_dir
 from live_action_aov.core.work_dir import set_work_root, work_root
 from live_action_aov.gui.cuda_check import CudaState, cuda_state
 from live_action_aov.gui.inspector import InspectorPanel
 from live_action_aov.gui.log_panel import LogPanel
-from live_action_aov.gui.pass_catalog import has_noncommercial
+from live_action_aov.gui.pass_catalog import expand_models, has_noncommercial
 from live_action_aov.gui.session_io import (
     SESSION_SUFFIX,
     autosave_path,
@@ -203,7 +204,7 @@ class MainWindow(QMainWindow):
         # Environment banner — only visible when the CUDA preflight
         # failed. Sits at the very top so it's impossible to miss.
         # "Details" opens a dialog with the exact reinstall command.
-        banner = _build_cuda_banner(self._cuda, self)
+        banner = _build_cuda_banner(self._cuda, self, mac=device.mps_available())
         if banner is not None:
             central_layout.addWidget(banner)
         central_layout.addWidget(splitter, stretch=1)
@@ -537,13 +538,19 @@ class MainWindow(QMainWindow):
         # Environment precheck — every pass in the catalog is a neural
         # model that needs CUDA. Don't let the user wait 20 minutes for
         # a CPU-fp16 failure they could have been warned about in 2s.
+        # An Apple Silicon Mac (experimental) gets its own check instead:
+        # passes that cannot run there stop the submit, the others run
+        # after a warning that they are not checked on a real Mac yet.
         if not self._cuda.available:
-            QMessageBox.critical(
-                self,
-                "CUDA GPU not available",
-                self._cuda.advisory,
-            )
-            return
+            if not device.mps_available():
+                QMessageBox.critical(
+                    self,
+                    "CUDA GPU not available",
+                    self._cuda.advisory,
+                )
+                return
+            if not _confirm_mac_run(self, queue):
+                return
         # SAM 3.1 runs in its own environment: check it now, not after
         # the first shot's depth pass.
         if any(s.detector == "sam3.1" and "sam3_matte_on" in s.enabled_models for s in queue):
@@ -794,10 +801,55 @@ def _latest_run(shot: ShotState) -> Path | None:
     return latest_version_dir(root) if root is not None else None
 
 
-def _build_cuda_banner(state: CudaState, parent: QMainWindow) -> QWidget | None:
+def _mac_check(shots: list[ShotState]) -> tuple[list[str], list[str]]:
+    """(passes that cannot run on a Mac, passes not checked on a real Mac
+    yet) across the queued shots, as "name: why" lines."""
+    from live_action_aov.core.registry import get_registry
+
+    reg = get_registry()
+    names: dict[str, object] = {}
+    for shot in shots:
+        for name in expand_models(list(shot.enabled_models)):
+            try:
+                names[name] = reg.get_pass(name)
+            except KeyError:
+                continue
+    return device.mac_check(names)
+
+
+def _confirm_mac_run(parent: QMainWindow, shots: list[ShotState]) -> bool:
+    """The submit check on an Apple Silicon Mac. False = do not run."""
+    blocked, unverified = _mac_check(shots)
+    if blocked:
+        QMessageBox.warning(
+            parent,
+            "Not available on Mac",
+            "These passes cannot run on a Mac. Untick them to run the rest:\n\n"
+            + "\n".join(f"  - {b}" for b in blocked),
+        )
+        return False
+    if not unverified:
+        return True
+    reply = QMessageBox.question(
+        parent,
+        "Mac support is experimental",
+        "LiveActionAOV has not been checked on a real Mac yet. These passes "
+        "should run on the Apple GPU but may be slow or fail:\n\n"
+        + "\n".join(f"  - {u}" for u in unverified)
+        + "\n\nRun anyway?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    return reply == QMessageBox.StandardButton.Yes
+
+
+def _build_cuda_banner(
+    state: CudaState, parent: QMainWindow, *, mac: bool = False
+) -> QWidget | None:
     """Return an amber warning strip when CUDA isn't available, or
     None when everything's OK (banner becomes invisible by not being
-    added to the layout at all)."""
+    added to the layout at all). `mac`: an Apple Silicon Mac, where the
+    strip says Mac support is experimental instead."""
     if state.available:
         return None
     banner = QFrame(parent)
@@ -811,19 +863,30 @@ def _build_cuda_banner(state: CudaState, parent: QMainWindow) -> QWidget | None:
     icon.setStyleSheet("color: #ffb94a; font-size: 14pt;")
     layout.addWidget(icon)
 
-    msg = QLabel(
-        f"<b>No CUDA GPU detected</b> &nbsp;—&nbsp; neural passes will fail. "
-        f"<i>{state.torch_version}</i>"
-    )
+    if mac:
+        msg = QLabel(
+            "<b>Apple GPU (MPS): experimental</b> &nbsp;—&nbsp; not checked on a real "
+            "Mac yet; some passes are not available. Submit lists them. "
+            f"<i>{state.torch_version}</i>"
+        )
+    else:
+        msg = QLabel(
+            f"<b>No CUDA GPU detected</b> &nbsp;—&nbsp; neural passes will fail. "
+            f"<i>{state.torch_version}</i>"
+        )
     msg.setStyleSheet("color: #ffdca0;")
     msg.setTextFormat(Qt.TextFormat.RichText)
     layout.addWidget(msg)
     layout.addStretch()
 
     details_btn = QPushButton("Details / How to fix")
-    details_btn.clicked.connect(
-        lambda: QMessageBox.information(parent, "CUDA preflight", state.advisory)
+    details = (
+        "Mac support is experimental. `liveaov doctor` lists what each pass is "
+        "expected to do on a Mac. Set LAOV_DEVICE=cpu to run everything on the CPU."
+        if mac
+        else state.advisory
     )
+    details_btn.clicked.connect(lambda: QMessageBox.information(parent, "CUDA preflight", details))
     layout.addWidget(details_btn)
     return banner
 

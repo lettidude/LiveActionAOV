@@ -41,7 +41,8 @@ uv run liveaov-gui          # three-panel prep GUI
 - **GPU**: NVIDIA with CUDA 12-capable driver. RTX 20-series and newer
   all work; RTX 30 / 40 / 50-series are covered by the `cu128` wheel.
   RTX 50-series (Blackwell) users: driver must be >= 560.x.
-- **macOS**: MPS works for some passes but is materially slower. CPU
+- **macOS (Apple Silicon)**: experimental, not yet tested on a real
+  Mac. See [Apple Silicon](#apple-silicon-m1-to-m4-experimental). CPU
   is not a supported configuration — fp16 kernels don't exist there.
 
 ## Model cache (where the weights live, and disk)
@@ -331,13 +332,36 @@ load fp16 by default (DepthCrafter, NormalCrafter) will be slow or
 fall back to fp32. Commercial-safe passes (RAFT, DA-V2, MoGe-3, SAM3,
 ViTMatte) run fine.
 
-### Apple Silicon (M1 / M2 / M3)
+### Apple Silicon (M1 to M4, experimental)
 
-The default PyPI torch wheel includes MPS support. Skip the CUDA
-swap entirely — `install.sh` already does this on macOS. Most
-fp32 passes work via MPS (slower than CUDA but useable). fp16 passes
-are hit-or-miss depending on MPS kernel coverage; the GUI will
-refuse Submit and explain when a pass isn't available.
+**Not yet tested on a real Mac.** What follows is what the code is
+built to do; treat it as a preview until it has been run on Apple
+hardware.
+
+- `install.sh` uses the default PyPI torch wheel on macOS, which
+  includes MPS (the Apple GPU). There is no CUDA swap to do.
+- The passes pick their device in this order: an NVIDIA card, then
+  the Apple GPU, then the CPU. On the Apple GPU they run in fp32
+  (half precision stays NVIDIA-only), so expect them to be slower
+  than on an RTX card.
+- Expected to run on the Apple GPU: depth (Depth Anything v2, Video
+  Depth Anything, Depth Pro), normals (DSINE), mattes (SAM 3 and the
+  refiners), motion (RAFT, MegaFlow). The camera solve (COLMAP),
+  Cryptomatte, the chroma key and the screen pull have no GPU model
+  and run on the CPU.
+- Not on Mac yet: MoGe-3, the default depth and normals (its
+  refiner needs Triton, which has no Mac build), and with it the
+  camera's PnP fallback; the Gaussian splat background (its
+  rasterizer needs CUDA); DepthCrafter and NormalCrafter (video
+  diffusion); Marigold; the SAM 3.1 detector (its own CUDA
+  environment; SAM 3 is used instead).
+- `liveaov doctor --mac` prints this per pass. In the GUI, Submit
+  stops when a queued shot uses a pass the Mac cannot run, and asks
+  before running passes that have not been checked on a Mac yet.
+- `LAOV_DEVICE` forces a device for every pass: `cpu`, `mps`,
+  `cuda`, `cuda:1`, or `auto` (the default order). A device the
+  machine or the pass does not have falls back to the default order
+  with a warning.
 
 ### AMD GPUs (ROCm)
 

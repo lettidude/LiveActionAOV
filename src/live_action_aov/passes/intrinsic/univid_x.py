@@ -59,7 +59,9 @@ import numpy as np
 
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -96,6 +98,7 @@ class UniVidXIntrinsicPass(UtilityPass):
             "(academic-only)."
         ),
     )
+    device_support = DeviceSupport(mac=MacSupport.UNAVAILABLE, mac_notes="A 14B video model.")
     pass_type = PassType.RADIOMETRIC
     temporal_mode = TemporalMode.VIDEO_CLIP
     # UniVidX is trained at 480p clips; surfaced so the scheduler can size

@@ -31,7 +31,12 @@ from typing import Any
 
 import numpy as np
 
-from live_action_aov.core.pass_base import License
+from live_action_aov.core.device import autocast_device_type, pick_device
+from live_action_aov.core.pass_base import (
+    DeviceSupport,
+    License,
+    MacSupport,
+)
 from live_action_aov.core.runtime_env import load_local_first
 from live_action_aov.passes.flow.raft import RAFTPass, _linear_to_display
 
@@ -50,6 +55,11 @@ class MegaFlowPass(RAFTPass):
             "MegaFlow code + weights Apache-2.0 (ETH CVG, 2026); frozen DINOv2 "
             "ViT-L/14 backbone (Apache-2.0, Meta); torchvision ResNet-34 stem (BSD-3)."
         ),
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="bf16 / fp16 autocast is CUDA-only.",
     )
 
     DEFAULT_PARAMS: dict[str, Any] = {
@@ -76,7 +86,7 @@ class MegaFlowPass(RAFTPass):
         ckpt = load_local_first(hf_hub_download, repo_id=_HF_REPO, filename=_HF_FILE)
         model = MegaFlow(fuse_cnn=True, use_temporal_attn=True, fix_width=True)
         model.load_state_dict(load_file(str(ckpt), device="cpu"), strict=False)
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         prec = str(self.params.get("precision", "bf16"))
         self._dtype = (
             {"bf16": torch.bfloat16, "fp16": torch.float16}.get(prec, torch.float32)
@@ -124,7 +134,8 @@ class MegaFlowPass(RAFTPass):
             and self._device.type == "cuda"
             and self._dtype != torch.float32
         )
-        with torch.no_grad(), torch.autocast("cuda", dtype=self._dtype, enabled=use_ac):
+        ac_type = autocast_device_type(self._device)
+        with torch.no_grad(), torch.autocast(ac_type, dtype=self._dtype, enabled=use_ac):
             fwd = self._model(v, num_reg_refine=iters)["flow_preds"][-1]  # (1, 1, 2, h, w)
             bwd = self._model(v.flip(1), num_reg_refine=iters)["flow_preds"][-1]
         return {

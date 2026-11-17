@@ -1,0 +1,29 @@
+# DRAFT - Apple Silicon install + CPU tests (see docs/mac_port_plan.md).
+# Started by hand only (Actions tab -> "macOS CPU (draft)" -> Run workflow)
+# until it has been seen green; then it can join ci.yml.
+#
+# Hosted macOS runners do not reliably expose the Apple GPU (MPS), so this
+# proves the install and the device logic, not MPS: LAOV_DEVICE=cpu.
+name: macOS CPU (draft)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-macos:
+    runs-on: macos-14  # Apple Silicon (arm64)
+    timeout-minutes: 60
+    env:
+      UV_PYTHON: "3.11"
+      LAOV_DEVICE: cpu
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      # Core + dev only: the model extras (MoGe-3's Triton refiner, gsplat)
+      # are what the Mac port still has to sort out.
+      - run: uv sync --extra dev
+      - run: uv run python -c "import torch; print(torch.__version__, 'mps:', torch.backends.mps.is_available())"
+      - run: uv run liveaov doctor --mac
+      - name: Run tests (skip GPU)
+        run: uv run pytest -m "not gpu" -v

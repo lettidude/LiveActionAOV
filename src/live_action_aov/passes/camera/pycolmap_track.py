@@ -54,7 +54,9 @@ import numpy as np
 
 from live_action_aov.core.output_layout import CAMERA_DIR, file_name, run_stem, sub_dir
 from live_action_aov.core.pass_base import (
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     SidecarSpec,
     TemporalMode,
@@ -94,6 +96,11 @@ class PyColmapCameraPass(UtilityPass):
         commercial_use=True,
         commercial_tool_resale=True,
         notes="pycolmap / COLMAP are BSD-3-Clause (SIFT patent expired 2020).",
+    )
+    device_support = DeviceSupport(
+        devices=("cpu",),
+        mac=MacSupport.CPU,
+        mac_notes="The COLMAP solve runs on the CPU. The PnP fallback needs MoGe-3: not on Mac.",
     )
     pass_type = PassType.CAMERA
     temporal_mode = TemporalMode.VIDEO_CLIP

@@ -36,9 +36,12 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.device import pick_device
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -82,6 +85,11 @@ class MatAnyone2RefinerPass(UtilityPass):
             "`liveaov/matte/commercial = false` so downstream QC can "
             "catch NC deliverables before they reach a commercial client."
         ),
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="fp16 is CUDA-only.",
     )
     pass_type = PassType.SEMANTIC
     temporal_mode = TemporalMode.VIDEO_CLIP
@@ -156,7 +164,7 @@ class MatAnyone2RefinerPass(UtilityPass):
             trust_repo=True,
             skip_validation=True,
         )
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         self._dtype = (
             torch.float16
             if self.params.get("precision") == "fp16" and self._device.type == "cuda"
