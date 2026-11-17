@@ -48,7 +48,12 @@ from live_action_aov.io.readers.display_transform_reader import (
 from live_action_aov.io.readers.oiio_exr import OIIOExrReader
 from live_action_aov.io.readers.proxy import wrap_if_proxy
 from live_action_aov.io.writers.exr import ExrSidecarWriter
-from live_action_aov.io.writers.nuke_comp import pass_group
+from live_action_aov.io.writers.nuke_comp import (
+    MatteInfo,
+    engine_name,
+    matte_engine_label,
+    pass_group,
+)
 from live_action_aov.shared.optical_flow.cache import FlowCache
 
 METADATA_NAMESPACE = "liveaov"
@@ -763,6 +768,7 @@ class LocalExecutor(Executor):
                     written_channels,
                     per_pass,
                     writer._delivery_corrupts_crypto(),
+                    _matte_info(ordered, resolved_by_name, shot, rr),
                 )
                 if comp is not None:
                     shot.sidecars["comp"] = comp
@@ -1126,6 +1132,7 @@ def _write_comp_script(
     written_channels: dict[str, Path],
     per_pass: bool,
     crypto_split: bool,
+    matte_info: MatteInfo | None = None,
 ) -> Path | None:
     """`<shot>.comp.nk`: every output of the run wired up in Nuke."""
     from live_action_aov.io.writers.nuke_comp import CompRead, write_comp_script
@@ -1184,7 +1191,43 @@ def _write_comp_script(
         points_obj_rel=pts_rel,
         points_tex_rel=tex_rel,
         crypto_rel_pattern=crypto_rel,
+        matte_info=matte_info,
     )
+
+
+def _matte_info(
+    ordered: list[PassNode],
+    resolved_by_name: dict[str, tuple[PassConfig, type[UtilityPass]]],
+    shot: Shot,
+    rr: RunReportBuilder,
+) -> MatteInfo:
+    """Which engines made the mattes, for the comp script's labels: the
+    refiner that wrote `matte.rgba` (and what the run report says it really
+    used: LTX falls back to ViTMatte), and the detector of `mask.*`."""
+    info = MatteInfo()
+    for node in ordered:
+        pc, cls = resolved_by_name[node.name]
+        pr = rr.passes.get(node.name)
+        if pr is None or pr.status != "ran":
+            continue
+        params = {
+            **getattr(cls, "DEFAULT_PARAMS", {}),
+            **pc.params,
+            **shot.pass_overrides.get(node.name, {}),
+        }
+        provides = set(getattr(cls, "provides_artifacts", ()) or ())
+        if "matte_heroes" in provides and not params.get("channel_suffix"):
+            # A suffixed refiner (compare mode) writes its own layers.
+            info.matte = matte_engine_label(
+                cls.name,
+                pr.engine,
+                str(pr.extra.get("mode", "")),
+                partial=any(f.partial for f in pr.fallbacks),
+            )
+            info.soft_masks = bool(params.get("refine_all_masks"))
+        if "sam3_hard_masks" in provides:
+            info.detector = engine_name(pr.engine or cls.name)
+    return info
 
 
 def _base_attrs(
