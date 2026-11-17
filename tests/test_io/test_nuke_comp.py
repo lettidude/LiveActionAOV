@@ -8,6 +8,8 @@ import pytest
 
 from live_action_aov.io.writers.nuke_comp import (
     CompRead,
+    MatteInfo,
+    matte_engine_label,
     nuke_channel,
     pass_group,
     render_comp_script,
@@ -99,3 +101,94 @@ def test_no_example_without_splat(tmp_path: Path) -> None:
     )
     assert "Keymix" not in s
     assert "matte/sh.matte.####.exr" in s
+
+
+# --- which engine made each matte -------------------------------------------
+
+_MATTE_CHANS = ["mask.person", "mask.car", "matte.r", "matte.g", "matte.b", "matte.a"]
+
+
+def _matte_script(info: MatteInfo | None) -> str:
+    return render_comp_script(
+        shot_name="sh",
+        plate_pattern="p.####.exr",
+        frame_range=(1, 2),
+        resolution=(64, 32),
+        pixel_aspect=1.0,
+        reads=[
+            CompRead(
+                group="all passes",
+                rel_pattern="sh.utility.####.exr",
+                channels=[*_MATTE_CHANS, "foreground.a"],
+            )
+        ],
+        matte_info=info,
+    )
+
+
+def _label_of(script: str, name: str) -> str:
+    lines = script.splitlines()
+    i = lines.index(f" name {name}")
+    return lines[i + 1].removeprefix(" label ")
+
+
+@pytest.mark.parametrize(
+    ("args", "label"),
+    [
+        (("ltx_alpha_refiner", "ltx", "whole_frame"), "LTX Alpha (whole frame)"),
+        (("ltx_alpha_refiner", "ltx", "per_object"), "LTX Alpha (per object)"),
+        (("ltx_alpha_refiner", "vitmatte", "whole_frame"), "ViTMatte (LTX Alpha did not run)"),
+        (("vitmatte_refiner", "", ""), "ViTMatte"),
+        (("matanyone2", "", ""), "MatAnyone 2"),
+        (("some_future_refiner", "", ""), "some_future_refiner"),
+    ],
+)
+def test_matte_engine_label(args: tuple[str, str, str], label: str) -> None:
+    assert matte_engine_label(*args) == label
+
+
+def test_matte_engine_label_partial_fallback() -> None:
+    label = matte_engine_label("ltx_alpha_refiner", "ltx", "whole_frame", partial=True)
+    assert label.splitlines() == [
+        "LTX Alpha (whole frame)",
+        "some objects: fallback, see run report",
+    ]
+
+
+def test_labels_say_which_engine_made_each_matte() -> None:
+    s = _matte_script(MatteInfo(matte="LTX Alpha (whole frame)", detector="SAM 3.1"))
+    assert 'label "<center><b>matte: LTX Alpha (whole frame)</b>"' in s
+    assert " name Backdrop_0_matte" in s  # node names do not change
+    assert _label_of(s, "matte_matte") == (
+        r'"matte (hero RGBA)\nLTX Alpha (whole frame)\nr g b a = heroes 1-4"'
+    )
+    assert _label_of(s, "foreground_foreground") == (
+        r'"foreground: all LTX foreground\n(owned or not)"'
+    )
+    assert _label_of(s, "mask_extra_person") == r'"person\nSAM 3.1 hard mask"'
+    assert _label_of(s, "All_objects_matte") == r'"every mask (max)\nSAM 3.1 hard mask"'
+    assert s.count("{") == s.count("}")
+
+
+def test_soft_masks_name_the_matte_engine() -> None:
+    info = MatteInfo(matte="LTX Alpha (whole frame)", detector="SAM 3.1", soft_masks=True)
+    s = _matte_script(info)
+    assert _label_of(s, "mask_extra_car") == r'"car\nsoft edge: LTX Alpha (whole frame)"'
+
+
+def test_no_matte_info_keeps_the_old_labels() -> None:
+    s = _matte_script(None)
+    assert 'label "<center><b>matte</b>"' in s
+    assert _label_of(s, "matte_matte") == '"matte (hero RGBA)"'
+    assert _label_of(s, "mask_extra_person") == '"person"'
+    assert _label_of(s, "All_objects_matte") == '"every mask (max)"'
+
+
+def test_alpha_only_layer_fills_rgb_too() -> None:
+    # foreground.a alone: RGB black in the Viewer made the matte look missing.
+    s = _matte_script(None)
+    lines = s.splitlines()
+    i = lines.index(" name foreground_foreground")
+    mappings = lines[i - 1]
+    for d in ("red", "green", "blue", "alpha"):
+        assert f"foreground.alpha 0 0 rgba.{d}" in mappings, d
