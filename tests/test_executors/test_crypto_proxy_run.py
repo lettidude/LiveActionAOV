@@ -71,7 +71,7 @@ def plate(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return folder
 
 
-def _run(plate: Path, out: Path, upscale: str) -> None:
+def _run(plate: Path, out: Path, upscale: str | None) -> None:
     shot = Shot(
         name="cx",
         folder=plate,
@@ -84,7 +84,8 @@ def _run(plate: Path, out: Path, upscale: str) -> None:
         passes_enabled=[_Crypto.name],
         proxy_long_edge=PROXY,
     )
-    job = Job(shot=shot, passes=[PassConfig(name=_Crypto.name, params={"proxy_upscale": upscale})])
+    params = {} if upscale is None else {"proxy_upscale": upscale}
+    job = Job(shot=shot, passes=[PassConfig(name=_Crypto.name, params=params)])
     live_action_aov.run(job)
     assert job.shot.status == "done"
 
@@ -129,8 +130,14 @@ def test_nearest_keeps_the_id_count_at_plate_size(plate: Path, tmp_path: Path) -
         assert not any("cryptomatte" in k for k in attrs if k.startswith("liveaov/"))
 
 
-def test_linear_still_blends_ids_by_default_param(plate: Path, tmp_path: Path) -> None:
-    """With the option off the output is the old one: bilinear, extra IDs."""
+def test_default_is_nearest(plate: Path, tmp_path: Path) -> None:
+    _run(plate, tmp_path / "def", None)
+    ch, _ = _read(sorted((tmp_path / "def" / "passes").glob("cx.utility.*.exr"))[0])
+    assert len(_ids(ch)) == 3
+
+
+def test_linear_still_gives_the_old_output(plate: Path, tmp_path: Path) -> None:
+    """`proxy_upscale: linear` is the older behaviour: bilinear, extra IDs."""
     _run(plate, tmp_path / "lin", "linear")
     ch, _ = _read(sorted((tmp_path / "lin" / "passes").glob("cx.utility.*.exr"))[0])
     assert len(_ids(ch)) > 3

@@ -80,9 +80,10 @@ class CryptomattePass(UtilityPass):
         # (px) faking sub-pixel coverage for softer comp edges.
         "feather": 0.0,
         # Proxy runs: how the ID channels are scaled back up to the plate.
-        # "nearest" keeps every id an object of the manifest; "linear" (the
-        # historic behaviour) blends neighbouring ids along every edge.
-        "proxy_upscale": "linear",
+        # "nearest" (default) keeps every id an object of the manifest;
+        # "linear" (the older behaviour) blends neighbouring ids along
+        # every edge into ids that name no object.
+        "proxy_upscale": "nearest",
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
