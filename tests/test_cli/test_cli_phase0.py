@@ -79,3 +79,22 @@ def test_doctor_reports_the_machine_and_a_suggestion(monkeypatch: pytest.MonkeyP
     assert result.exit_code == 0, result.stdout
     for word in ("GPU", "SAM 3.1", "LTX Alpha", "Suggested for"):
         assert word in result.stdout
+
+
+@pytest.mark.skipif(not HAS_OIIO, reason="OpenImageIO not installed")
+def test_run_shot_crowd_flag_reaches_the_matte_pass(
+    test_plate_1080p: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jobs: list = []
+    monkeypatch.setattr(live_action_aov, "run", lambda job, **kw: jobs.append(job))
+    base = ["run-shot", str(test_plate_1080p), "--out", str(tmp_path)]
+    res = runner.invoke(app, [*base, "--passes", "matte", "--crowd"])
+    assert res.exit_code == 0, res.stdout
+    assert "Crowd mode is on" in res.stdout
+    matte = next(p for p in jobs[-1].passes if p.name == "sam3_matte")
+    assert matte.params == {"sam31_tiles": "on"}
+    res = runner.invoke(app, [*base, "--passes", "matte"])
+    matte = next(p for p in jobs[-1].passes if p.name == "sam3_matte")
+    assert "sam31_tiles" not in matte.params
+    res = runner.invoke(app, [*base, "--passes", "noop", "--crowd"])
+    assert "--crowd ignored" in res.stdout

@@ -20,7 +20,7 @@ import os
 import re
 import signal
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -401,6 +401,15 @@ def run_shot(
             "that many frames; `off` = always one go.",
         ),
     ] = "auto",
+    crowd: Annotated[
+        bool,
+        typer.Option(
+            "--crowd",
+            help="Crowd mode for the matte pass (SAM 3.1): the zoomed tiles of the frame are "
+            "tracked too, one ID per person in a dense crowd of small people. Much longer "
+            "matte run and a big GPU (32 GB class); for crowd shots only.",
+        ),
+    ] = False,
 ) -> None:
     """Run passes on the EXR sequence in `folder` and write sidecar EXRs."""
     raw_names = [p.strip() for p in passes.split(",") if p.strip()]
@@ -494,10 +503,21 @@ def run_shot(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=2) from None
     moge3 = _moge3_outputs(raw_names, depth_backend=depth_backend, normals_backend=normals_backend)
+    per_pass: dict[str, dict[str, Any]] = {"moge3": dict(moge3)}
+    if crowd:
+        if "sam3_matte" in pass_names:
+            per_pass["sam3_matte"] = {"sam31_tiles": "on"}
+            console.print(
+                "[yellow]Crowd mode is on:[/yellow] expect a much longer matte run and a full "
+                "32 GB card (SAM 3.1 tracks every zoomed tile of the frame).",
+                highlight=False,
+            )
+        else:
+            console.print("[yellow]--crowd ignored:[/yellow] no sam3_matte pass in this run.")
     job = Job(
         shot=shot,
         passes=[
-            PassConfig(name=n, params=moge3) if n == "moge3" else PassConfig(name=n)
+            PassConfig(name=n, params=per_pass[n]) if n in per_pass else PassConfig(name=n)
             for n in pass_names
         ],
     )

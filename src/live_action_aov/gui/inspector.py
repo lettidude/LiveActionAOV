@@ -510,6 +510,24 @@ class InspectorPanel(QWidget):
         small_row.addWidget(self._small_objects_label)
         small_row.addWidget(self._small_objects_combo, stretch=1)
 
+        # Crowd mode (per shot, opt-in): SAM 3.1 tracks the zoomed tiles too.
+        self._crowd_check = QCheckBox("Crowd mode - one ID per person in a dense crowd (slow)")
+        self._crowd_check.setToolTip(
+            "For a dense crowd of small people that needs its own ID per person "
+            "(Cryptomatte picks). SAM 3.1 also tracks the zoomed tiles of the frame "
+            "as their own clips: it reaches people the whole-frame search never sees, "
+            "but the matte step takes many times longer and wants a big card "
+            "(32 GB class). This shot only; leave it off on shots without a crowd. "
+            "SAM 3.1 detector only; turns Small objects Off into Auto."
+        )
+        self._crowd_check.toggled.connect(self._on_crowd_toggled)
+        self._crowd_warning = QLabel(
+            "Crowd mode: expect a much longer matte run and a full 32 GB card."
+        )
+        self._crowd_warning.setStyleSheet("color: #c08040; font-size: 10pt;")
+        self._crowd_warning.setWordWrap(True)
+        self._crowd_warning.setVisible(False)
+
         # Detector: SAM 3 (built in) or SAM 3.1 Object Multiplex.
         self._detector_combo = QComboBox()
         self._detector_combo.addItem("Auto - SAM 3.1 when installed, else SAM 3", "auto")
@@ -559,6 +577,8 @@ class InspectorPanel(QWidget):
         adv_layout.setContentsMargins(16, 0, 0, 0)
         adv_layout.setSpacing(4)
         adv_layout.addLayout(small_row)
+        adv_layout.addWidget(self._crowd_check)
+        adv_layout.addWidget(self._crowd_warning)
         adv_layout.addLayout(detector_row)
         adv_layout.addWidget(self._refine_all_check)
         adv_layout.addWidget(self._outline_check)
@@ -1158,6 +1178,10 @@ class InspectorPanel(QWidget):
             so = self._small_objects_combo.findData(shot.small_objects or "auto")
             self._small_objects_combo.setCurrentIndex(max(so, 0))
             self._small_objects_combo.blockSignals(False)
+            self._crowd_check.blockSignals(True)
+            self._crowd_check.setChecked(bool(shot.crowd_mode))
+            self._crowd_check.blockSignals(False)
+            self._crowd_warning.setVisible(bool(shot.crowd_mode))
             self._detector_combo.blockSignals(True)
             di = self._detector_combo.findData(shot.detector or "auto")
             self._detector_combo.setCurrentIndex(max(di, 0))
@@ -1525,6 +1549,12 @@ class InspectorPanel(QWidget):
             return
         self._current.small_objects = str(self._small_objects_combo.itemData(idx) or "auto")
 
+    def _on_crowd_toggled(self, checked: bool) -> None:
+        self._crowd_warning.setVisible(bool(checked))
+        if self._building or self._current is None:
+            return
+        self._current.crowd_mode = bool(checked)
+
     def _on_detector_changed(self, idx: int) -> None:
         if self._building or self._current is None:
             return
@@ -1553,6 +1583,7 @@ class InspectorPanel(QWidget):
         self._default_engine_combo.setEnabled("sam3_matte_on" in enabled)
         self._small_objects_combo.setEnabled("sam3_matte_on" in enabled)
         self._small_objects_label.setEnabled("sam3_matte_on" in enabled)
+        self._crowd_check.setEnabled("sam3_matte_on" in enabled)
         self._detector_combo.setEnabled("sam3_matte_on" in enabled)
         self._detector_label.setEnabled("sam3_matte_on" in enabled)
         from live_action_aov.gui.pass_catalog import expand_models

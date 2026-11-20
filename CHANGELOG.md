@@ -33,6 +33,17 @@ uses [semantic versioning](https://semver.org/).
   shot (slower); a search that SAM 3.1 fails on is skipped instead of stopping the run. One person
   found twice stays one object. `sam31_tiles` `on` adds a zoomed tile search (opt-in).
   `small_objects` `off` gives exactly the previous result.
+- **Crowd mode (SAM 3.1, opt-in per shot).** For a dense crowd of small people that needs one ID per
+  person: SAM 3.1 also tracks the zoomed tiles of the frame (GUI: Passes tab > Advanced > Crowd mode; CLI:
+  `run-shot --crowd`; param `sam31_tiles: on`). Off by default and not part of `small_objects: max`;
+  the GUI, the CLI and the log warn that the matte step takes much longer and wants a big card.
+  In crowd mode: a big person cut by a tile border stays one ID (`sam31_tile_absorb`), tile clips
+  run at the size the model reads (`sam31_tile_work_size`, less GPU memory), the tile sessions can
+  have their own object cap (`sam31_tile_max_objects`) or a tile that fills up can be tracked again
+  as smaller tiles (`sam31_tile_split: dense`), and an ID that jumps onto a neighbour is cut there
+  instead of swapping identities (`sam31_swap_guard`). The run report says how many tiles and
+  sessions ran, how many sessions hit their object cap, how many were skipped, and the time and GPU
+  peak. With crowd mode off, results are unchanged.
 - **SAM 3.1 Max: one ID per person, and a GPU check first.** A merge that would put two people in one
   ID (a track that read them as one, in smoke or motion blur) is refused, and the log names each
   refused merge; `sam31_split_frames` and `sam31_split_share` set how strict it is. Before a Max run,
