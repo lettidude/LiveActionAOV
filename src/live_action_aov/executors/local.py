@@ -460,8 +460,10 @@ class LocalExecutor(Executor):
             if arts.get("sam3_hard_masks") and "matte_layering" not in existing_post_names:
                 auto_post.append(PostConfig(name="matte_layering", params={}))
             posts = list(job.post) + auto_post
-            posts = [p for p in posts if p.name != "matte_layering"] + [
-                p for p in posts if p.name == "matte_layering"
+            # Last: the matte layering, then a holdout (it reads the final mattes).
+            last = ("matte_layering", "holdout")
+            posts = [p for p in posts if p.name not in last] + [
+                p for name in last for p in posts if p.name == name
             ]
 
             # --- Post-processors (user-configured + auto-wired smoothers) ---
@@ -1282,6 +1284,12 @@ def _base_attrs(
             base[f"{prefix}/label"] = str(hero.get("label", ""))
             base[f"{prefix}/track_id"] = int(hero.get("track_id", 0))
             base[f"{prefix}/score"] = float(hero.get("score", 0.0))
+            # Slot -> Cryptomatte table: which crypto object this slot is.
+            if hero.get("crypto_name"):
+                base[f"{prefix}/crypto_name"] = str(hero["crypto_name"])
+                base[f"{prefix}/crypto_id"] = str(hero.get("crypto_id", ""))
+            if hero.get("mean_area") is not None:
+                base[f"{prefix}/mean_area"] = float(hero["mean_area"])
     # Temporal smoothers — stamped under `smooth/`.
     smoothers = [p for p in applied_post if p["name"] == "temporal_smooth"]
     if smoothers:

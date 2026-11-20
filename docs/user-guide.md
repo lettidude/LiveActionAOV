@@ -57,6 +57,9 @@ liveaov metadata:
   matte/hero_r/label     = "person"
   matte/hero_r/track_id  = 3
   matte/hero_r/score     = 0.91
+  matte/hero_r/crypto_name = "person_3"
+  matte/hero_r/crypto_id   = "1d4f3b2a"
+  matte/hero_r/mean_area   = 0.104
 
 Heroes (1 of 4 slots filled):
   matte.r = person (track 3, score 0.91)
@@ -90,6 +93,7 @@ liveaov-gui
    - **Whole + parts**: list a whole and its parts together (`person, hair, jacket, trousers`). `mask.person` stays the full body; `mask.hair`, `mask.jacket`, ... are cut from the person's matte, so they share its outer edge (hair strands included), add up to it exactly and never leave it. Parts are recognised by name (clothing, body and vehicle parts) when they sit inside a bigger object; a person inside a car stays a separate object.
    - Multi-word concepts become channel-safe names: `brick wall` -> `mask.brick_wall`.
    - **Small objects** (Auto / Max / Off) — finds small and distant people that a search on the whole frame misses on a big plate. **Auto** (default) is right for most shots, **Max** is for crowds and far people, **Off** searches the whole frame only. A person walking across the frame keeps one ID. Small objects keep SAM's edge (anti-aliased, no edge refine) and each gets its own Cryptomatte ID; a click on a small subject is handled the same way. With a **proxy** set (Output tab), the search for objects still reads the original plate, so a proxy run finds the same small people as the full-res run. With the **SAM 3.1** detector, **Max** looks on several frames instead of tiles and joins the pieces of each person into one track (slower). On a dense crowd at HD size, if that run is very slow or runs out of memory, set `sam31_work_size_above: 1024` for the shot.
+   - **Hero slots** (`matte.r/g/b/a`): set `hero_order: coverage` on the SAM matte to fill them biggest subject first, or pin a hero with `heroes` (`{"name": "person_3", "slot": "r"}` with the Cryptomatte name from the run report, or `{"box": [x1, y1, x2, y2], "frame": 1040, "slot": "g"}`). The run report (`extra.slots`) and the EXR header (`matte/hero_<slot>/crypto_name`) say which Cryptomatte object each slot holds. On a crowd, `crowd_cap: N` keeps the N biggest objects.
 3. **Masks tab (interactive click-to-mask, optional)** — seed an object directly in the viewport:
    - **Drag a box** around it (often the strongest single prompt), and/or **left-click = include**, **right-click = exclude**.
    - The **preview** runs by itself after every click or box (the *Auto* button; first use loads the model, then it is quick) and overlays the soft matte in the viewer, so you see what is being matted before the full run. *with* picks what it is made with: the run engine, ViTMatte, BiRefNet, or *SAM only* for the hard mask. LTX Alpha runs at submit: its preview is ViTMatte.

@@ -7,6 +7,25 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Hero slots in a fixed order, and a slot table.** `hero_order: coverage` on the SAM matte fills
+  `matte.r/g/b/a` biggest subject first (mean coverage of the frame over the shot); the default
+  ranking is unchanged. A hero can also be picked by its Cryptomatte name or by a box drawn on a
+  frame (`heroes`). The EXR header and the run report now say, per slot, which Cryptomatte object
+  it is (name, ID) and how much of the frame it covers.
+- **Crowds and empty frames.** More objects than `crowd_warn_above` gives a warning; `crowd_cap`
+  keeps only the biggest ones. When the frame SAM starts from shows none of the concepts, it looks
+  again on other frames instead of giving an empty Cryptomatte (`reseed_empty`). With SAM 3.1, a
+  concept with nothing to track now gives an empty result instead of stopping the run.
+- **LTX Alpha whole frame: an arm or a prop stays with its person** (`owner_rule: connected`, off by
+  default). Foreground joined to one person's mask goes to that person even where someone else is
+  closer: an outstretched hand, a held object, hair SAM missed.
+- **Holdout combine as a built-in step** (`holdout` in the job's post list). Writes
+  `holdout.<object>`: the object's soft matte with its neighbours held out (closed, grown and
+  feathered), plus an optional clean-up of soft strips along the neighbours that never touches the
+  object's own edge.
+- **LTX chunk joins in the run report.** A long shot matted in several LTX calls reports how well
+  the calls agree where they overlap, and warns at a join that does not.
+- **Wide SAM gates stay fast** (`gate_dilate: distance` on the LTX crop route).
 - **SAM 3.1 keeps small and late-entering people.** With `small_objects` on (the default), people
   far in the background and people who walk in later stay in the masks and the Cryptomatte. Big
   plates run at a size that fits the card (`sam31_work_size`). `small_objects` `max` also looks
