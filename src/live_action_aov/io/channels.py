@@ -75,6 +75,30 @@ FLOW_CHANNELS = (
     CH_BACKWARD_V,
 )
 
+# Forward-backward error of the flow (opt-in, `fb_residual` on the flow
+# pass): for `motion` at frame f, motion(p) + back_{f+1}(p + motion(p)); for
+# `back`, the same the other way. A vector in plate pixels, 0 where the two
+# directions agree; its length is the error (large = occluded or unreliable).
+CH_MOTION_FB_X = "motion_fb.x"
+CH_MOTION_FB_Y = "motion_fb.y"
+CH_BACK_FB_X = "back_fb.x"
+CH_BACK_FB_Y = "back_fb.y"
+FLOW_FB_CHANNELS = (CH_MOTION_FB_X, CH_MOTION_FB_Y, CH_BACK_FB_X, CH_BACK_FB_Y)
+
+#: Every channel that holds a 2D displacement in pixels (scaled per axis
+#: whenever the image is resampled): `.x` / `.u` = horizontal.
+FLOW_VECTOR_CHANNELS = (
+    CH_MOTION_X,
+    CH_MOTION_Y,
+    CH_BACK_X,
+    CH_BACK_Y,
+    CH_FORWARD_U,
+    CH_FORWARD_V,
+    CH_BACKWARD_U,
+    CH_BACKWARD_V,
+    *FLOW_FB_CHANNELS,
+)
+
 # --- Screen pull (classic chroma key: premult RGBA + alpha) ---
 # The `screen_pull` pass keys the WHOLE plate against the green/blue
 # screen (no SAM involvement): key.a = 1 everywhere that is not screen,
@@ -185,6 +209,7 @@ CANONICAL_CHANNEL_ORDER: tuple[str, ...] = (
     *ALBEDO_CHANNELS,
     *IRRADIANCE_CHANNELS,
     *FLOW_CHANNELS,
+    *FLOW_FB_CHANNELS,
     *MATTE_CHANNELS,
     *KEY_CHANNELS,
     *SPLAT_CHANNELS,
@@ -202,6 +227,8 @@ __all__ = [
     "CH_AO",
     "CH_BACKWARD_U",
     "CH_BACKWARD_V",
+    "CH_BACK_FB_X",
+    "CH_BACK_FB_Y",
     "CH_BACK_X",
     "CH_BACK_Y",
     "CH_DEPTH_CONFIDENCE",
@@ -220,6 +247,8 @@ __all__ = [
     "CH_MATTE_B",
     "CH_MATTE_G",
     "CH_MATTE_R",
+    "CH_MOTION_FB_X",
+    "CH_MOTION_FB_Y",
     "CH_MOTION_X",
     "CH_MOTION_Y",
     "CH_NORMALS_CONFIDENCE",
@@ -241,6 +270,8 @@ __all__ = [
     "CRYPTOMATTE_TYPENAME",
     "DEPTH_CHANNELS",
     "FLOW_CHANNELS",
+    "FLOW_FB_CHANNELS",
+    "FLOW_VECTOR_CHANNELS",
     "IRRADIANCE_CHANNELS",
     "KEY_CHANNELS",
     "MASK_PREFIX",

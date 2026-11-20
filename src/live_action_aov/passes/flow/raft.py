@@ -15,6 +15,9 @@ Outputs (spec §5.1, channels.py):
 - `motion.x` / `motion.y`  — forward flow at frame f (f → f+1) in pixels at plate res
 - `back.x` / `back.y`      — backward flow at frame f (f → f-1) in pixels
 - `flow.confidence`        — F-B consistency in [0, 1]; 1 = perfectly consistent
+- `motion_fb.x/y`, `back_fb.x/y` (opt-in, `fb_residual`) — the raw
+  forward-backward error of `motion` / `back` as a vector in plate pixels
+  (0 = the two directions agree; its length is the error in pixels)
 
 Artifacts emitted to downstream consumers (FlowCache + smoother):
 - `forward_flow` / `backward_flow` — per-frame `(2, H, W)` arrays
@@ -45,6 +48,8 @@ from live_action_aov.core.pass_base import (
     UtilityPass,
 )
 from live_action_aov.io.channels import (
+    CH_BACK_FB_X,
+    CH_BACK_FB_Y,
     CH_BACK_X,
     CH_BACK_Y,
     CH_BACKWARD_U,
@@ -53,6 +58,8 @@ from live_action_aov.io.channels import (
     CH_FLOW_OCCLUSION,
     CH_FORWARD_U,
     CH_FORWARD_V,
+    CH_MOTION_FB_X,
+    CH_MOTION_FB_Y,
     CH_MOTION_X,
     CH_MOTION_Y,
 )
@@ -88,6 +95,11 @@ class RAFTPass(UtilityPass):
         ChannelSpec(name=CH_FORWARD_V, description="Alias of motion.y for Nuke VectorBlur"),
         ChannelSpec(name=CH_BACKWARD_U, description="Alias of back.x for Nuke VectorBlur"),
         ChannelSpec(name=CH_BACKWARD_V, description="Alias of back.y for Nuke VectorBlur"),
+        # Opt-in (`fb_residual`): written only when the param is on.
+        ChannelSpec(name=CH_MOTION_FB_X, description="Forward-backward error of motion, x (px)"),
+        ChannelSpec(name=CH_MOTION_FB_Y, description="Forward-backward error of motion, y (px)"),
+        ChannelSpec(name=CH_BACK_FB_X, description="Forward-backward error of back, x (px)"),
+        ChannelSpec(name=CH_BACK_FB_Y, description="Forward-backward error of back, y (px)"),
     ]
     provides_artifacts = [
         "forward_flow",
@@ -102,6 +114,9 @@ class RAFTPass(UtilityPass):
         "fb_threshold_px": 1.0,
         "inference_resolution": 520,  # target max-side in px (multiple of 8)
         "num_flow_updates": 12,  # RAFT iters; raft_large default
+        # Also write the raw forward-backward error of both directions
+        # (`motion_fb.*`, `back_fb.*`, plate pixels) for trackers.
+        "fb_residual": False,
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -237,7 +252,20 @@ class RAFTPass(UtilityPass):
         conf_np = conf[0].cpu().numpy().astype(np.float32)
         motion_x, motion_y = fwd_np[0], fwd_np[1]
         back_x, back_y = bwd_np[0], bwd_np[1]
+        extra: dict[str, np.ndarray] = {}
+        if self.params.get("fb_residual"):
+            # Forward error lives at frame f (with motion), backward error
+            # at frame f+1 (with back); run_shot files them that way.
+            f_err = _fb_residual(fwd_plate, bwd_plate)[0].cpu().numpy().astype(np.float32)
+            b_err = _fb_residual(bwd_plate, fwd_plate)[0].cpu().numpy().astype(np.float32)
+            extra = {
+                CH_MOTION_FB_X: f_err[0],
+                CH_MOTION_FB_Y: f_err[1],
+                CH_BACK_FB_X: b_err[0],
+                CH_BACK_FB_Y: b_err[1],
+            }
         return {
+            **extra,
             # Spec §5.1 canonical names
             CH_MOTION_X: motion_x,
             CH_MOTION_Y: motion_y,
@@ -272,6 +300,9 @@ class RAFTPass(UtilityPass):
         pair_fwd: dict[int, np.ndarray] = {}  # fwd at frame f = flow f → f+1
         pair_bwd: dict[int, np.ndarray] = {}  # bwd at frame f+1 = flow f+1 → f
         pair_conf: dict[int, np.ndarray] = {}  # confidence of fwd at f
+        want_err = bool(self.params.get("fb_residual"))
+        pair_fwd_err: dict[int, np.ndarray] = {}  # FB error of fwd at f
+        pair_bwd_err: dict[int, np.ndarray] = {}  # FB error of bwd at f+1
 
         plate_h: int | None = None
         plate_w: int | None = None
@@ -287,9 +318,16 @@ class RAFTPass(UtilityPass):
             pair_fwd[f] = np.stack([channels[CH_MOTION_X], channels[CH_MOTION_Y]], axis=0)
             pair_bwd[f + 1] = np.stack([channels[CH_BACK_X], channels[CH_BACK_Y]], axis=0)
             pair_conf[f] = channels[CH_FLOW_CONFIDENCE]
+            if want_err:
+                pair_fwd_err[f] = np.stack(
+                    [channels[CH_MOTION_FB_X], channels[CH_MOTION_FB_Y]], axis=0
+                )
+                pair_bwd_err[f + 1] = np.stack(
+                    [channels[CH_BACK_FB_X], channels[CH_BACK_FB_Y]], axis=0
+                )
 
         # Assemble per-frame channel dicts. Endpoints get zero-valued flow.
-        all_flow_channels = (
+        all_flow_channels: tuple[str, ...] = (
             CH_MOTION_X,
             CH_MOTION_Y,
             CH_BACK_X,
@@ -301,6 +339,14 @@ class RAFTPass(UtilityPass):
             CH_BACKWARD_U,
             CH_BACKWARD_V,
         )
+        if want_err:
+            all_flow_channels = (
+                *all_flow_channels,
+                CH_MOTION_FB_X,
+                CH_MOTION_FB_Y,
+                CH_BACK_FB_X,
+                CH_BACK_FB_Y,
+            )
         if plate_h is None or plate_w is None:
             # Single-frame shot — nothing to compute.
             zero = np.zeros((1, 1), dtype=np.float32)
@@ -328,6 +374,14 @@ class RAFTPass(UtilityPass):
                 CH_BACKWARD_U: bwd[0],
                 CH_BACKWARD_V: bwd[1],
             }
+            if want_err:
+                # Endpoints (no flow that way) get zero error, like the flow.
+                f_err = pair_fwd_err.get(f, zero2)
+                b_err = pair_bwd_err.get(f, zero2)
+                out[f][CH_MOTION_FB_X] = f_err[0]
+                out[f][CH_MOTION_FB_Y] = f_err[1]
+                out[f][CH_BACK_FB_X] = b_err[0]
+                out[f][CH_BACK_FB_Y] = b_err[1]
             # Stash for artifact emission.
             self._forward[f] = fwd
             self._backward[f] = bwd
@@ -394,6 +448,27 @@ def _upscale_flow_to_plate(
     bwd_up[:, 0] *= sx
     bwd_up[:, 1] *= sy
     return fwd_up, bwd_up
+
+
+def _fb_residual(a: Any, b: Any) -> Any:
+    """Forward-backward error of flow `a` against the reverse flow `b`.
+
+    For pixel p: `a[p] + b[p + a[p]]` (b sampled bilinearly, border clamped),
+    a `(B, 2, H, W)` vector in pixels. Zero where the two flows agree."""
+    import torch
+
+    _b, _, h, w = a.shape
+    y_coords = torch.arange(h, dtype=a.dtype, device=a.device)
+    x_coords = torch.arange(w, dtype=a.dtype, device=a.device)
+    yy, xx = torch.meshgrid(y_coords, x_coords, indexing="ij")
+    grid = torch.stack(
+        [(xx + a[:, 0]) / max(w - 1, 1) * 2 - 1, (yy + a[:, 1]) / max(h - 1, 1) * 2 - 1],
+        dim=-1,
+    )
+    b_sampled = torch.nn.functional.grid_sample(
+        b, grid, mode="bilinear", padding_mode="border", align_corners=True
+    )
+    return a + b_sampled
 
 
 def _fb_consistency(fwd: Any, bwd: Any, threshold_px: float) -> Any:

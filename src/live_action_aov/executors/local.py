@@ -39,8 +39,23 @@ from live_action_aov.core.registry import get_registry
 from live_action_aov.core.run_report import RunReportBuilder, report_path, write_report
 from live_action_aov.core.work_dir import make_work_dir
 from live_action_aov.executors.base import Executor
+from live_action_aov.io.channels import (
+    CH_BACK_X,
+    CH_BACK_Y,
+    CH_FLOW_CONFIDENCE,
+    CH_MOTION_X,
+    CH_MOTION_Y,
+    CH_N_X,
+    CH_N_Y,
+    CH_N_Z,
+    CH_Z,
+    CRYPTOMATTE_CHANNELS,
+    FLOW_FB_CHANNELS,
+    FLOW_VECTOR_CHANNELS,
+)
 from live_action_aov.io.oiio_io import OiioError
 from live_action_aov.io.readers.crop import wrap_if_crop
+from live_action_aov.io.readers.desqueeze import is_squeezed, wrap_if_desqueeze
 from live_action_aov.io.readers.display_transform_reader import (
     DisplayTransformedReader,
     LinearizedReader,
@@ -52,6 +67,7 @@ from live_action_aov.io.writers.nuke_comp import pass_group
 from live_action_aov.shared.optical_flow.cache import FlowCache
 
 METADATA_NAMESPACE = "liveaov"
+NORMAL_XYZ = (CH_N_X, CH_N_Y, CH_N_Z)
 
 _log = logging.getLogger(__name__)
 
@@ -235,6 +251,16 @@ class LocalExecutor(Executor):
         raw_reader: Any = OIIOExrReader(shot.folder, shot.sequence_pattern)
         # Crop first (plate pixels), then proxy: a proxy scales the crop.
         raw_reader = wrap_if_crop(raw_reader, shot.crop)
+        # Anamorphic: de-squeeze after the crop (plate pixels), before the
+        # proxy (which then scales square pixels). Write-back in write_frames.
+        desqueezed = _desqueeze_wanted(shot, [cls for _pc, cls in resolved])
+        raw_reader = wrap_if_desqueeze(raw_reader, shot.pixel_aspect, desqueezed)
+        if desqueezed:
+            _log.info(
+                "Pixel aspect %.3f: passes run de-squeezed at %dx%d, written back at the plate's squeeze",
+                float(shot.pixel_aspect),
+                *raw_reader.resolution(),
+            )
         # Proxy resolution for fast iterations. Wraps the raw reader
         # with a resize-on-read shim before the display transform sees
         # anything, so exposure analysis runs on the downsampled clip
@@ -517,6 +543,11 @@ class LocalExecutor(Executor):
                 # every frame: a run in windows must not change a key from
                 # one window to the next.
                 attrs_base = _base_attrs(shot, job, arts, applied_post)
+                if desqueezed:
+                    attrs_base[f"{METADATA_NAMESPACE}/input/pixel_aspect"] = float(
+                        shot.pixel_aspect
+                    )
+                    attrs_base[f"{METADATA_NAMESPACE}/input/processing"] = "desqueezed"
             if whole:
                 report(0.9, "Writing sidecars…")
 
@@ -551,7 +582,11 @@ class LocalExecutor(Executor):
                 else {}
             )
             needs_upscale = False
-            if shot.proxy_long_edge is not None:
+            # De-squeezed run: ID channels are never blended on the way back
+            # to the plate's squeeze (a mix of two Cryptomatte hash ids names
+            # no object), normals are made unit length again.
+            desq_nearest: set[str] = set(CRYPTOMATTE_CHANNELS) if desqueezed else set()
+            if shot.proxy_long_edge is not None or desqueezed:
                 # Check the first channel's shape against plate res.
                 for cdict in per_frame_channels.values():
                     for arr in cdict.values():
@@ -582,7 +617,13 @@ class LocalExecutor(Executor):
                     # sidecars, like the camera track): nothing to write.
                     continue
                 if needs_upscale:
-                    channels = _upscale_channels_to_plate(channels, plate_h, plate_w)
+                    channels = _upscale_channels_to_plate(
+                        channels,
+                        plate_h,
+                        plate_w,
+                        nearest=desq_nearest,
+                        renormalize_normals=desqueezed,
+                    )
                 out_path = sidecar_dir / sidecar_template.format(frame=frame_idx)
                 # (path, channels, path of the lossless Cryptomatte sibling)
                 targets: list[tuple[Path, dict[str, Any], Path]]
@@ -648,6 +689,23 @@ class LocalExecutor(Executor):
                     )
                     for ch_name in t_channels:
                         written_channels.setdefault(ch_name, t_path)
+                if shot.tracker_proxy:
+                    t_path = sidecar_dir / frame_template(shot, "tracker", sub="tracker").format(
+                        frame=frame_idx
+                    )
+                    t_path.parent.mkdir(parents=True, exist_ok=True)
+                    _retry_io(
+                        partial(
+                            _write_tracker_proxy,
+                            t_path,
+                            channels,
+                            attrs,
+                            float(shot.tracker_proxy_scale),
+                            float(shot.pixel_aspect),
+                            window,
+                        ),
+                        what=f"tracker proxy write {t_path.name}",
+                    )
                 if first_written is None:
                     first_written = targets[0][0] if targets else out_path
 
@@ -1329,8 +1387,14 @@ def _upscale_channels_to_plate(
     channels: dict[str, Any],
     plate_h: int,
     plate_w: int,
+    nearest: set[str] | frozenset[str] = frozenset(),
+    renormalize_normals: bool = False,
 ) -> dict[str, Any]:
     """Upscale each per-frame channel array back to plate resolution.
+
+    Channels named in `nearest` are resampled nearest-neighbour: ID channels
+    (Cryptomatte hash ids and their paired coverage) must never be blended,
+    a bilinear mix of two ids is a third id that names no object.
 
     Proxy mode ran passes at a smaller resolution for speed; sidecars
     should still match the plate so comp can use them without an
@@ -1341,27 +1405,19 @@ def _upscale_channels_to_plate(
     run_shot after its own internal resize step, so by the time we
     get here normals are unit-length at the proxy resolution and the
     bilinear upscale introduces tiny sub-unit drift that's
-    indistinguishable in comp. Flow channels (motion.x/y etc.) are
-    pixel-magnitude fields — bilinear upscale is topologically
-    correct but the magnitudes need to scale by the upscale ratio
-    (pixels mean different things at different resolutions). We
-    apply that correction inline.
+    indistinguishable in comp. `renormalize_normals` (de-squeezed runs)
+    makes N unit length again after the resample. Flow channels
+    (motion.x/y etc.) are pixel-magnitude fields — bilinear upscale is
+    topologically correct but the magnitudes need to scale by the
+    upscale ratio, per axis (an anamorphic write-back stretches one axis
+    only). We apply that correction inline.
     """
     import cv2
 
     upscaled: dict[str, Any] = {}
     scale_w: float | None = None
     scale_h: float | None = None
-    flow_channels = {
-        "motion.x",
-        "motion.y",
-        "back.x",
-        "back.y",
-        "forward.u",
-        "forward.v",
-        "backward.u",
-        "backward.v",
-    }
+    flow_channels = set(FLOW_VECTOR_CHANNELS)
     for name, arr in channels.items():
         if arr.ndim < 2 or (arr.shape[0] == plate_h and arr.shape[1] == plate_w):
             upscaled[name] = arr
@@ -1369,7 +1425,8 @@ def _upscale_channels_to_plate(
         if scale_w is None:
             scale_h = plate_h / arr.shape[0]
             scale_w = plate_w / arr.shape[1]
-        up = cv2.resize(arr, (plate_w, plate_h), interpolation=cv2.INTER_LINEAR)
+        interp = cv2.INTER_NEAREST if name in nearest else cv2.INTER_LINEAR
+        up = cv2.resize(arr, (plate_w, plate_h), interpolation=interp)
         if name in flow_channels:
             # Flow vectors are in source-pixel units. When we upscale
             # the field, each vector's magnitude scales with the
@@ -1379,7 +1436,117 @@ def _upscale_channels_to_plate(
             axis_scale = scale_w if name.endswith((".x", ".u")) else scale_h
             up = up * float(axis_scale or 1.0)
         upscaled[name] = up.astype(arr.dtype, copy=False)
+    if renormalize_normals and all(c in upscaled for c in NORMAL_XYZ):
+        import numpy as np
+
+        n = np.stack([np.asarray(upscaled[c], dtype=np.float32) for c in NORMAL_XYZ], axis=-1)
+        length = np.linalg.norm(n, axis=-1, keepdims=True)
+        n = np.where(length > 1e-6, n / np.maximum(length, 1e-6), n)
+        for i, c in enumerate(NORMAL_XYZ):
+            upscaled[c] = n[..., i].astype(np.float32)
     return upscaled
+
+
+def _desqueeze_wanted(shot: Shot, classes: list[type[UtilityPass]]) -> bool:
+    """`Shot.desqueeze` on an anamorphic plate, and nothing in the run that
+    needs the plate's own pixels (a camera solve / splat writes a camera for
+    the plate as it is: those runs keep the plate squeezed)."""
+    if not getattr(shot, "desqueeze", False) or not is_squeezed(shot.pixel_aspect):
+        return False
+    whole = [c.name for c in classes if getattr(c, "needs_full_frame", False)]
+    if whole:
+        _log.warning(
+            "De-squeeze skipped: %s runs on the plate's own pixels (pixel aspect %.3f)",
+            ", ".join(whole),
+            float(shot.pixel_aspect),
+        )
+        return False
+    return True
+
+
+#: Channels the tracker proxy carries: flow both ways (+ its error), depth,
+#: and every matte. Vector values stay in the passes' (plate) pixels.
+_TRACKER_POINT_SAMPLED = frozenset({CH_Z})
+_TRACKER_CHANNELS = frozenset(
+    {CH_MOTION_X, CH_MOTION_Y, CH_BACK_X, CH_BACK_Y, CH_FLOW_CONFIDENCE, *FLOW_FB_CHANNELS, CH_Z}
+)
+_TRACKER_PREFIXES = ("mask.", "matte.", "mask_object.")
+TRACKER_PROXY_COMPRESSION = "zips"
+TRACKER_PROXY_DTYPE = "float16"
+
+
+def tracker_proxy_channels(
+    channels: dict[str, Any], scale: float
+) -> tuple[dict[str, Any], tuple[int, int]]:
+    """The tracker proxy's channels at `scale` of their size, and that size.
+
+    Flow, mattes and confidences are area-averaged; Z is point-sampled at
+    each proxy pixel's centre (an average would invent a depth between the
+    foreground and the background). Vector values are NOT rescaled: a tracker
+    reads the proxy at (x * scale, y * scale) and gets plate pixels back."""
+    import cv2
+    import numpy as np
+
+    keep = {
+        n: a
+        for n, a in channels.items()
+        if getattr(a, "ndim", 0) >= 2
+        and (n in _TRACKER_CHANNELS or n.startswith(_TRACKER_PREFIXES))
+    }
+    if not keep:
+        return {}, (0, 0)
+    h, w = next(iter(keep.values())).shape[:2]
+    tw, th = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    ys = np.clip(((np.arange(th) + 0.5) * h / th).astype(np.int64), 0, h - 1)
+    xs = np.clip(((np.arange(tw) + 0.5) * w / tw).astype(np.int64), 0, w - 1)
+    out: dict[str, Any] = {}
+    for n, a in keep.items():
+        a = np.asarray(a, dtype=np.float32)
+        if (tw, th) == (w, h):
+            out[n] = a
+        elif n in _TRACKER_POINT_SAMPLED:
+            out[n] = np.ascontiguousarray(a[np.ix_(ys, xs)])
+        else:
+            out[n] = cv2.resize(a, (tw, th), interpolation=cv2.INTER_AREA)
+    return out, (tw, th)
+
+
+def _write_tracker_proxy(
+    path: Path,
+    channels: dict[str, Any],
+    attrs: dict[str, Any],
+    scale: float,
+    pixel_aspect: float,
+    window: dict[str, Any],
+) -> None:
+    """One small EXR for trackers next to the passes (`Shot.tracker_proxy`)."""
+    small, (tw, th) = tracker_proxy_channels(channels, scale)
+    if not small:
+        return
+    h, w = channels[next(iter(small))].shape[:2]
+    meta = {k: v for k, v in attrs.items() if not str(k).startswith("cryptomatte/")}
+    meta[f"{METADATA_NAMESPACE}/tracker_proxy/scale_x"] = tw / w
+    meta[f"{METADATA_NAMESPACE}/tracker_proxy/scale_y"] = th / h
+    meta[f"{METADATA_NAMESPACE}/tracker_proxy/source_size"] = f"{w}x{h}"
+    meta[f"{METADATA_NAMESPACE}/tracker_proxy/vector_unit"] = "source_pixels"
+    win: dict[str, Any] = {}
+    if window:
+        ox, oy = window["origin"]
+        fw, fh = window["full_size"]
+        sx, sy = tw / w, th / h
+        win = {
+            "origin": (int(round(ox * sx)), int(round(oy * sy))),
+            "full_size": (max(1, int(round(fw * sx))), max(1, int(round(fh * sy)))),
+        }
+    ExrSidecarWriter._write_one(
+        path,
+        small,
+        meta,
+        pixel_aspect,
+        TRACKER_PROXY_COMPRESSION,
+        TRACKER_PROXY_DTYPE,
+        **win,
+    )
 
 
 __all__ = ["LocalExecutor"]

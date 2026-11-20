@@ -247,6 +247,8 @@ def _shot_state_to_core_shot(state: ShotState) -> Shot:
         passes_enabled=list(state.enabled_models),
         output_dir=output_dir,
         proxy_long_edge=state.proxy_long_edge,
+        desqueeze=bool(state.desqueeze),
+        tracker_proxy=bool(state.tracker_proxy),
         delivery_compression=state.delivery_compression,
         delivery_dtype=state.delivery_dtype,
         delivery_layout=state.delivery_layout,
@@ -443,6 +445,9 @@ def _build_pass_configs(state: ShotState) -> list[PassConfig]:
             out.append(PassConfig(name=n, params={"pnp_fallback": False}))
         elif n == "moge3":
             out.append(PassConfig(name=n, params=_moge3_params(state.enabled_models)))
+        elif n in ("flow", "flow_megaflow") and state.tracker_proxy:
+            # Trackers want the flow's forward-backward error with the proxy.
+            out.append(PassConfig(name=n, params={"fb_residual": True}))
         else:
             out.append(PassConfig(name=n))
     # Dedicated passes for per-object engine assignments not already

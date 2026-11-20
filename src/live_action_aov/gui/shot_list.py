@@ -389,6 +389,7 @@ def _inherit_session_settings(shot: ShotState, template: ShotState) -> None:
         "output_mode",
         "output_external_root",
         "proxy_long_edge",
+        "tracker_proxy",
         "delivery_compression",
         "delivery_dtype",
         "delivery_layout",

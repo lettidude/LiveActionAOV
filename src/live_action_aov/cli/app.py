@@ -20,7 +20,7 @@ import os
 import re
 import signal
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -401,6 +401,32 @@ def run_shot(
             "that many frames; `off` = always one go.",
         ),
     ] = "auto",
+    desqueeze: Annotated[
+        bool | None,
+        typer.Option(
+            "--desqueeze/--no-desqueeze",
+            help="Anamorphic plates (pixel aspect from the EXR header): run the passes "
+            "on square pixels and write them back at the plate's squeeze (default on; "
+            "--no-desqueeze keeps the plate's pixels). No effect on square pixels; skipped "
+            "when a camera solve or a splat is in the run.",
+        ),
+    ] = None,
+    tracker_proxy: Annotated[
+        bool,
+        typer.Option(
+            "--tracker-proxy",
+            help="Also write a quarter-size EXR per frame for trackers (`passes/tracker/`): "
+            "flow, its forward-backward error, Z and the mattes. Vectors in plate pixels.",
+        ),
+    ] = False,
+    flow_fb_error: Annotated[
+        bool,
+        typer.Option(
+            "--flow-fb-error",
+            help="The flow pass also writes its forward-backward error "
+            "(`motion_fb.x/y`, `back_fb.x/y`, plate pixels; 0 = reliable).",
+        ),
+    ] = False,
 ) -> None:
     """Run passes on the EXR sequence in `folder` and write sidecar EXRs."""
     raw_names = [p.strip() for p in passes.split(",") if p.strip()]
@@ -489,6 +515,8 @@ def run_shot(
             ),
             naming=naming or "",
             crop=crop_box,
+            tracker_proxy=tracker_proxy,
+            desqueeze=_default_desqueeze() if desqueeze is None else desqueeze,
         )
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
@@ -496,10 +524,7 @@ def run_shot(
     moge3 = _moge3_outputs(raw_names, depth_backend=depth_backend, normals_backend=normals_backend)
     job = Job(
         shot=shot,
-        passes=[
-            PassConfig(name=n, params=moge3) if n == "moge3" else PassConfig(name=n)
-            for n in pass_names
-        ],
+        passes=[_pass_config(n, moge3, flow_fb_error) for n in pass_names],
     )
 
     console.print(
@@ -809,6 +834,20 @@ def _moge3_outputs(
         "emit_depth": "depth" in raw_names and depth_backend == "moge3",
         "emit_normals": "normals" in raw_names and normals_backend == "moge3",
     }
+
+
+def _default_desqueeze() -> bool:
+    """`Shot.desqueeze` default (one source of truth for the CLI and the GUI)."""
+    return bool(Shot.model_fields["desqueeze"].default)
+
+
+def _pass_config(name: str, moge3: dict[str, Any], flow_fb_error: bool) -> PassConfig:
+    """The run-shot PassConfig of one pass: MoGe-3's outputs, the flow's FB error."""
+    if name == "moge3":
+        return PassConfig(name=name, params=moge3)
+    if flow_fb_error and name in ("flow", "flow_megaflow"):
+        return PassConfig(name=name, params={"fb_residual": True})
+    return PassConfig(name=name)
 
 
 def _sniff_sequence(folder: Path) -> tuple[str, tuple[int, int], tuple[int, int], float]:

@@ -69,8 +69,9 @@ class PostConfig(BaseModel):
 class Shot(BaseModel):
     """Human-prepared ingest unit: a folder of EXRs plus transform + passes.
 
-    Pixel aspect is carried through the pipeline untouched; we work in pixel
-    space and never desqueeze (design §8.2).
+    Pixel aspect is carried through to every EXR header. By default the
+    passes work in plate pixels (design §8.2); `desqueeze` runs them on
+    square pixels instead and writes the passes back at the plate's squeeze.
     """
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
@@ -144,6 +145,23 @@ class Shot(BaseModel):
     # never. `window_overlap` = context frames on each side of a window.
     window_frames: int | str | None = "auto"
     window_overlap: int = 16
+
+    # Anamorphic plates (`pixel_aspect` != 1): run the passes on square
+    # pixels (the plate de-squeezed on read, no axis grows) and write every
+    # pass back at the plate's own size and squeeze, with the filter its
+    # type needs (Cryptomatte ids nearest, flow x scaled). No effect on a
+    # square-pixel plate. Skipped (with a warning) when a camera solve or a
+    # splat is in the run. On by default (an anamorphic plate fed to the
+    # models squeezed gives them the wrong geometry); off = the plate's pixels.
+    desqueeze: bool = True
+
+    # A small extra EXR per frame for trackers (`tracker/` next to the
+    # passes): flow (+ its forward-backward error when the flow pass writes
+    # it), Z and the mattes at `tracker_proxy_scale` of the plate size, so a
+    # tracker does not decode the full utility EXR. Vector values stay in
+    # plate pixels.
+    tracker_proxy: bool = False
+    tracker_proxy_scale: float = 0.25
 
     status: ShotStatus = "new"
     notes: str = ""
@@ -225,6 +243,14 @@ class Shot(BaseModel):
         if n < 2:
             raise ValueError("window_frames wants 'auto', nothing, or at least 2 frames")
         return n
+
+    @field_validator("tracker_proxy_scale")
+    @classmethod
+    def _check_tracker_scale(cls, v: float) -> float:
+        v = float(v)
+        if not 0.0 < v <= 1.0:
+            raise ValueError("tracker_proxy_scale wants a fraction of the plate size in (0, 1]")
+        return v
 
     @model_validator(mode="after")
     def _check_crop_in_plate(self) -> Shot:
