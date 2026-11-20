@@ -1,16 +1,15 @@
-"""Nuke's Cryptomatte node scans every EXR header key for the substring
-``cryptomatte/`` and treats the text before it as a layer id. A provenance
-key such as ``liveaov/cryptomatte/commercial`` crashed Nuke 13.2v6 (segfault
-on evaluation, bisected to those four keys). No
-provenance key may contain that substring."""
+"""Older Nuke Cryptomatte nodes crash on any NON-string header attribute whose
+name contains "cryptomatte" (`liveaov/cryptomatte/commercial`, then
+`liveaov/cryptomatte_pass/commercial`). No provenance key may contain the
+word; the cryptomatte pass is recorded under `liveaov/crypto_pass/...`."""
 
-from live_action_aov.executors.local import METADATA_NAMESPACE, provenance_key
+from live_action_aov.executors.local import METADATA_NAMESPACE, provenance_key, provenance_keys
 
 
-def test_cryptomatte_pass_key_has_no_cryptomatte_slash() -> None:
+def test_cryptomatte_pass_key_has_no_cryptomatte_in_it() -> None:
     key = f"{METADATA_NAMESPACE}/{provenance_key('cryptomatte')}/commercial"
-    assert "cryptomatte/" not in key
-    assert key == f"{METADATA_NAMESPACE}/cryptomatte_pass/commercial"
+    assert "cryptomatte" not in key
+    assert key == f"{METADATA_NAMESPACE}/crypto_pass/commercial"
 
 
 def test_other_passes_are_untouched() -> None:
@@ -19,15 +18,18 @@ def test_other_passes_are_untouched() -> None:
 
 
 def test_keys_never_collide() -> None:
-    # a registered pass called `cryptomatte_pass` next to the built-in `cryptomatte`
+    # registered passes with contrived names next to the built-in `cryptomatte`
     names = [
         "cryptomatte",
         "cryptomatte_pass",
         "cryptomatte_pass_pass",
+        "crypto",
+        "crypto_pass",
         "my_cryptomatte",
         "x_pass",
         "x",
     ]
-    keys = [provenance_key(n) for n in names]
-    assert len(set(keys)) == len(keys)
-    assert not any("cryptomatte/" in f"{k}/" for k in keys)
+    keys = provenance_keys(names)
+    assert len(set(keys.values())) == len(names)
+    assert not any("cryptomatte" in k for k in keys.values())
+    assert keys["cryptomatte"] == "crypto_pass"

@@ -293,6 +293,6 @@ def test_nearest_upscale_keeps_only_manifest_ids() -> None:
     assert len(_ids(lin)) > len(src)  # bilinear invents ids along the edges
 
 
-def test_cryptomatte_declares_its_id_channels_and_defaults_to_linear() -> None:
+def test_cryptomatte_declares_its_id_channels_and_defaults_to_nearest() -> None:
     assert set(CryptomattePass.id_channels) == set(CRYPTOMATTE_CHANNELS)
-    assert CryptomattePass().params["proxy_upscale"] == "linear"
+    assert CryptomattePass().params["proxy_upscale"] == "nearest"

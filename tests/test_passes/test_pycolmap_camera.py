@@ -486,6 +486,54 @@ def test_run_shot_then_emit_sidecars(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert q.heldout_error_px is not None and math.isfinite(q.heldout_error_px)
     assert q.warnings[0].startswith(f"{q.verdict} CANDIDATE")
     assert f"{q.verdict} CANDIDATE" in paths["camera_nk"].read_text(encoding="utf-8")
+    # The COLMAP model's pixels vs the passes': a scale sidecar next to it.
+    from live_action_aov.io.image_scale import read_scale_sidecar, scale_to_passes
+
+    doc = read_scale_sidecar(paths["camera_colmap"])
+    assert doc is not None and doc["what"] == "colmap_model"
+    assert doc["image_size"] == [192, 108] and doc["passes_size"] == [192, 108]
+    assert scale_to_passes(paths["camera_colmap"]) == (1.0, 1.0)
+
+
+def test_colmap_model_solved_smaller_than_the_plate_says_its_scale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Solve frames capped by `max_image_size`: the model is in half-size
+    pixels, and the sidecar says x2 to the passes (which are at plate size)."""
+    pytest.importorskip("pycolmap")
+    from live_action_aov.io.image_scale import scale_to_passes, sidecar_path
+
+    sizes: dict[str, Any] = {}
+
+    def fake_solve(self, workdir, image_dir, mask_dir, frame_list):
+        import cv2
+
+        sizes["png"] = cv2.imread(str(next(image_dir.glob("*.png")))).shape[:2]
+        self._sparse_dir = workdir / "sparse" / "0"
+        self._sparse_dir.mkdir(parents=True)
+        (self._sparse_dir / "cameras.bin").write_bytes(b"x")
+        return _Rec([n for _, n in frame_list[:3]], cam_w=96, cam_h=54)
+
+    monkeypatch.setattr(PyColmapCameraPass, "_solve_colmap", fake_solve)
+    p = PyColmapCameraPass({"max_image_size": 96})
+    p.run_shot(_Reader(4, static=True), (1001, 1004))
+    assert sizes["png"] == (54, 96)
+    shot = Shot(
+        name="half",
+        folder=tmp_path / "plate",
+        output_dir=tmp_path / "out",
+        sequence_pattern="half.####.exr",
+        frame_range=(1001, 1004),
+        resolution=(192, 108),
+    )
+    paths = p.emit_sidecars(shot)
+    model = paths["camera_colmap"]
+    assert Path(sidecar_path(model)) == paths["camera_colmap_scale"]
+    assert scale_to_passes(model) == (2.0, 2.0)
+    # A reader of an older run (no sidecar) falls back on the two sizes.
+    paths["camera_colmap_scale"].unlink()
+    assert scale_to_passes(model, image_size=(96, 54), passes_size=(192, 108)) == (2.0, 2.0)
+    assert scale_to_passes(model) == (1.0, 1.0)
 
 
 def test_run_shot_rejects_under_three_frames():
