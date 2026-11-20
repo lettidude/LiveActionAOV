@@ -59,22 +59,37 @@ _log = logging.getLogger(__name__)
 def provenance_key(pass_name: str) -> str:
     """Header key segment for a pass's provenance (`liveaov/<key>/model` ...).
 
-    Nuke's Cryptomatte node scans EVERY metadata key for the substring
-    ``cryptomatte/`` and treats what precedes it as a Cryptomatte layer id;
-    ``liveaov/cryptomatte/commercial`` made Nuke 13.2v6 segfault the moment the
-    node evaluated (bisected by rewriting the header; the four
-    ``liveaov/cryptomatte/*`` keys alone reproduce it, every other key is
-    fine). So no provenance key may contain that substring: the cryptomatte
-    pass is recorded under ``liveaov/cryptomatte_pass/...``.
+    Older Nuke Cryptomatte nodes crash on any NON-string header attribute
+    whose name contains "cryptomatte" (`liveaov/cryptomatte/commercial`, then
+    `liveaov/cryptomatte_pass/commercial`). So no provenance key contains the
+    word: the cryptomatte pass is recorded under ``liveaov/crypto_pass/...``
+    (readers accept the older prefixes too, see `io.crypto_header`).
 
-    The mapping is injective, so two passes never share provenance keys: a
-    name ending in ``cryptomatte`` or in ``_pass`` gets ``_pass`` appended,
-    every other name is kept (``cryptomatte`` -> ``cryptomatte_pass``, a
-    registered ``cryptomatte_pass`` -> ``cryptomatte_pass_pass``).
+    A name containing ``cryptomatte`` gets it shortened to ``crypto`` plus a
+    ``_pass`` suffix; a name already ending in ``_pass`` gets ``_pass``
+    appended; every other name is kept. `provenance_keys` resolves the
+    (contrived) names that would still meet.
     """
-    if pass_name.endswith(("cryptomatte", "_pass")):
+    if "cryptomatte" in pass_name:
+        return pass_name.replace("cryptomatte", "crypto") + "_pass"
+    if pass_name.endswith("_pass"):
         return pass_name + "_pass"
     return pass_name
+
+
+def provenance_keys(pass_names: list[str]) -> dict[str, str]:
+    """`provenance_key` for each pass of a run, never two the same: a key
+    already taken gets `_2`, `_3` ... in run order."""
+    out: dict[str, str] = {}
+    taken: set[str] = set()
+    for name in pass_names:
+        key = provenance_key(name)
+        k, i = key, 2
+        while k in taken:
+            k, i = f"{key}_{i}", i + 1
+        taken.add(k)
+        out[name] = k
+    return out
 
 
 def _retry_io(
@@ -628,10 +643,11 @@ class LocalExecutor(Executor):
                     ]
                 attrs = dict(attrs_base)
                 attrs[f"{METADATA_NAMESPACE}/frame"] = frame_idx
+                prov_keys = provenance_keys([n.name for n in ordered])
                 for node in ordered:
                     _, cls = resolved_by_name[node.name]
                     lic = cls.declared_license()
-                    key = provenance_key(node.name)
+                    key = prov_keys[node.name]
                     attrs[f"{METADATA_NAMESPACE}/{key}/model"] = cls.name
                     attrs[f"{METADATA_NAMESPACE}/{key}/version"] = cls.version
                     attrs[f"{METADATA_NAMESPACE}/{key}/license"] = lic.spdx

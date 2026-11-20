@@ -45,6 +45,7 @@ from live_action_aov.io.channels import (
     MASK_PREFIX,
     MATTE_CHANNELS,
 )
+from live_action_aov.io.crypto_header import crypto_layers, crypto_provenance, unsafe_keys
 from live_action_aov.io.oiio_io import read_exr
 
 # Tolerance for [0, 1] envelope check on matte/mask channels. Matches the
@@ -88,6 +89,10 @@ class SidecarReport:
     metadata: dict[str, Any]  # flat `liveaov/*` subset
     heroes: list[HeroSlot] = field(default_factory=list)
     has_matte_metadata: bool = False  # True iff any liveaov/matte/*
+    # Cryptomatte summary (None when the file has no Cryptomatte header):
+    # layers + object counts, the pass provenance (old or new header keys),
+    # and the header keys an older Nuke Cryptomatte node crashes on.
+    cryptomatte: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +113,7 @@ def build_report(path: Path | str) -> SidecarReport:
     has_matte_metadata = any(k.startswith("liveaov/matte/") for k in metadata)
 
     return SidecarReport(
+        cryptomatte=_crypto_summary(attrs),
         file=str(path),
         width=width,
         height=height,
@@ -147,6 +153,24 @@ def _bucket_for(name: str) -> str:
     if name in CANONICAL_CHANNEL_ORDER:
         return "canonical"
     return "other"
+
+
+def _crypto_summary(attrs: dict[str, Any]) -> dict[str, Any] | None:
+    layers = crypto_layers(attrs)
+    if not layers:
+        return None
+    out_layers = []
+    for kh, fields in sorted(layers.items()):
+        try:
+            n = len(json.loads(fields.get("manifest") or "{}"))
+        except (TypeError, ValueError):
+            n = -1
+        out_layers.append({"keyhash": kh, "name": fields.get("name", ""), "objects": n})
+    return {
+        "layers": out_layers,
+        "provenance": dict(sorted(crypto_provenance(attrs).items())),
+        "unsafe_keys": unsafe_keys(attrs),
+    }
 
 
 def _filter_liveaov_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
@@ -271,6 +295,18 @@ def format_text(report: SidecarReport) -> str:
         lines.append("")
         lines.append("Heroes: (none - detector found nothing or refiner dropped all slots)")
 
+    if report.cryptomatte:
+        lines.append("")
+        for layer in report.cryptomatte["layers"]:
+            lines.append(f"Cryptomatte {layer['name']}: {layer['objects']} objects")
+        bad = report.cryptomatte["unsafe_keys"]
+        if bad:
+            lines.append(
+                f"  ! {len(bad)} header key(s) crash older Nuke Cryptomatte nodes: "
+                + ", ".join(bad)
+            )
+            lines.append("    (files written by this version are safe)")
+
     return "\n".join(lines)
 
 
@@ -323,7 +359,20 @@ def format_json(report: SidecarReport) -> dict[str, Any]:
             }
             for h in report.heroes
         ],
+        **(
+            {"cryptomatte": _json_safe_tree(report.cryptomatte)}
+            if report.cryptomatte is not None
+            else {}
+        ),
     }
+
+
+def _json_safe_tree(v: Any) -> Any:
+    if isinstance(v, dict):
+        return {k: _json_safe_tree(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_json_safe_tree(x) for x in v]
+    return _json_safe(v)
 
 
 def _json_safe(v: Any) -> Any:

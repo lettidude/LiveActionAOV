@@ -196,6 +196,9 @@ class PyColmapCameraPass(UtilityPass):
         self._hard_masks: dict[int, dict[str, Any]] = {}
         self._workdir: Path | None = None
         self._sparse_dir: Path | None = None
+        # (solve frames' size, passes' size): the COLMAP model is in the
+        # solve frames' pixels, written next to it as a scale sidecar.
+        self._sizes: tuple[tuple[int, int], tuple[int, int]] | None = None
         self._masked_labels: list[str] = []
         self._lens_mm: float | None = None
         self._pnp_fov_source = ""
@@ -249,6 +252,7 @@ class PyColmapCameraPass(UtilityPass):
         image_dir = self._workdir / "images"
         image_dir.mkdir(parents=True)
         frame_list, plate_wh, solve_wh = self._export_frames(reader, frame_range, image_dir)
+        self._sizes = (solve_wh, plate_wh)
         if len(frame_list) < 3:
             raise RuntimeError(f"Camera track needs at least 3 frames; got {len(frame_list)}.")
         mask_dir = self._export_masks(frame_list, solve_wh)
@@ -359,6 +363,15 @@ class PyColmapCameraPass(UtilityPass):
             shutil.rmtree(model_dir, ignore_errors=True)
             shutil.copytree(self._sparse_dir, model_dir)
             paths["camera_colmap"] = model_dir
+            if self._sizes is not None:
+                # Its 2D points are in the solve frames' pixels (at most
+                # `max_image_size`), not the passes': say the scale.
+                from live_action_aov.io.image_scale import write_scale_sidecar
+
+                solve_wh, plate_wh = self._sizes
+                paths["camera_colmap_scale"] = Path(
+                    write_scale_sidecar(model_dir, solve_wh, plate_wh, what="colmap_model")
+                )
         self._drop_workdir()
         return paths
 

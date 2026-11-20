@@ -121,7 +121,8 @@ def write_exr(
     `pixels`: (H, W, C) float array; len(channel_names) must equal C.
     `attrs`: flat dict of EXR custom attributes. Keys with '/' are written
     verbatim (OpenEXR supports slash-namespaced attribute names, Nuke
-    displays them as hierarchical).
+    displays them as hierarchical), except the ones `crypto_header.safe_header`
+    makes safe for Nuke's Cryptomatte node.
     `origin` / `full_size`: place the pixels as the data window at
     `origin` (x, y, top-left) inside a `full_size` (w, h) display window,
     for a crop of a bigger plate. Default: data window = display window.
@@ -154,7 +155,11 @@ def write_exr(
     spec.attribute("compression", compression)
     spec.attribute("PixelAspectRatio", float(pixel_aspect))
     if attrs:
-        for key, val in attrs.items():
+        # Keys an older Nuke Cryptomatte node would crash on are made safe
+        # here, the one place every EXR of the tool goes through.
+        from live_action_aov.io.crypto_header import safe_header
+
+        for key, val in safe_header(attrs).items():
             _set_attr(spec, key, val)
 
     out = oiio.ImageOutput.create(str(path))

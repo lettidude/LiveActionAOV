@@ -32,7 +32,15 @@ def dump(track_dir: Path, shot: str, n: int = 400) -> None:
     solve = json.loads((track_dir / f"{shot}.camera.json").read_text(encoding="utf-8"))
     rec = pycolmap.Reconstruction(str(track_dir / f"{shot}_colmap"))
     cam = next(iter(rec.cameras.values()))
-    s = solve["intrinsics"]["width_px"] / cam.width
+    # COLMAP pixels -> plate (passes') pixels: the run's scale sidecar, or
+    # for an older run the ratio of the two widths.
+    from live_action_aov.io.image_scale import scale_to_passes
+
+    sx, sy = scale_to_passes(
+        track_dir / f"{shot}_colmap",
+        image_size=(cam.width, cam.height),
+        passes_size=(solve["intrinsics"]["width_px"], solve["intrinsics"]["height_px"]),
+    )
     obs = []
     for im in rec.images.values():
         frame = int(Path(im.name).stem.split("_")[-1])
@@ -44,7 +52,7 @@ def dump(track_dir: Path, shot: str, n: int = 400) -> None:
                     {
                         "frame": frame,
                         "X": [float(X[0]), -float(X[1]), -float(X[2])],
-                        "xy": [float(p.xy[0] * s), float(p.xy[1] * s)],
+                        "xy": [float(p.xy[0] * sx), float(p.xy[1] * sy)],
                     }
                 )
     random.seed(0)

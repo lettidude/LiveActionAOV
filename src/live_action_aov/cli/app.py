@@ -16,11 +16,12 @@ Phase 4 fleshes this out with discover / analyze / run / preflight / models.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -273,6 +274,23 @@ def plugins_list(
 # ---------------------------------------------------------------------------
 
 
+def parse_pass_params(items: list[str]) -> dict[str, dict[str, Any]]:
+    """`["cryptomatte.proxy_upscale=nearest", ...]` -> `{pass: {param: value}}`.
+    A value is JSON when it parses (`2`, `true`, `[1, 2]`), else text."""
+    out: dict[str, dict[str, Any]] = {}
+    for item in items:
+        key, sep, raw = item.partition("=")
+        pass_name, dot, param = key.strip().partition(".")
+        if not sep or not dot or not pass_name or not param:
+            raise ValueError(f"--set wants <pass>.<param>=<value>, got {item!r}")
+        try:
+            value: Any = json.loads(raw)
+        except ValueError:
+            value = raw
+        out.setdefault(pass_name, {})[param.strip()] = value
+    return out
+
+
 @app.command("run-shot")
 def run_shot(
     folder: Annotated[Path, typer.Argument(exists=True, file_okay=False, dir_okay=True)],
@@ -401,8 +419,22 @@ def run_shot(
             "that many frames; `off` = always one go.",
         ),
     ] = "auto",
+    set_params: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--set",
+            help="A pass parameter, `<pass>.<param>=<value>` (repeatable), e.g. "
+            "`--set cryptomatte.proxy_upscale=nearest`. Values are read as JSON "
+            "(numbers, true/false, lists), else kept as text.",
+        ),
+    ] = None,
 ) -> None:
     """Run passes on the EXR sequence in `folder` and write sidecar EXRs."""
+    try:
+        overrides = parse_pass_params(set_params or [])
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from None
     raw_names = [p.strip() for p in passes.split(",") if p.strip()]
     pass_names = _resolve_semantic_passes(
         raw_names,
@@ -494,10 +526,14 @@ def run_shot(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=2) from None
     moge3 = _moge3_outputs(raw_names, depth_backend=depth_backend, normals_backend=normals_backend)
+    unknown = sorted(set(overrides) - set(pass_names))
+    if unknown:
+        console.print(f"[red]--set names passes not in the run: {', '.join(unknown)}[/red]")
+        raise typer.Exit(code=2)
     job = Job(
         shot=shot,
         passes=[
-            PassConfig(name=n, params=moge3) if n == "moge3" else PassConfig(name=n)
+            PassConfig(name=n, params={**(moge3 if n == "moge3" else {}), **overrides.get(n, {})})
             for n in pass_names
         ],
     )
