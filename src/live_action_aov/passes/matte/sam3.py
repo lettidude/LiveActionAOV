@@ -542,7 +542,7 @@ class SAM3MattePass(UtilityPass):
         "sam31_tile_absorb_frames": 0.5,
         "sam31_tile_absorb_cut": 0.25,
         "sam31_tile_absorb_size": 0.5,
-        "sam31_tile_max_objects": 0,
+        "sam31_tile_max_objects": 128,
         "sam31_tile_split": "off",
         "sam31_tile_work_size": 1008,
         "sam31_free_between": True,

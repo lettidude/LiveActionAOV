@@ -151,6 +151,7 @@ def _set_cap(pred, a, src: int) -> int:  # type: ignore[no-untyped-def]
 
 
 _PEAK = [0.0]  # the run's peak over sessions (each session resets torch's own)
+_START = [0.0]  # GPU memory already held when the current session starts
 
 
 def _stats(t1: float, cap: int, seeded: int, ids: int) -> dict:
@@ -162,6 +163,7 @@ def _stats(t1: float, cap: int, seeded: int, ids: int) -> dict:
     return {
         "seconds": round(time.time() - t1, 1),
         "peak_gb": round(peak, 2),
+        "start_gb": round(_START[0], 2),
         "cap": cap,
         "cap_hit": bool(cap > 0 and max(seeded, ids) >= cap),
     }
@@ -202,6 +204,7 @@ def _run_small(pred, a, n: int) -> tuple[list, list]:  # type: ignore[no-untyped
                 t1 = time.time()
                 if cuda:
                     torch.cuda.reset_peak_memory_stats()
+                    _START[0] = torch.cuda.memory_allocated() / 1e9
                 sid = pred.handle_request({"type": "start_session", "resource_path": fdir})[
                     "session_id"
                 ]
