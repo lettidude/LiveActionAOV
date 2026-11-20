@@ -11,8 +11,8 @@
   `object_channels` on), else its hero slot `matte.<r|g|b|a>`;
 - B = the union of the OTHER objects' SAM masks (the object's own parts
   and its whole are never held out of it), closed by `close_px` (fills the
-  cracks between fingers and strands), grown by `grow_px` and feathered by
-  `feather_px` -> B'.
+  cracks between fingers and strands) but never over the object's own SAM
+  mask, grown by `grow_px` and feathered by `feather_px` -> B'.
 
 Then a band-limited grey opening (`open_px` > 0): a grey-scale opening of
 the result (erode then dilate, a disc of `open_px`) removes soft strips and
@@ -110,7 +110,13 @@ def holdout_combine(
     bm = np.asarray(b) > 0
     if not bm.any():
         return a.copy()
-    hard = grow(close(bm, close_px), grow_px).astype(np.float32)
+    closed = close(bm, close_px)
+    if protect is not None and np.asarray(protect).any():
+        # The closing fills cracks of the NEIGHBOUR, never the object's own
+        # pixels (fingers spread over a face: the gaps between them close
+        # over the fingers otherwise). Only `grow_px` crosses into it: the seam.
+        closed = (closed & ~(np.asarray(protect) > 0)) | bm
+    hard = grow(closed, grow_px).astype(np.float32)
     soft = cv2.GaussianBlur(hard, (0, 0), float(feather_px)) if feather_px > 0 else hard
     out = a * (1.0 - np.clip(soft, 0.0, 1.0))
     if open_px > 0 and open_band_px > 0:

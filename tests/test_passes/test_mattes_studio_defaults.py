@@ -427,3 +427,19 @@ def test_refiners_carry_the_slot_table() -> None:
         "mean_area": 0.1,
     }
     assert slot_table_fields({"track_id": 1}) == {}
+
+
+def test_closing_never_fills_over_the_objects_own_fingers() -> None:
+    # Neighbour B surrounds two fingers of A with 2 px gaps: closing B would
+    # fill the gaps and cover the fingers. With A's mask as protect it doesn't.
+    b = np.zeros((40, 40), np.uint8)
+    b[5:35, 5:35] = 1
+    own = np.zeros_like(b)
+    own[10:30, 14:17] = 1  # finger 1
+    own[10:30, 19:22] = 1  # finger 2
+    b[own > 0] = 0
+    a = own.astype(np.float32)
+    out = holdout_combine(a, b, close_px=3, grow_px=0, feather_px=0, protect=own)
+    assert (out[12:28, 14:17] == 1).all() and (out[12:28, 19:22] == 1).all()
+    cut = holdout_combine(a, b, close_px=3, grow_px=0, feather_px=0)
+    assert (cut[12:28, 14:17] == 0).all()  # without protect the closing eats them
