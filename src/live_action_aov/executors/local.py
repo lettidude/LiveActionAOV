@@ -460,8 +460,10 @@ class LocalExecutor(Executor):
             if arts.get("sam3_hard_masks") and "matte_layering" not in existing_post_names:
                 auto_post.append(PostConfig(name="matte_layering", params={}))
             posts = list(job.post) + auto_post
-            posts = [p for p in posts if p.name != "matte_layering"] + [
-                p for p in posts if p.name == "matte_layering"
+            # Last: the matte layering, then a holdout (it reads the final mattes).
+            last = ("matte_layering", "holdout")
+            posts = [p for p in posts if p.name not in last] + [
+                p for name in last for p in posts if p.name == name
             ]
 
             # --- Post-processors (user-configured + auto-wired smoothers) ---
@@ -551,6 +553,23 @@ class LocalExecutor(Executor):
                 else {}
             )
             needs_upscale = False
+            # Channels resampled NEAREST instead of bilinear (ID channels: a
+            # blend of two Cryptomatte hash ids is a third, random id). Opt-in
+            # per pass (`proxy_upscale: "nearest"` on the cryptomatte pass);
+            # empty = every channel bilinear, as before.
+            nearest_channels: set[str] = set()
+            for node in ordered:
+                pc_n, cls_n = resolved_by_name[node.name]
+                ids = tuple(getattr(cls_n, "id_channels", ()) or ())
+                if not ids:
+                    continue
+                merged = {
+                    **(getattr(cls_n, "DEFAULT_PARAMS", {}) or {}),
+                    **pc_n.params,
+                    **shot.pass_overrides.get(node.name, {}),
+                }
+                if str(merged.get("proxy_upscale", "linear")) == "nearest":
+                    nearest_channels.update(ids)
             if shot.proxy_long_edge is not None:
                 # Check the first channel's shape against plate res.
                 for cdict in per_frame_channels.values():
@@ -582,7 +601,9 @@ class LocalExecutor(Executor):
                     # sidecars, like the camera track): nothing to write.
                     continue
                 if needs_upscale:
-                    channels = _upscale_channels_to_plate(channels, plate_h, plate_w)
+                    channels = _upscale_channels_to_plate(
+                        channels, plate_h, plate_w, nearest=nearest_channels
+                    )
                 out_path = sidecar_dir / sidecar_template.format(frame=frame_idx)
                 # (path, channels, path of the lossless Cryptomatte sibling)
                 targets: list[tuple[Path, dict[str, Any], Path]]
@@ -1263,6 +1284,12 @@ def _base_attrs(
             base[f"{prefix}/label"] = str(hero.get("label", ""))
             base[f"{prefix}/track_id"] = int(hero.get("track_id", 0))
             base[f"{prefix}/score"] = float(hero.get("score", 0.0))
+            # Slot -> Cryptomatte table: which crypto object this slot is.
+            if hero.get("crypto_name"):
+                base[f"{prefix}/crypto_name"] = str(hero["crypto_name"])
+                base[f"{prefix}/crypto_id"] = str(hero.get("crypto_id", ""))
+            if hero.get("mean_area") is not None:
+                base[f"{prefix}/mean_area"] = float(hero["mean_area"])
     # Temporal smoothers — stamped under `smooth/`.
     smoothers = [p for p in applied_post if p["name"] == "temporal_smooth"]
     if smoothers:
@@ -1329,8 +1356,13 @@ def _upscale_channels_to_plate(
     channels: dict[str, Any],
     plate_h: int,
     plate_w: int,
+    nearest: set[str] | frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Upscale each per-frame channel array back to plate resolution.
+
+    Channels named in `nearest` are resampled nearest-neighbour: ID channels
+    (Cryptomatte hash ids and their paired coverage) must never be blended,
+    a bilinear mix of two ids is a third id that names no object.
 
     Proxy mode ran passes at a smaller resolution for speed; sidecars
     should still match the plate so comp can use them without an
@@ -1369,7 +1401,8 @@ def _upscale_channels_to_plate(
         if scale_w is None:
             scale_h = plate_h / arr.shape[0]
             scale_w = plate_w / arr.shape[1]
-        up = cv2.resize(arr, (plate_w, plate_h), interpolation=cv2.INTER_LINEAR)
+        interp = cv2.INTER_NEAREST if name in nearest else cv2.INTER_LINEAR
+        up = cv2.resize(arr, (plate_w, plate_h), interpolation=interp)
         if name in flow_channels:
             # Flow vectors are in source-pixel units. When we upscale
             # the field, each vector's magnitude scales with the

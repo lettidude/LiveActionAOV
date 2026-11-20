@@ -73,6 +73,7 @@ class HeroSlot:
     label: str | None
     track_id: int | None
     score: float | None
+    crypto_name: str | None = None  # the Cryptomatte object of this slot
 
     @property
     def is_empty(self) -> bool:
@@ -185,6 +186,7 @@ def _build_hero_summary(metadata: dict[str, Any]) -> list[HeroSlot]:
                 label=str(label) if label is not None else None,
                 track_id=_try_int(tid),
                 score=_try_float(score),
+                crypto_name=(str(_get(slot, "crypto_name")) if _get(slot, "crypto_name") else None),
             )
         )
     return slots
@@ -264,7 +266,10 @@ def format_text(report: SidecarReport) -> str:
             else:
                 score_str = f"{h.score:.2f}" if h.score is not None else "?"
                 tid_str = str(h.track_id) if h.track_id is not None else "?"
-                lines.append(f"  matte.{h.slot} = {h.label} (track {tid_str}, score {score_str})")
+                crypto = f", crypto {h.crypto_name}" if h.crypto_name else ""
+                lines.append(
+                    f"  matte.{h.slot} = {h.label} (track {tid_str}, score {score_str}{crypto})"
+                )
     elif report.has_matte_metadata:
         # Matte pipeline ran but produced no heroes - worth flagging,
         # it means the detector found nothing or the refiner dropped them.
@@ -319,6 +324,7 @@ def format_json(report: SidecarReport) -> dict[str, Any]:
                 "label": h.label,
                 "track_id": h.track_id,
                 "score": h.score,
+                "crypto_name": h.crypto_name,
                 "empty": h.is_empty,
             }
             for h in report.heroes

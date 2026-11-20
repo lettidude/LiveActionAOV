@@ -185,6 +185,21 @@ def score_instance(inst: Instance, weights: RankWeights, n_clip_frames: int) -> 
     )
 
 
+def mean_coverage(inst: Instance, n_clip_frames: int) -> float:
+    """Mean fraction of the frame the object covers over the WHOLE clip
+    (frames it is absent count as 0): a big person seen on three frames
+    ranks below one who is there all shot."""
+    if n_clip_frames <= 0:
+        return 0.0
+    return inst.area_fraction * len(inst.frames) / n_clip_frames
+
+
+#: Hero slot orders: "score" = the weighted score above (area, centrality,
+#: motion, duration); "coverage" = mean coverage over the clip, biggest
+#: first (`matte.r` = the biggest subject).
+HERO_ORDERS: tuple[str, ...] = ("score", "coverage")
+
+
 def rank_and_assign(
     instances: Sequence[Instance],
     weights: RankWeights,
@@ -193,6 +208,7 @@ def rank_and_assign(
     max_heroes: int = 4,
     overrides: Sequence[HeroOverride] = (),
     slots: Sequence[str] = SLOT_ORDER,
+    order: str = "score",
 ) -> list[HeroSlot]:
     """Assign RGBA slots to the top `max_heroes` instances.
 
@@ -206,6 +222,8 @@ def rank_and_assign(
        first: an instance with `scenery=True` is only considered once every
        subject has a slot. Within each group ties are broken by (larger
        area_fraction first, then smaller track_id).
+       `order="coverage"`: by `mean_coverage` instead of the score (the
+       reported `score` is then the mean coverage).
 
     Returns a list sorted by slot order (r, g, b, a) — NOT by score —
     so the refiner can index directly by slot.
@@ -213,10 +231,16 @@ def rank_and_assign(
     if max_heroes > len(slots):
         raise ValueError(f"max_heroes={max_heroes} exceeds available slots {list(slots)}")
 
+    if order not in HERO_ORDERS:
+        raise ValueError(f"hero order {order!r}: expected one of {list(HERO_ORDERS)}")
+
+    def value(inst: Instance) -> float:
+        if order == "coverage":
+            return mean_coverage(inst, n_clip_frames)
+        return score_instance(inst, weights, n_clip_frames)
+
     by_id: dict[int, Instance] = {inst.track_id: inst for inst in instances}
-    scored: list[tuple[float, Instance]] = [
-        (score_instance(inst, weights, n_clip_frames), inst) for inst in instances
-    ]
+    scored: list[tuple[float, Instance]] = [(value(inst), inst) for inst in instances]
     # Deterministic sort: descending score, then descending area, then
     # ascending track_id. Python's sort is stable, so compose in reverse
     # order of precedence.
@@ -235,7 +259,7 @@ def rank_and_assign(
         inst = by_id.get(ov.track_id)
         if inst is None:
             continue
-        score = score_instance(inst, weights, n_clip_frames)
+        score = value(inst)
         assigned[ov.slot] = HeroSlot(
             track_id=inst.track_id,
             slot=ov.slot,
@@ -268,6 +292,7 @@ def rank_and_assign(
 
 
 __all__ = [
+    "HERO_ORDERS",
     "SCENERY_WORDS",
     "SLOT_ORDER",
     "HeroOverride",
@@ -276,6 +301,7 @@ __all__ = [
     "RankWeights",
     "SlotName",
     "is_scenery_label",
+    "mean_coverage",
     "rank_and_assign",
     "score_instance",
 ]

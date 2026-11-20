@@ -26,6 +26,8 @@ optional; left out, the run above is unchanged:
   (someone hidden or not yet in frame at one seed is prompted at another).
   The first seed's session on the plate is the primary one and must work;
   any other session SAM 3.1 fails on is logged in `sessions` and skipped.
+  A session with nothing to track ("No points are provided": no object of
+  the concept on its seed frame) is an empty session, never a failed run.
 - `--tiles '["dir1", ...]'`: more JPEG folders (crops of the plate), run
   with the same concepts and seeds after `--frames`; `src` in result.json
   says which folder an object came from (0 = `--frames`, 1.. = the tiles).
@@ -115,6 +117,19 @@ def _save_crops(path: str, fm: dict, n: int) -> None:
     np.savez_compressed(path, boxes=boxes, data=data, hw=np.asarray(hw, np.int32))
 
 
+def _no_points(e: BaseException) -> bool:
+    """SAM 3.1's error for a session with nothing to track (no object on
+    the seed frame): "No points are provided"."""
+    return "no points are provided" in str(e).lower()
+
+
+def _close(pred, sid) -> None:  # type: ignore[no-untyped-def]
+    try:
+        pred.handle_request({"type": "close_session", "session_id": sid})
+    except Exception:
+        pass
+
+
 def _run_small(pred, a, n: int) -> tuple[list, list]:  # type: ignore[no-untyped-def]
     """The small-objects run: every folder (plate, then tiles) x concept x
     seed frame is one session; masks kept as box crops. The primary
@@ -153,6 +168,21 @@ def _run_small(pred, a, n: int) -> tuple[list, list]:  # type: ignore[no-untyped
                         _collect_crops(pred, sid, "forward", masks)
                         _collect_crops(pred, sid, "backward", masks)
                 except Exception as e:
+                    if _no_points(e):
+                        # Nothing of the concept on this seed frame: an empty
+                        # session, not a failed run.
+                        print(f"src {src} '{concept}' seed {seed}: nothing to track", flush=True)
+                        sessions.append(
+                            {
+                                "src": src,
+                                "concept": concept,
+                                "seed": seed,
+                                "seeded": 0,
+                                "tracked": 0,
+                            }
+                        )
+                        _close(pred, sid)
+                        continue
                     if src == 0 and si == 0:
                         raise  # the primary session must work, as in the plain run
                     print(
@@ -250,17 +280,22 @@ def main(argv: list[str] | None = None) -> int:
         sid = pred.handle_request({"type": "start_session", "resource_path": a.frames})[
             "session_id"
         ]
-        r = pred.handle_request(
-            {"type": "add_prompt", "session_id": sid, "frame_index": a.seed, "text": concept}
-        )
-        seeds = [int(x) for x in r["outputs"]["out_obj_ids"]]
+        seeds: list[int] = []
         masks: dict[int, dict[int, np.ndarray]] = {}
-
         try:
-            _collect(pred, sid, "both", masks)
-        except TypeError:
-            _collect(pred, sid, "forward", masks)
-            _collect(pred, sid, "backward", masks)
+            r = pred.handle_request(
+                {"type": "add_prompt", "session_id": sid, "frame_index": a.seed, "text": concept}
+            )
+            seeds = [int(x) for x in r["outputs"]["out_obj_ids"]]
+            try:
+                _collect(pred, sid, "both", masks)
+            except TypeError:
+                _collect(pred, sid, "forward", masks)
+                _collect(pred, sid, "backward", masks)
+        except Exception as e:
+            if not _no_points(e):
+                raise
+            masks = {}  # nothing of the concept on the seed frame: empty, not a crash
         pred.handle_request({"type": "close_session", "session_id": sid})
         for oid, fm in sorted(masks.items()):
             h, w = next(iter(fm.values())).shape

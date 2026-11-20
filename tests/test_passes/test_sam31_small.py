@@ -367,11 +367,11 @@ def test_small_floor_of_a_tile_track_is_relative_to_its_tile() -> None:
 class _FakePredictor:
     """Meta's multiplex predictor, enough for the worker: one object per
     session (a box moving one px per frame). `fail` = (folder, seed frame)
-    pairs whose session raises like SAM 3.1's "No points are provided",
-    during propagation."""
+    pairs whose session raises `error` during propagation."""
 
     def __init__(self, n: int, fail: set[tuple[str, int]]) -> None:
         self.n, self.fail = n, fail
+        self.error = "CUDA error: an illegal memory access was encountered"
         self.sessions: dict[str, tuple[str, int]] = {}
         self.closed: list[str] = []
         self.model = type("M", (), {"init_state": staticmethod(lambda **kw: None)})()
@@ -390,7 +390,7 @@ class _FakePredictor:
 
     def handle_stream_request(self, req: dict):  # type: ignore[no-untyped-def]
         if self.sessions[req["session_id"]] in self.fail:
-            raise RuntimeError("No points are provided; please add points first")
+            raise RuntimeError(self.error)
         for f in range(self.n):
             m = np.zeros((16, 24), np.uint8)
             m[4:12, f : f + 6] = 1
@@ -398,7 +398,10 @@ class _FakePredictor:
 
 
 def _run_worker(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fail: set[tuple[str, int]]
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fail: set[tuple[str, int]],
+    error: str = "CUDA error: an illegal memory access was encountered",
 ) -> tuple[int, Path, _FakePredictor]:
     import sys
     import types
@@ -410,6 +413,7 @@ def _run_worker(
         for i in range(n):
             (d / f"{i:05d}.jpg").write_bytes(b"")
     pred = _FakePredictor(n, fail)
+    pred.error = error
     builder = types.ModuleType("sam3.model_builder")
     builder.build_sam3_multiplex_video_predictor = lambda **kw: pred  # type: ignore[attr-defined]
     for name, mod in {
@@ -443,8 +447,24 @@ def test_worker_skips_a_failing_tile_or_secondary_session(
 def test_worker_primary_session_failure_still_raises(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    with pytest.raises(RuntimeError, match="No points"):
+    with pytest.raises(RuntimeError, match="illegal memory"):
         _run_worker(monkeypatch, tmp_path, {("frames", 3)})
+
+
+def test_worker_no_points_is_an_empty_session_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Nothing of the concept on the PRIMARY seed frame: SAM 3.1 says "No
+    # points are provided". The run goes on; that session is just empty.
+    rc, out, pred = _run_worker(
+        monkeypatch, tmp_path, {("frames", 3)}, "No points are provided; please add points first"
+    )
+    res = json.loads((out / "result.json").read_text())
+    assert rc == 0 and len(pred.closed) == 6
+    first = res["sessions"][0]
+    assert (first["src"], first["seed"], first["tracked"]) == (0, 3, 0)
+    assert not any("skipped" in s for s in res["sessions"])
+    assert all(o["session"] != 0 for o in res["objects"])
 
 
 def test_bridge_logs_a_skipped_session(
