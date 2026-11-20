@@ -330,3 +330,23 @@ def test_cli_depth_default_is_steady_and_moge_still_writes_normals() -> None:
     assert names == ["video_depth_steady", "moge3"]
     outs = cli._moge3_outputs(["depth", "normals"], depth_backend=default, normals_backend="moge3")
     assert outs == {"emit_depth": False, "emit_normals": True}
+
+
+def test_a_refused_camera_reaches_the_steady_report(fakes, monkeypatch) -> None:
+    """MoGe-3 inside the steady pass ignores a FAILED camera: its note and the
+    FOV source land in the steady pass's run-report entry."""
+    fakes(metric=False)
+    real = MoGe3Pass.depth_at
+
+    def depth_at(self, reader, frame_range, frames):
+        out = real(self, reader, frame_range, frames)
+        self.fov_source = "MoGe median of 8 frames; camera track ignored (FAILED)"
+        self._warnings.append("MoGe-3: the camera track is FAILED, so its lens is not used")
+        return out
+
+    monkeypatch.setattr(MoGe3Pass, "depth_at", depth_at)
+    p = sm.SteadyMetricDepthPass({"ref_every": 4})
+    p.run_shot(_Reader(), (1, N))
+    rf = p.report_fields()
+    assert "FAILED" in rf["extra"]["fov_source"]
+    assert any("camera track is FAILED" in w for w in rf["warnings"])
