@@ -34,7 +34,7 @@ subject, fine hair on the hero). The others keep the whole-frame matte.
    never grows the crop: with the default concepts every object's box used to
    swallow the buildings and trees around it until it was the whole frame,
    and LTX, which mattes ONE salient foreground per crop, gave each object
-   somebody else's alpha (A65 couple-car plate, 2026-11-09). Scenery tracks
+   somebody else's alpha (a two-person plate). Scenery tracks
    themselves are not sent to LTX in all-masks mode: SAM's edge, lightly
    anti-aliased, like the small objects under `refine_min_px`.
 2. The crop is scaled to `long_edge` (multiple of 32) and sent to the user's
@@ -200,6 +200,24 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
         "whole_chunk_max": 121,
         "far_frac": 0.06,  # foreground farther than this x width from every track: no owner
         "seam_px": 2.0,  # feather of the seam between two objects (working-res px)
+        # Held objects (whole frame): foreground that no tracked object covers
+        # (a bag, a phone, a tool: LTX mattes it, SAM has no track for it) is
+        # given WHOLE to the object holding it instead of being split between
+        # the nearest ones. The holder is the object whose hand part touches
+        # it (`hand_labels`), else the only object whose mask touches it.
+        # Kept on the nearest rule: a piece nobody touches, one that several
+        # objects touch with no single hand on it, and one bigger than
+        # `held_max_ratio` x its holder (water spray, a floor: not held).
+        # Off = pure nearest.
+        "held_objects": False,
+        "hand_labels": ["hand", "hands"],
+        "held_contact_px": 3.0,  # touching = within this many px past the rim
+        # Foreground this close to an object's mask is its own edge (a
+        # shoulder SAM missed), never part of a held piece (working-res px).
+        "held_rim_px": 4.0,
+        "held_fg_min": 0.1,  # foreground alpha above which a pixel can be held
+        "held_min_px": 16,  # pieces smaller than this (working-res px) stay nearest
+        "held_max_ratio": 0.5,  # pieces bigger than this x the holder's mask stay nearest
         # Folder for the raw LTX results (one .npy per call); "" = no cache.
         "cache_dir": "",
     }
@@ -557,7 +575,56 @@ class LTXAlphaRefinerPass(RVMRefinerPass):
             near = np.argmin(d, 0)
             dmin = np.take_along_axis(d, near[None], 0)[0]
             owner[i] = np.where(dmin <= far, near, -1).astype(np.int16)
+        if bool(self.params.get("held_objects", False)) and ids:
+            hands = self._hand_masks(ids, T, wh, ww)
+            n_held = 0
+            for i in range(T):
+                n_held += assign_held(
+                    owner[i],
+                    self._fg_work[i],
+                    [per.get(i) for per in dense],
+                    [h.get(i) for h in hands],
+                    contact_px=float(self.params.get("held_contact_px", 3.0)),
+                    rim_px=float(self.params.get("held_rim_px", 4.0)),
+                    fg_min=float(self.params.get("held_fg_min", 0.1)),
+                    min_px=int(self.params.get("held_min_px", 16)),
+                    max_ratio=float(self.params.get("held_max_ratio", 0.5)),
+                )
+            if n_held:
+                _log.info(
+                    "LTX alpha (whole frame): %d held piece(s) given to their holder.", n_held
+                )
         return owner, ids
+
+    def _hand_masks(self, ids: list[int], T: int, wh: int, ww: int) -> list[dict[int, np.ndarray]]:
+        """Per owner: the union of its hand parts per local frame, at working res."""
+        import cv2
+
+        wanted = {str(x).strip().lower() for x in (self.params.get("hand_labels") or [])}
+        out: list[dict[int, np.ndarray]] = [{} for _ in ids]
+        if not wanted:
+            return out
+        slot = {t: k for k, t in enumerate(ids)}
+        for tr in self._hard_masks.values():
+            p = tr.get("parent")
+            if p is None or int(p) not in slot:
+                continue
+            if str(tr.get("label", "") or "").strip().lower() not in wanted:
+                continue
+            st = tr.get("stack")
+            if st is None:
+                continue
+            per = out[slot[int(p)]]
+            for k, f in enumerate(tr.get("frames") or []):
+                li = int(f) - self._first
+                if 0 <= li < T and np.asarray(st[k]).any():
+                    m = cv2.resize(
+                        (np.asarray(st[k]) > 0).astype(np.uint8),
+                        (ww, wh),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    per[li] = m if li not in per else np.maximum(per[li], m)
+        return out
 
     def _trimap_gate(self, plate_stack: np.ndarray, hard_stack: np.ndarray) -> np.ndarray:
         """1 where ViTMatte's guided trimap is not certain background,
@@ -1096,6 +1163,89 @@ def ltx_cache_key(
     for f in sorted(folder.glob("*.png")):
         h.update(f.read_bytes())
     return h.hexdigest()[:20]
+
+
+def assign_held(
+    owner: np.ndarray,
+    fg: np.ndarray,
+    bodies: Sequence[np.ndarray | None],
+    hands: Sequence[np.ndarray | None],
+    *,
+    contact_px: float = 3.0,
+    rim_px: float = 0.0,
+    fg_min: float = 0.1,
+    min_px: int = 16,
+    max_ratio: float = 0.5,
+) -> int:
+    """Held-object rule on one frame's owner map (in place).
+
+    `owner`: (h, w) int16 owner index per pixel (-1 = none), from the nearest
+    rule. `fg`: (h, w) foreground alpha. `bodies[k]` / `hands[k]`: owner k's
+    SAM mask and the union of its hand parts (uint8, or None on this frame).
+
+    Every connected piece of foreground that no owner's mask covers goes
+    WHOLE to one owner: the only owner whose hands touch it, else the only
+    owner whose mask touches it (within `rim_px` + `contact_px`). Foreground
+    within `rim_px` of any mask is that object's own edge (a shoulder SAM
+    missed): it never joins a piece and keeps its nearest owner. A piece that
+    nobody touches, that several owners touch with no single hand on it, smaller than
+    `min_px`, or bigger than `max_ratio` x its holder's mask (water spray, the
+    ground: not something held) keeps its nearest owners. Returns the number
+    of pieces reassigned.
+    """
+    import cv2
+
+    h, w = owner.shape
+    covered = np.zeros((h, w), np.uint8)
+    for b in bodies:
+        if b is not None:
+            covered |= (b > 0).astype(np.uint8)
+
+    def grow(m: np.ndarray, px: float) -> np.ndarray:
+        r = int(round(px))
+        if r <= 0:
+            return m > 0
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+        return cv2.dilate(m, k) > 0
+
+    rim = grow(covered, rim_px)
+    loose = ((np.asarray(fg, np.float32) > fg_min) & ~rim).astype(np.uint8)
+    if not loose.any():
+        return 0
+    n, lab = cv2.connectedComponents(loose, connectivity=8)
+    if n <= 1:
+        return 0
+    reach = max(1.0, rim_px + contact_px)
+    size = np.bincount(lab.ravel(), minlength=n)
+
+    def touch(masks: Sequence[np.ndarray | None]) -> np.ndarray:
+        # (owners, pieces): loose pixels within `contact_px` of each mask.
+        t = np.zeros((len(masks), n), np.int64)
+        for k, m in enumerate(masks):
+            if m is None or not m.any():
+                continue
+            near = grow((m > 0).astype(np.uint8), reach)
+            t[k] = np.bincount(lab[near & (lab > 0)], minlength=n)
+        return t
+
+    by_hand = touch(hands)
+    by_body = touch(bodies)
+    body_px = [int(np.count_nonzero(b)) if b is not None else 0 for b in bodies]
+    moved = 0
+    for c in range(1, n):
+        if size[c] < min_px:
+            continue
+        holders = np.flatnonzero(by_hand[:, c])
+        if holders.size == 0:
+            holders = np.flatnonzero(by_body[:, c])
+        if holders.size != 1:
+            continue  # nobody, or ambiguous: the nearest rule stays
+        k = int(holders[0])
+        if max_ratio > 0 and size[c] > max_ratio * max(body_px[k], 1):
+            continue
+        owner[lab == c] = k
+        moved += 1
+    return moved
 
 
 def chunk_spans(n: int, chunk: int, overlap: int) -> list[tuple[int, int]]:

@@ -71,11 +71,18 @@ class CryptomattePass(UtilityPass):
     provides_artifacts = ["cryptomatte_header"]
     # NEVER smooth — temporally blending hash-id channels would corrupt them.
     smoothable_channels: list[str] = []
+    # Channels the executor resamples nearest when `proxy_upscale` is
+    # "nearest" (proxy runs: sidecars are scaled back up to the plate).
+    id_channels: tuple[str, ...] = tuple(CRYPTOMATTE_CHANNELS)
 
     DEFAULT_PARAMS: dict[str, Any] = {
         # 0 = hard edges (matches SAM 3 masks). >0 = Gaussian feather radius
         # (px) faking sub-pixel coverage for softer comp edges.
         "feather": 0.0,
+        # Proxy runs: how the ID channels are scaled back up to the plate.
+        # "nearest" keeps every id an object of the manifest; "linear" (the
+        # historic behaviour) blends neighbouring ids along every edge.
+        "proxy_upscale": "linear",
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
