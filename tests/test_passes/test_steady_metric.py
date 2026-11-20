@@ -304,10 +304,29 @@ def test_vda_relative_output_is_unchanged(monkeypatch) -> None:
     assert set(p.emit_artifacts()) == {"depth_norm_min", "depth_norm_max"}
 
 
-def test_gui_offers_it_without_changing_the_default() -> None:
+def test_steady_is_the_default_and_the_previous_set_stays_reachable() -> None:
     from live_action_aov.gui.pass_catalog import PASS_CATALOG, recommended_models
 
     keys = [e.key for e in PASS_CATALOG["Depth"]]
-    assert "video_depth_steady" in keys and "moge3_depth" in keys
-    assert "video_depth_steady" not in recommended_models()
-    assert "moge3_depth" in recommended_models()
+    assert keys[0] == "video_depth_steady" and "moge3_depth" in keys
+    rec = recommended_models()
+    assert "video_depth_steady" in rec and "moge3_depth" not in rec
+    assert "moge3_normals" in rec  # normals stay on MoGe-3
+    old = recommended_models(steady_depth=False)
+    assert old == [k if k != "video_depth_steady" else "moge3_depth" for k in rec]
+    assert old[:4] == ["sam3_matte_on", "cryptomatte", "moge3_depth", "moge3_normals"]
+
+
+def test_cli_depth_default_is_steady_and_moge_still_writes_normals() -> None:
+    import inspect
+
+    from live_action_aov.cli import app as cli
+
+    default = inspect.signature(cli.run_shot).parameters["depth_backend"].default
+    assert default == "video_depth_steady"
+    names = cli._resolve_semantic_passes(
+        ["depth", "normals"], depth_backend=default, normals_backend="moge3"
+    )
+    assert names == ["video_depth_steady", "moge3"]
+    outs = cli._moge3_outputs(["depth", "normals"], depth_backend=default, normals_backend="moge3")
+    assert outs == {"emit_depth": False, "emit_normals": True}

@@ -298,10 +298,11 @@ def run_shot(
         str,
         typer.Option(
             "--depth-backend",
-            help="Backend for the semantic `depth` pass. "
-            "Default: depth_anything_v2 (Apache-2.0, commercial OK).",
+            help="Backend for the semantic `depth` pass. Default: video_depth_steady "
+            "(metres that hold still over the shot; Apache-2.0 / MIT, commercial OK). "
+            "The previous default is `depth_anything_v2`; `moge3` is sharp per frame.",
         ),
-    ] = "depth_anything_v2",
+    ] = "video_depth_steady",
     normals_backend: Annotated[
         str,
         typer.Option(
