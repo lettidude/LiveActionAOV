@@ -194,6 +194,15 @@ def adaptive_band_px(mask: np.ndarray, frac: float, min_px: int, max_px: int) ->
     return int(np.clip(frac * np.sqrt(area), min_px, max_px))
 
 
+#: Slot -> Cryptomatte table fields the SAM pass puts on each hero; carried
+#: into `matte_heroes` so the sidecar header can name the slot's crypto object.
+SLOT_TABLE_KEYS = ("crypto_name", "crypto_id", "mean_area")
+
+
+def slot_table_fields(hero: dict[str, Any]) -> dict[str, Any]:
+    return {k: hero[k] for k in SLOT_TABLE_KEYS if k in hero}
+
+
 class RVMRefinerPass(UtilityPass):
     name = "rvm_refiner"
     version = "0.1.0"
@@ -811,6 +820,7 @@ class RVMRefinerPass(UtilityPass):
                         "score": float(h.get("score", 0.0)),
                         "refined_frames": refined_frames,
                         "missing_hard_mask": False,
+                        **slot_table_fields(h),
                     }
                 )
             if refine_all and label:

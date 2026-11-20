@@ -405,3 +405,25 @@ def test_chunk_agreement() -> None:
     assert iou == pytest.approx(0.5) and da == pytest.approx(0.18)
     z = np.zeros((10, 10), np.float32)
     assert chunk_agreement([z], [z])[0] == 1.0
+
+
+def test_connected_never_extends_past_the_nearest_reach() -> None:
+    # A reflection / spray trail joined to A but past `far_frac` (unowned by
+    # the nearest rule) stays unowned: the rule changes owners, not coverage.
+    owner, fg, bodies, d = _owner_setup()
+    owner[25:28, 45:55] = -1  # the arm's tip is past the reach
+    connected_owner(owner, fg, bodies, d)
+    assert (owner[25:28, 45:55] == -1).all()
+    assert (owner[25:28, 30:45] == 0).all()
+
+
+def test_refiners_carry_the_slot_table() -> None:
+    from live_action_aov.passes.matte.rvm import slot_table_fields
+
+    h = {"track_id": 2, "crypto_name": "person_2", "crypto_id": "28b3f53c", "mean_area": 0.1}
+    assert slot_table_fields(h) == {
+        "crypto_name": "person_2",
+        "crypto_id": "28b3f53c",
+        "mean_area": 0.1,
+    }
+    assert slot_table_fields({"track_id": 1}) == {}

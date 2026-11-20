@@ -1509,10 +1509,11 @@ def connected_owner(
 
     Foreground (alpha > `fg_min`) and the masks are cut into connected
     pieces. In a piece that holds ONE owner's mask, every uncovered pixel
-    goes to that owner, whoever is nearer (an outstretched hand, a held
-    prop); in a piece holding several owners' masks, each pixel goes to the
-    nearest of THOSE owners (an object outside the piece never takes any of
-    it); a piece with no mask keeps the nearest rule. A one-owner piece
+    that has an owner goes to that owner, whoever is nearer (an outstretched
+    hand, a held prop); in a piece holding several owners' masks, each owned
+    pixel goes to the nearest of THOSE owners (an object outside the piece
+    never takes any of it); a piece with no mask keeps the nearest rule.
+    Pixels the nearest rule leaves unowned (past `far_frac`) stay unowned. A one-owner piece
     whose uncovered foreground is bigger than `max_ratio` x the owner's mask
     keeps the nearest rule (the floor, a reflection: not a limb or a prop).
     Returns the number of pieces given whole to one owner.
@@ -1550,7 +1551,12 @@ def connected_owner(
         owners = np.flatnonzero(hold[c, 1:])
         if owners.size == 0:
             continue  # no mask in it: the nearest rule stays
-        piece = (lab == c) & loose
+        # Only WHO owns a pixel changes, never whether it has an owner: the
+        # nearest rule's `far_frac` still decides how far an object reaches
+        # (a reflection or a spray trail joined to a person stays unowned).
+        piece = (lab == c) & loose & (owner >= 0)
+        if not piece.any():
+            continue
         if owners.size == 1:
             k = int(owners[0])
             if max_ratio > 0 and extra[c] > max_ratio * max(body_px[k], 1):
