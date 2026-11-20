@@ -108,6 +108,7 @@ liveaov-gui
     <shot>_v001.comp.nk                       <- open this in Nuke
     passes/<shot>_v001.utility.####.exr      (per-pass layout: passes/<pass>/<shot>_v001.<pass>.####.exr)
     passes/<shot>_v001.crypto.####.exr       (lossy delivery only: Cryptomatte kept lossless)
+    passes/tracker/<shot>_v001.tracker.####.exr  (Tracker proxy only, see below)
     camera/<shot>_v001.camera.nk  .camera.usda  .camera.json  .cloud.obj  .cloud.png  .points.obj  .points.ply  _colmap/
     splat/<shot>_v001.splat.ply  .splat.json
     logs/submit_<date>_<shot>.log
@@ -136,6 +137,29 @@ Default `{shot}_{version}.{pass}.{frame}.{ext}` gives the tree above. `{shot}_{p
 gives `SH010_utility_v001.1001.exr`, `SH010_camera_v001.nk`, `SH010_comp_v001.nk`: files without a frame
 drop `{frame}` and the separator before it. `{pass}`, `{frame}` and `{ext}` are required; the folders
 (`passes/`, `camera/`, `splat/`, `v###`) do not change.
+
+### Anamorphic plates
+
+The pixel aspect comes from the EXR header (Preview tab → *Pixel aspect* overrides it). With
+**Run the passes de-squeezed** ticked (Preview tab, per shot; CLI `--desqueeze`), the models see the
+plate with square pixels and every pass is written back at the plate's own size and pixel aspect:
+Cryptomatte IDs are never blended, normals stay unit length, and motion vectors are in plate
+pixels. No effect on square pixels. A run with a camera track or a Gaussian splat keeps the plate
+as it is (the log says so).
+
+### For trackers: flow error and the tracker proxy
+
+- **Flow error** (CLI `--flow-fb-error`, flow pass param `fb_residual`; on with the tracker proxy in
+  the app): the flow pass also writes `motion_fb.x/y` and `back_fb.x/y`, the forward-backward error
+  of `motion` and `back` as a vector in plate pixels. 0 = the two directions agree; the length of the
+  vector is the error in pixels (large where something is occluded or the flow is unreliable).
+  `flow.confidence` / `flow.occlusion` are unchanged.
+- **Tracker proxy** (Output tab → *Tracker proxy*, CLI `--tracker-proxy`): a quarter-size EXR per
+  frame in `passes/tracker/` with `motion.x/y`, `back.x/y`, `flow.confidence`, the flow error,
+  `Z` and every `mask.*` / `matte.*` channel, so a tracker does not decode the full utility EXR.
+  Vectors stay in plate pixels (read the proxy at `x * scale`, get plate pixels back); `Z` is a
+  real sample, never an average of foreground and background. Header: `liveaov/tracker_proxy/scale_x`,
+  `scale_y`, `source_size`.
 
 ## Opening a run in Nuke — `<shot>_v###.comp.nk`
 

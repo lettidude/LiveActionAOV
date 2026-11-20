@@ -211,6 +211,14 @@ class ShotState:
     # savings on 4K / 6K plates).
     proxy_long_edge: int | None = None
 
+    # Anamorphic plates: run the passes de-squeezed and write them back at
+    # the plate's squeeze (`Shot.desqueeze`). Per shot, next to the pixel
+    # aspect it acts on.
+    desqueeze: bool = False
+    # A quarter-size EXR per frame for trackers (`Shot.tracker_proxy`); also
+    # turns on the flow's forward-backward error channels. Session-wide.
+    tracker_proxy: bool = False
+
     # Sidecar delivery: EXR codec + bit depth. Defaults = lossless float32
     # (historic output). Bandwidth-bound jobs pick a compact lossy delivery
     # (e.g. dwab:45 + float16) in the Output tab. Cryptomatte is auto-split

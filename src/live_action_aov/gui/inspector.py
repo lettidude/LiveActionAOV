@@ -681,10 +681,9 @@ class InspectorPanel(QWidget):
         preview_layout.addSpacing(12)
         preview_layout.addWidget(_section_label("Pixel aspect"))
         pa_hint = QLabel(
-            "Anamorphic desqueeze for the VIEWER only (sidecars stay in "
-            "pixel space). Auto-filled from the EXR header; override it "
-            "here when the header lies (1.0 = square pixels, 2.0 = 2x "
-            "anamorphic)."
+            "Auto-filled from the EXR header; override it here when the "
+            "header lies (1.0 = square pixels, 2.0 = 2x anamorphic). The "
+            "viewer always shows the plate de-squeezed."
         )
         pa_hint.setStyleSheet("color: #888; font-size: 9pt;")
         pa_hint.setWordWrap(True)
@@ -696,6 +695,15 @@ class InspectorPanel(QWidget):
         self._pixel_aspect_spin.setValue(1.0)
         self._pixel_aspect_spin.valueChanged.connect(self._on_pixel_aspect_changed)
         preview_layout.addWidget(self._pixel_aspect_spin)
+        self._desqueeze_check = QCheckBox("Run the passes de-squeezed (anamorphic)")
+        self._desqueeze_check.setToolTip(
+            "The models see square pixels; every pass is written back at the "
+            "plate's own size and squeeze (Cryptomatte ids stay exact, motion "
+            "vectors in plate pixels). No effect at pixel aspect 1.0. Not used "
+            "when the run solves a camera or a splat."
+        )
+        self._desqueeze_check.toggled.connect(self._on_desqueeze_toggled)
+        preview_layout.addWidget(self._desqueeze_check)
         preview_layout.addSpacing(12)
         preview_layout.addWidget(self._reset_btn)
         preview_layout.addStretch()
@@ -786,6 +794,15 @@ class InspectorPanel(QWidget):
         layout_hint.setWordWrap(True)
         output_layout.addWidget(layout_hint)
         output_layout.addWidget(self._layout_combo)
+        self._tracker_check = QCheckBox("Tracker proxy (quarter-size flow + Z + mattes)")
+        self._tracker_check.setToolTip(
+            "Also writes passes/tracker/: a small EXR per frame with the flow "
+            "(both ways, with its forward-backward error), Z and the mattes, so a "
+            "tracker does not have to decode the full utility EXR. Vectors are in "
+            "plate pixels."
+        )
+        self._tracker_check.toggled.connect(self._on_tracker_toggled)
+        output_layout.addWidget(self._tracker_check)
         output_layout.addSpacing(16)
         output_layout.addWidget(_section_label("File naming"))
         naming_hint = QLabel(
@@ -1075,6 +1092,12 @@ class InspectorPanel(QWidget):
             self._exposure_slider.setValue(int(round(ev * 10)))
             self._exposure_spin.setValue(ev)
             self._pixel_aspect_spin.setValue(float(shot.pixel_aspect or 1.0))
+            self._desqueeze_check.blockSignals(True)
+            self._desqueeze_check.setChecked(bool(shot.desqueeze))
+            self._desqueeze_check.blockSignals(False)
+            self._tracker_check.blockSignals(True)
+            self._tracker_check.setChecked(bool(shot.tracker_proxy))
+            self._tracker_check.blockSignals(False)
 
             self._rebuild_range_and_crop(shot)
             self._rebuild_naming(shot)
@@ -1687,6 +1710,18 @@ class InspectorPanel(QWidget):
         if item is not None:
             item.setText(self._mask_item_text(inst))
 
+    def _on_desqueeze_toggled(self, on: bool) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.desqueeze = bool(on)
+        self._registry.notify_updated(self._current)
+
+    def _on_tracker_toggled(self, on: bool) -> None:
+        if self._building or self._current is None:
+            return
+        self._current.tracker_proxy = bool(on)
+        self._broadcast_output_to_all_shots()
+
     def _on_proxy_changed(self, idx: int) -> None:
         if self._building or self._current is None:
             return
@@ -1775,6 +1810,7 @@ class InspectorPanel(QWidget):
             shot.output_mode = active.output_mode
             shot.output_external_root = active.output_external_root
             shot.proxy_long_edge = active.proxy_long_edge
+            shot.tracker_proxy = active.tracker_proxy
             shot.delivery_compression = active.delivery_compression
             shot.delivery_dtype = active.delivery_dtype
             shot.delivery_layout = active.delivery_layout
