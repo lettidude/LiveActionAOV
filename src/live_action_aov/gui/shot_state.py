@@ -214,7 +214,7 @@ class ShotState:
     # Anamorphic plates: run the passes de-squeezed and write them back at
     # the plate's squeeze (`Shot.desqueeze`). Per shot, next to the pixel
     # aspect it acts on.
-    desqueeze: bool = False
+    desqueeze: bool = True
     # A quarter-size EXR per frame for trackers (`Shot.tracker_proxy`); also
     # turns on the flow's forward-backward error channels. Session-wide.
     tracker_proxy: bool = False

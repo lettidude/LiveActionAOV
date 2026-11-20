@@ -7,9 +7,10 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Anamorphic plates processed de-squeezed** (opt-in: Preview tab → *Run the passes de-squeezed*,
-  CLI `--desqueeze`, `Shot.desqueeze`). The models see square pixels; every pass comes back at the
-  plate's own size and pixel aspect, with exact Cryptomatte IDs and motion vectors in plate pixels.
+- **Anamorphic plates processed de-squeezed** (on by default; Preview tab → *Run the passes
+  de-squeezed*, CLI `--desqueeze/--no-desqueeze`, `Shot.desqueeze`). The models see square pixels;
+  every pass comes back at the plate's own size and pixel aspect, with exact Cryptomatte IDs and
+  motion vectors in plate pixels. Square-pixel plates and camera / splat runs are unchanged.
 - **Flow error for trackers**: `motion_fb.x/y` and `back_fb.x/y`, the forward-backward error of the
   flow in plate pixels (CLI `--flow-fb-error`, flow param `fb_residual`).
 - **Tracker proxy**: a quarter-size EXR per frame in `passes/tracker/` with the flow, its error, Z and

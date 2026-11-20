@@ -406,8 +406,9 @@ def run_shot(
         typer.Option(
             "--desqueeze/--no-desqueeze",
             help="Anamorphic plates (pixel aspect from the EXR header): run the passes "
-            "on square pixels and write them back at the plate's squeeze. No effect on "
-            "square pixels; skipped when a camera solve or a splat is in the run.",
+            "on square pixels and write them back at the plate's squeeze (default on; "
+            "--no-desqueeze keeps the plate's pixels). No effect on square pixels; skipped "
+            "when a camera solve or a splat is in the run.",
         ),
     ] = None,
     tracker_proxy: Annotated[

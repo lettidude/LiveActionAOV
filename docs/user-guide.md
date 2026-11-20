@@ -142,7 +142,8 @@ drop `{frame}` and the separator before it. `{pass}`, `{frame}` and `{ext}` are 
 
 The pixel aspect comes from the EXR header (Preview tab → *Pixel aspect* overrides it). With
 **Run the passes de-squeezed** ticked (Preview tab, per shot; CLI `--desqueeze`), the models see the
-plate with square pixels and every pass is written back at the plate's own size and pixel aspect:
+plate with square pixels and every pass is written back at the plate's own size and pixel aspect
+(on by default; untick it, or `--no-desqueeze`, to run on the plate's own pixels):
 Cryptomatte IDs are never blended, normals stay unit length, and motion vectors are in plate
 pixels. No effect on square pixels. A run with a camera track or a Gaussian splat keeps the plate
 as it is (the log says so).

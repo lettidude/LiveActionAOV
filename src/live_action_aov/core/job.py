@@ -151,8 +151,9 @@ class Shot(BaseModel):
     # pass back at the plate's own size and squeeze, with the filter its
     # type needs (Cryptomatte ids nearest, flow x scaled). No effect on a
     # square-pixel plate. Skipped (with a warning) when a camera solve or a
-    # splat is in the run.
-    desqueeze: bool = False
+    # splat is in the run. On by default (an anamorphic plate fed to the
+    # models squeezed gives them the wrong geometry); off = the plate's pixels.
+    desqueeze: bool = True
 
     # A small extra EXR per frame for trackers (`tracker/` next to the
     # passes): flow (+ its forward-backward error when the flow pass writes

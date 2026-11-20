@@ -150,6 +150,29 @@ def test_tracker_proxy(anamorphic_plate: Path, tmp_path: Path) -> None:
     assert not any(str(k).startswith("cryptomatte/") for k in attrs)
 
 
-def test_no_tracker_proxy_by_default(anamorphic_plate: Path, tmp_path: Path) -> None:
+def test_defaults_desqueeze_and_no_tracker_proxy(anamorphic_plate: Path, tmp_path: Path) -> None:
     _run(anamorphic_plate, tmp_path / "plain")
+    assert _Probe.seen[0] == (W, H // 2)  # de-squeezed by default
     assert not (tmp_path / "plain" / "passes" / "tracker").exists()
+
+
+def test_square_plate_is_untouched_by_default(tmp_path: Path) -> None:
+    folder = tmp_path / "sq"
+    folder.mkdir()
+    img = np.full((H, W, 3), 0.5, np.float32)
+    write_exr(folder / "ana.0001.exr", img, ["R", "G", "B"], pixel_aspect=1.0)
+    write_exr(folder / "ana.0002.exr", img, ["R", "G", "B"], pixel_aspect=1.0)
+    shot = Shot(
+        name="ana",
+        folder=folder,
+        output_dir=tmp_path / "out",
+        sequence_pattern="ana.####.exr",
+        frame_range=(1, 2),
+        resolution=(W, H),
+        pixel_aspect=1.0,
+        passes_enabled=[_Probe.name],
+    )
+    live_action_aov.run(Job(shot=shot, passes=[PassConfig(name=_Probe.name)]))
+    assert _Probe.seen[0] == (W, H)
+    _ch, attrs = _channels(tmp_path / "out" / "passes" / "ana.utility.0001.exr")
+    assert "liveaov/input/processing" not in attrs

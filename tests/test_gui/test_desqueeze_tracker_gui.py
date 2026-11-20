@@ -26,9 +26,9 @@ def _shot(**kw: object) -> ShotState:
     return ShotState(**base)  # type: ignore[arg-type]
 
 
-def test_defaults_are_off() -> None:
+def test_defaults() -> None:
     s = _shot()
-    assert s.desqueeze is False and s.tracker_proxy is False
+    assert s.desqueeze is True and s.tracker_proxy is False
 
 
 def test_session_round_trip() -> None:
@@ -38,7 +38,9 @@ def test_session_round_trip() -> None:
     old.pop("desqueeze")
     old.pop("tracker_proxy")
     s = shot_from_dict(old)  # a session saved before these existed
-    assert s.desqueeze is False and s.tracker_proxy is False
+    assert s.desqueeze is True and s.tracker_proxy is False
+    s = shot_from_dict(shot_to_dict(_shot(desqueeze=False)))
+    assert s.desqueeze is False
 
 
 def test_reaches_the_core_shot() -> None:

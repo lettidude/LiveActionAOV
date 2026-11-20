@@ -186,7 +186,7 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         output_external_root=(None if ext_root is None else Path(str(ext_root))),
         output_external_name=str(d.get("output_external_name", "")),
         proxy_long_edge=d.get("proxy_long_edge"),
-        desqueeze=bool(d.get("desqueeze", False)),
+        desqueeze=bool(d.get("desqueeze", True)),
         tracker_proxy=bool(d.get("tracker_proxy", False)),
         # "zip" sessions move to "zips": same pixels and size, far faster to write.
         delivery_compression={"zip": "zips"}.get(
