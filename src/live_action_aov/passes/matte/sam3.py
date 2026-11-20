@@ -82,6 +82,57 @@ from live_action_aov.passes.matte.rank import (
 
 _log = logging.getLogger(__name__)
 
+# Shown in the log when crowd mode (`sam31_tiles` "on") runs; the GUI and the
+# CLI say the same before the run starts.
+CROWD_MODE_WARNING = (
+    "Crowd mode is on (SAM 3.1 tiles): for a dense crowd of small people that needs one ID "
+    "per person. Expect a much longer matte run (many times the normal time) and a full "
+    "big GPU (32 GB class); leave it off on shots without a crowd."
+)
+
+
+def _crowd_summary(info: dict[str, Any], n_tiles: int, absorbed: int, swap: Any) -> dict[str, Any]:
+    """Crowd mode's run-report entry: tiles, sessions, sessions that hit the
+    per-session object cap, sessions skipped or empty, time and GPU peak,
+    plus the absorb and swap-guard counts; `line` = one readable line."""
+    ss = list(info.get("sessions", []))
+    capped = [s for s in ss if s.get("cap_hit")]
+    skipped = [s for s in ss if "skipped" in s]
+    empty = [s for s in ss if s.get("empty")]
+    split = sum(1 for s in ss if s.get("split"))
+    times = [float(s["seconds"]) for s in ss if s.get("seconds") is not None]
+    out: dict[str, Any] = {
+        "tiles": n_tiles,
+        "sessions": len(ss),
+        "sessions_cap_hit": len(capped),
+        "sessions_skipped": len(skipped),
+        "sessions_empty": len(empty),
+        "sessions_split": split,
+        "worker_seconds": round(float(info.get("seconds") or 0.0), 1),
+        "session_seconds_max": round(max(times), 1) if times else None,
+        "peak_vram_gb": info.get("peak_vram_gb"),
+        "tile_tracks_absorbed": absorbed,
+    }
+    if swap is not None:
+        out["swap_guard"] = {
+            "flagged": swap.events,
+            "stretches_dropped": swap.dropped_stretches,
+            "splits": swap.splits,
+            "joined_back": swap.rejoined,
+        }
+    caps = sorted({int(s.get("cap") or 0) for s in capped})
+    out["line"] = (
+        f"{n_tiles} tiles, {len(ss)} sessions"
+        + (f" ({split} on smaller tiles)" if split else "")
+        + f", {len(capped)} hit the per-session object cap"
+        + (f" ({', '.join(str(c) for c in caps)})" if caps else "")
+        + f", {len(skipped) + len(empty)} skipped or empty (no points)"
+        + f", {absorbed} tile pieces absorbed"
+        + (f", swap guard {swap.events} flagged" if swap is not None else "")
+        + f"; SAM 3.1 {out['worker_seconds']:.0f} s, peak {out['peak_vram_gb']} GB."
+    )
+    return out
+
 
 def _available_ram_bytes() -> int | None:
     """Free host RAM in bytes, or ``None`` if it can't be measured.
@@ -437,9 +488,32 @@ class SAM3MattePass(UtilityPass):
         # last frame and every `sam31_seed_every` frames; "single" =
         # `sample_frame` only). A session other than the first one that
         # SAM 3.1 fails on is logged and skipped.
-        # `sam31_tiles`: "on" = the plate's tiles each tracked as their own
-        # zoomed clip too (opt-in: a big subject can come back as one
-        # object per tile), "off".
+        # `sam31_tiles`: "on" = CROWD MODE: the plate's tiles each tracked
+        # as their own zoomed clip too, "off" (default). Opt-in per shot, for
+        # a dense crowd of small people that needs one ID per person: many
+        # sessions, so a much longer run and a big card. Needs
+        # `small_objects` "auto" or "max" (2x2 / 3x3 tiles). Crowd mode only
+        # (each 0 / "off" = tiles as before these options):
+        # `sam31_tile_absorb`: a tile track that lies at least this much
+        # inside a whole-frame track of the same label (on
+        # `sam31_tile_absorb_frames` of its frames) and is a piece of it
+        # (reaches a tile edge inside the frame on `sam31_tile_absorb_cut` of
+        # its frames, or is `sam31_tile_absorb_size` of its size) is absorbed
+        # into it: big people are not cut into one ID per tile.
+        # `sam31_tile_max_objects`: object cap of the tile sessions (0 =
+        # `sam31_max_objects`). `sam31_tile_split` "dense": a tile whose
+        # session hit its cap is tracked again as 2x2 smaller tiles.
+        # `sam31_tile_work_size`: long side (px) every tile clip is shrunk
+        # to (0 = the `sam31_work_size` rule): the model reads ~1008 px, a
+        # bigger tile mostly costs GPU memory. `sam31_free_between`: give the
+        # GPU cache back between sessions.
+        # `sam31_swap_guard` ("auto" = on in crowd mode, "on", "off"): an ID
+        # whose mask moves further than `sam31_swap_jump` x half its size
+        # (the bigger of the two readings; a half-hidden person never) AND
+        # changes size more than `sam31_swap_area` times between frames has
+        # jumped onto a neighbour: a stretch that comes back within
+        # `sam31_swap_stretch` frames is dropped, else the ID is split there
+        # (split pieces that continue each other are joined back).
         # `sam31_work_size`: long side (px) a clip SAM 3.1 sees is shrunk to
         # when its long side is over `sam31_work_size_above` (big plates
         # only: its memory grows with objects x frames x clip size, and a
@@ -464,6 +538,18 @@ class SAM3MattePass(UtilityPass):
         "sam31_seed_frames": "auto",
         "sam31_seed_every": 40,
         "sam31_tiles": "off",
+        "sam31_tile_absorb": 0.7,  # 0 = off
+        "sam31_tile_absorb_frames": 0.5,
+        "sam31_tile_absorb_cut": 0.25,
+        "sam31_tile_absorb_size": 0.5,
+        "sam31_tile_max_objects": 128,
+        "sam31_tile_split": "off",
+        "sam31_tile_work_size": 1008,
+        "sam31_free_between": True,
+        "sam31_swap_guard": "auto",
+        "sam31_swap_jump": 1.0,
+        "sam31_swap_area": 3.0,
+        "sam31_swap_stretch": 8,
         "sam31_work_size": 1024,
         "sam31_work_size_above": 1920,
         "sam31_small_min_peak_coverage": 0.0003,
@@ -528,6 +614,7 @@ class SAM3MattePass(UtilityPass):
         self._heroes: list[Any] = []  # list[rank.HeroSlot]
         self._n_frames = 1
         self._crowd_warning = ""
+        self._crowd_mode: dict[str, Any] = {}
         self._crowd_dropped: list[str] = []
         self._reseeded = ""
         self._concepts_found: list[str] = []
@@ -1161,7 +1248,9 @@ class SAM3MattePass(UtilityPass):
         tiles: list[tuple[int, int, int, int]] = []
         plate_frame: Any = None
         big = str(self.params.get("small_objects", "auto")).lower() == "max"
-        if str(self.params.get("sam31_tiles", "off")).lower() == "on":
+        crowd = str(self.params.get("sam31_tiles", "off")).lower() == "on"
+        if crowd:
+            _log.warning(CROWD_MODE_WARNING)
             g = self._tile_grid(dh, dw) if big else max(2, self._tile_grid(dh, dw))
             tiles = sam31_bridge.tile_windows(
                 dh, dw, g, float(self.params.get("tile_overlap", 0.2))
@@ -1176,6 +1265,19 @@ class SAM3MattePass(UtilityPass):
                     plate_frame = lambda k: np.asarray(full(first + k)[0], dtype=np.float32)  # noqa: E731
         seeds = self._sam31_seeds(n, seed_local)
         self._sam31_vram_preflight(len(seeds) * (1 + len(tiles)))
+        gp = self.params.get
+        info: dict[str, Any] = {}
+        crowd_kw: dict[str, Any] = {}
+        if tiles:
+            crowd_kw = {
+                "tile_max_objects": _capped(
+                    int(gp("sam31_tile_max_objects", 0) or 0), int(gp("crowd_cap", 0) or 0)
+                ),
+                "tile_work_size": int(gp("sam31_tile_work_size", 0) or 0),
+                "free_between": bool(gp("sam31_free_between", False)),
+                "split_dense": str(gp("sam31_tile_split", "off")).lower() == "dense",
+                "info": info,
+            }
         found = sam31_bridge.run_sam31_small(
             frames,
             concepts,
@@ -1193,7 +1295,29 @@ class SAM3MattePass(UtilityPass):
             work_above=int(self.params.get("sam31_work_size_above", 1920) or 0),
             timeout_s=float(self.params.get("sam31_timeout_s", 3600)),
             checkpoint=str(self.params.get("sam31_checkpoint", "") or ""),
+            **crowd_kw,
         )
+        tiles = list(info.get("tiles", tiles))
+        absorbed = 0
+        if tiles and float(gp("sam31_tile_absorb", 0) or 0) > 0:
+            from live_action_aov.passes.matte.sam31_crowd import absorb_tile_tracks
+
+            found, arep = absorb_tile_tracks(
+                found,
+                tiles,
+                (dh, dw),
+                contain=float(gp("sam31_tile_absorb", 0.7)),
+                frames=float(gp("sam31_tile_absorb_frames", 0.5)),
+                cut_frames=float(gp("sam31_tile_absorb_cut", 0.25)),
+                size_ratio=float(gp("sam31_tile_absorb_size", 0.5)),
+            )
+            absorbed = arep.absorbed
+            _log.info(
+                "SAM 3.1 crowd: %d of %d tile track(s) absorbed into a whole-frame track "
+                "(pieces of a bigger object cut by a tile).",
+                arep.absorbed,
+                arep.tile_tracks,
+            )
         min_frames = int(self.params.get("sam31_min_frames", 3))
         min_cov = float(self.params.get("sam31_small_min_peak_coverage", 0.0003))
         # `min_object_px` is plate px: scaled to these frames (1K proxy of 4K).
@@ -1209,6 +1333,36 @@ class SAM3MattePass(UtilityPass):
             kept = self._sam31_merge_tracks(found, min_px, min_cov, min_frames, seen)
         else:
             kept = self._sam31_merge_duplicates(found, min_px, min_cov, min_frames, seen)
+        swap = str(gp("sam31_swap_guard", "auto")).lower()
+        srep: Any = None
+        if swap == "on" or (swap == "auto" and crowd and tiles):
+            from live_action_aov.passes.matte.sam31_crowd import swap_guard
+
+            kept, srep = swap_guard(
+                kept,
+                jump=float(gp("sam31_swap_jump", 1.0)),
+                area_ratio=float(gp("sam31_swap_area", 3.0)),
+                max_stretch=int(gp("sam31_swap_stretch", 8) or 0),
+            )
+            kept = [
+                t
+                for t in kept
+                if sam31_bridge.keep_small(t, min_px, min_cov, min_frames, seen[t.src])
+            ]
+            _log.info(
+                "SAM 3.1 swap guard: %d jump(s) flagged on %d track(s): %d stretch(es) dropped "
+                "(%d frames), %d split(s), %d piece(s) joined back; %d object(s) after the floor.",
+                srep.events,
+                srep.tracks,
+                srep.dropped_stretches,
+                srep.dropped_frames,
+                srep.splits,
+                srep.rejoined,
+                len(kept),
+            )
+        if tiles:
+            self._crowd_mode = _crowd_summary(info, len(tiles), absorbed, srep)
+            _log.warning("SAM 3.1 crowd mode: %s", self._crowd_mode["line"])
         used = {i.track_id for i in self._instances}
         next_id = 1
         for t in kept:
@@ -1938,6 +2092,11 @@ class SAM3MattePass(UtilityPass):
         if use31 and concepts:
             try:
                 if str(self.params.get("small_objects", "auto")).lower() == "off":
+                    if str(self.params.get("sam31_tiles", "off")).lower() == "on":
+                        _log.warning(
+                            "Crowd mode (sam31_tiles on) needs small objects Auto or Max; "
+                            "small objects is Off for this shot, so crowd mode is ignored."
+                        )
                     self._add_sam31(frames, concepts, seed_local, first)
                 else:
                     self._add_sam31_small(frames, concepts, seed_local, first)
@@ -2275,6 +2434,8 @@ class SAM3MattePass(UtilityPass):
             if int(o["id"]) in slot_of:
                 o["slot"] = slot_of[int(o["id"])]
         extra: dict[str, Any] = {"concepts": concepts, "slots": slots}
+        if self._crowd_mode:
+            extra["crowd_mode"] = dict(self._crowd_mode)
         if self._crowd_dropped:
             extra["crowd_dropped"] = list(self._crowd_dropped)
         out: dict[str, Any] = {
@@ -2285,6 +2446,8 @@ class SAM3MattePass(UtilityPass):
             "extra": extra,
         }
         warnings: list[str] = []
+        if self._crowd_mode:
+            warnings.append("Crowd mode (SAM 3.1 tiles): " + str(self._crowd_mode["line"]))
         if self._crowd_warning:
             warnings.append(self._crowd_warning)
         if self._reseeded:

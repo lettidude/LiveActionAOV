@@ -130,6 +130,12 @@ class ShotState:
     # zoomed tiles of the frame. Injected as the sam3_matte `small_objects`.
     small_objects: str = "auto"
 
+    # Crowd mode: SAM 3.1 also tracks the zoomed tiles as their own clips
+    # (one ID per person in a dense crowd of small people). Much slower and
+    # needs a big card, so per shot and off by default; never copied by
+    # "Apply passes to all shots". Injected as the sam3_matte `sam31_tiles`.
+    crowd_mode: bool = False
+
     # Detector + tracker for the concepts: "sam3" (built in) or "sam3.1"
     # (Meta's SAM 3.1 Object Multiplex in its own Python 3.12 environment,
     # LAOV_SAM31_PYTHON). Injected as the sam3_matte `detector`.

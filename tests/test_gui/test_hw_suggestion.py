@@ -106,3 +106,19 @@ def test_masks_tab_names_presets_and_object_slot(qapp: QApplication) -> None:
     assert specs[b.name]["slot"] == "r" and "slot" not in specs[a.name]
     back = shot_from_dict(shot_to_dict(shot))
     assert [c.slot for c in back.click_instances] == ["", "r"]
+
+
+def test_crowd_mode_checkbox_is_per_shot_and_never_copied(qapp: QApplication) -> None:
+    reg = ShotRegistry()
+    panel = InspectorPanel(reg)
+    a, b = _shot(name="SH010", enabled_models=["sam3_matte_on"]), _shot(name="SH020")
+    reg.add(b)
+    reg.add(a)
+    cur = panel._current
+    assert cur is not None and not panel._crowd_check.isChecked()
+    assert panel._crowd_warning.isHidden()
+    panel._crowd_check.setChecked(True)
+    assert cur.crowd_mode is True and not panel._crowd_warning.isHidden()
+    panel._on_apply_passes_to_all()
+    other = b if cur is a else a
+    assert other.crowd_mode is False  # a crowd run is never spread to other shots

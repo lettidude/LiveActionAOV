@@ -349,6 +349,12 @@ def _sam3_matte_params(state: ShotState) -> dict[str, Any]:
     params: dict[str, Any] = {}
     if (state.small_objects or "auto") != "auto":  # "auto" is the pass default
         params["small_objects"] = state.small_objects
+    if state.crowd_mode:
+        # Crowd mode = SAM 3.1 on the zoomed tiles too; it needs small
+        # objects on, so "Off" becomes "Auto" for this shot.
+        params["sam31_tiles"] = "on"
+        if (state.small_objects or "auto") == "off":
+            params["small_objects"] = "auto"
     if (state.detector or "auto") != "auto":
         params["detector"] = state.detector
     concepts = _parse_concepts(state.sam3_concepts)

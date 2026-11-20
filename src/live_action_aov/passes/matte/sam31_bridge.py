@@ -231,6 +231,11 @@ def run_sam31_small(
     work_above: int = 0,
     timeout_s: float = 3600.0,
     checkpoint: str = "",
+    tile_max_objects: int = 0,
+    tile_work_size: int = 0,
+    free_between: bool = False,
+    split_dense: bool = False,
+    info: dict[str, Any] | None = None,
 ) -> list[Sam31Track]:
     """`run_sam31` for small subjects: every seed frame in `seeds` is its own
     session, `max_objects` lifts the model's object cap, and each window of
@@ -242,15 +247,46 @@ def run_sam31_small(
     objects x frames x clip size. Masks come back as
     box crops on the frames' (h, w), never as whole-clip stacks. `seeds[0]`
     is the primary seed: its session on the frames must work, any other
-    session SAM 3.1 fails on is logged and skipped."""
-    from live_action_aov.passes.matte.boxmask import BoxMask
+    session SAM 3.1 fails on is logged and skipped.
 
+    Crowd mode (all off by default = the run above): `tile_max_objects` > 0
+    is the tile sessions' own object cap; `tile_work_size` > 0 shrinks every
+    tile clip to that long side (SAM 3.1 reads about 1008 px and answers
+    from low-res masks, so a bigger tile mostly costs memory);
+    `free_between` gives the GPU cache back after every session;
+    `split_dense`: a tile whose session hit its object cap is tracked again
+    as 2x2 smaller tiles (a second worker run, dense tiles only). `info`
+    (a dict) receives the sessions, the tile windows actually used (the
+    tracks' `src` indexes them, sub-tiles appended) and the worker's time
+    and peak memory."""
     n, h, w = int(frames.shape[0]), int(frames.shape[1]), int(frames.shape[2])
     tiles = list(tiles or [])
     ph, pw = plate_hw or (h, w)
+    tile_fit = (tile_work_size, 0) if tile_work_size > 0 else (work_size, work_above)
+    common: dict[str, Any] = {
+        "concepts": concepts,
+        "seeds": seeds,
+        "python": python,
+        "max_objects": max_objects,
+        "post_batch": post_batch,
+        "timeout_s": timeout_s,
+        "checkpoint": checkpoint,
+        "tile_max_objects": tile_max_objects,
+        "free_between": free_between,
+    }
+    _log.info(
+        "SAM 3.1 (small objects): %d frames, concepts %s, seed frames %s, %d tile(s), "
+        "up to %s objects per session%s",
+        n,
+        concepts,
+        seeds,
+        len(tiles),
+        max_objects or "the model's default",
+        f" ({tile_max_objects} per tile session)" if tiles and tile_max_objects > 0 else "",
+    )
     work = make_work_dir("laov_sam31_")
     try:
-        fdir, odir = work / "frames", work / "out"
+        fdir = work / "frames"
         fdir.mkdir()
         tdirs = [work / f"tile{i:02d}" for i in range(len(tiles))]
         for d in tdirs:
@@ -260,106 +296,186 @@ def run_sam31_small(
             if tiles:
                 src = np.asarray(plate_frame(i), np.float32) if plate_frame is not None else f
                 for d, (y0, x0, y1, x1) in zip(tdirs, tiles, strict=True):
-                    _save_jpg(_fit(src[y0:y1, x0:x1], work_size, work_above), d / f"{i:05d}.jpg")
-        cmd = [
-            python,
-            "-I",
-            str(WORKER),
-            "--frames",
-            str(fdir),
-            "--out",
-            str(odir),
-            "--concepts",
-            json.dumps([str(c) for c in concepts]),
-            "--seed",
-            str(int(seeds[0]) if seeds else n // 2),
-            "--seeds",
-            json.dumps([int(s) for s in seeds]),
-            "--crops",
-        ]
-        if max_objects > 0:
-            cmd += ["--max-objects", str(int(max_objects))]
-        if post_batch > 0:
-            cmd += ["--post-batch", str(int(post_batch))]
-        if tdirs:
-            cmd += ["--tiles", json.dumps([str(d) for d in tdirs])]
-        if checkpoint:
-            cmd += ["--checkpoint", checkpoint]
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
-        env["PYTHONUTF8"] = "1"
-        _log.info(
-            "SAM 3.1 (small objects): %d frames, concepts %s, seed frames %s, %d tile(s), "
-            "up to %s objects per session",
-            n,
-            concepts,
-            seeds,
-            len(tiles),
-            max_objects or "the model's default",
-        )
-        try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout_s, env=env, check=False
+                    _save_jpg(_fit(src[y0:y1, x0:x1], *tile_fit), d / f"{i:05d}.jpg")
+        res = _call_worker(work / "out", fdir, tdirs, primary=True, **common)
+        out = _read_tracks(res, work / "out", tiles, 0, (n, h, w), (ph, pw))
+        sessions = list(res.get("sessions", []))
+        seconds = float(res.get("seconds") or 0)
+        peak = float(res.get("peak_vram_gb") or 0)
+        used = list(tiles)
+        dense = sorted({int(s["src"]) for s in sessions if s.get("cap_hit") and int(s["src"]) > 0})
+        if split_dense and dense:
+            subs: list[tuple[int, int, int, int]] = []
+            for src_i in dense:
+                y0, x0, y1, x1 = tiles[src_i - 1]
+                for sy0, sx0, sy1, sx1 in tile_windows(y1 - y0, x1 - x0, 2, 0.2):
+                    subs.append((y0 + sy0, x0 + sx0, y0 + sy1, x0 + sx1))
+            _log.info(
+                "SAM 3.1 crowd: %d tile(s) hit the object cap (%s): tracked again as %d "
+                "smaller tiles.",
+                len(dense),
+                ", ".join(str(d) for d in dense),
+                len(subs),
             )
-        except subprocess.TimeoutExpired as e:
-            raise RuntimeError(f"SAM 3.1 took over {timeout_s:.0f} s") from e
-        for line in (proc.stdout or "").splitlines():
-            _log.info("SAM 3.1: %s", line)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"SAM 3.1 worker failed (exit {proc.returncode}): {(proc.stderr or '')[-1500:]}"
-            )
-        res = json.loads((odir / "result.json").read_text(encoding="utf-8"))
-        _log.info(
-            "SAM 3.1: worker %s s, peak VRAM %s GB (torch allocated).",
-            res.get("seconds"),
-            res.get("peak_vram_gb"),
-        )
-        for ss in res.get("sessions", []):
-            if "skipped" in ss:
-                _log.warning(
-                    "SAM 3.1: '%s' session (src %s, seed frame %s) skipped (SAM 3.1 error: %s); "
-                    "the other sessions are used.",
-                    ss.get("concept"),
-                    ss.get("src"),
-                    ss.get("seed"),
-                    str(ss["skipped"])[-300:],
-                )
-        out: list[Sam31Track] = []
-        for o in res["objects"]:
-            src = int(o.get("src", 0))
-            win = tiles[src - 1] if src > 0 else None
-            with np.load(odir / o["file"]) as z:
-                boxes, data, hw = z["boxes"], z["data"], (int(z["hw"][0]), int(z["hw"][1]))
-            masks, pos = [], 0
-            for k in range(n):
-                y0, x0, y1, x1 = (int(v) for v in boxes[k])
-                if y1 <= y0 or x1 <= x0:
-                    masks.append(BoxMask((h, w)))
-                    continue
-                crop = data[pos : pos + (y1 - y0) * (x1 - x0)].reshape(y1 - y0, x1 - x0)
-                pos += crop.size
-                if win is None:  # whole frame: SAM 3.1 answers at the JPEG size = (h, w)
-                    m = BoxMask.from_crop(hw, y0, x0, crop)
-                    masks.append(m if hw == (h, w) else m.resized((h, w)))
-                else:  # a tile of the plate: back to its window, placed, plate -> frames
-                    wh = (win[2] - win[0], win[3] - win[1])
-                    t = BoxMask.from_crop(hw, y0, x0, crop)
-                    t = t if hw == wh else t.resized(wh)
-                    m = BoxMask.from_crop((ph, pw), win[0] + t.y0, win[1] + t.x0, t.crop)
-                    masks.append(m if (ph, pw) == (h, w) else m.resized((h, w)))
-            out.append(
-                Sam31Track(
-                    str(o["concept"]),
-                    int(o["obj_id"]),
-                    src,
-                    int(o["seed"]),
-                    masks,
-                    int(o.get("session", 0)),
-                )
+            sdirs = [work / f"sub{i:02d}" for i in range(len(subs))]
+            for d in sdirs:
+                d.mkdir()
+            for i, f in enumerate(frames):
+                src = np.asarray(plate_frame(i), np.float32) if plate_frame is not None else f
+                for d, (y0, x0, y1, x1) in zip(sdirs, subs, strict=True):
+                    _save_jpg(_fit(src[y0:y1, x0:x1], *tile_fit), d / f"{i:05d}.jpg")
+            try:
+                res2 = _call_worker(work / "out2", sdirs[0], sdirs[1:], primary=False, **common)
+            except RuntimeError as e:
+                _log.warning("SAM 3.1 crowd: the smaller tiles failed (%s); kept the first run.", e)
+            else:
+                # src numbering: the sub-tiles follow the tiles (1 + len(tiles) ...)
+                off = len(tiles)
+                for s in res2.get("sessions", []):
+                    sessions.append({**s, "src": int(s["src"]) + off + 1, "split": True})
+                used = tiles + subs
+                out += _read_tracks(res2, work / "out2", used, off + 1, (n, h, w), (ph, pw))
+                seconds += float(res2.get("seconds") or 0)
+                peak = max(peak, float(res2.get("peak_vram_gb") or 0))
+        if info is not None:
+            info.update(
+                {"sessions": sessions, "tiles": used, "seconds": seconds, "peak_vram_gb": peak}
             )
         return out
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _call_worker(
+    odir: Path,
+    fdir: Path,
+    tdirs: list[Path],
+    *,
+    primary: bool,
+    concepts: list[str],
+    seeds: list[int],
+    python: str,
+    max_objects: int,
+    post_batch: int,
+    timeout_s: float,
+    checkpoint: str,
+    tile_max_objects: int,
+    free_between: bool,
+) -> dict[str, Any]:
+    """One worker run on `fdir` + the tile folders; its result.json."""
+    n = len(list(fdir.glob("*.jpg")))
+    cmd = [
+        python,
+        "-I",
+        str(WORKER),
+        "--frames",
+        str(fdir),
+        "--out",
+        str(odir),
+        "--concepts",
+        json.dumps([str(c) for c in concepts]),
+        "--seed",
+        str(int(seeds[0]) if seeds else n // 2),
+        "--seeds",
+        json.dumps([int(s) for s in seeds]),
+        "--crops",
+    ]
+    if max_objects > 0:
+        cmd += ["--max-objects", str(int(max_objects))]
+    if post_batch > 0:
+        cmd += ["--post-batch", str(int(post_batch))]
+    if tdirs:
+        cmd += ["--tiles", json.dumps([str(d) for d in tdirs])]
+    if checkpoint:
+        cmd += ["--checkpoint", checkpoint]
+    if tile_max_objects > 0 and max_objects > 0:
+        cmd += ["--tile-max-objects", str(int(tile_max_objects))]
+    if free_between:
+        cmd += ["--free-between"]
+    if not primary:
+        cmd += ["--no-primary"]
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
+    env["PYTHONUTF8"] = "1"
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout_s, env=env, check=False
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"SAM 3.1 took over {timeout_s:.0f} s") from e
+    for line in (proc.stdout or "").splitlines():
+        _log.info("SAM 3.1: %s", line)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"SAM 3.1 worker failed (exit {proc.returncode}): {(proc.stderr or '')[-1500:]}"
+        )
+    res: dict[str, Any] = json.loads((odir / "result.json").read_text(encoding="utf-8"))
+    _log.info(
+        "SAM 3.1: worker %s s, peak VRAM %s GB (torch allocated).",
+        res.get("seconds"),
+        res.get("peak_vram_gb"),
+    )
+    for ss in res.get("sessions", []):
+        if "skipped" in ss:
+            _log.warning(
+                "SAM 3.1: '%s' session (src %s, seed frame %s) skipped (SAM 3.1 error: %s); "
+                "the other sessions are used.",
+                ss.get("concept"),
+                ss.get("src"),
+                ss.get("seed"),
+                str(ss["skipped"])[-300:],
+            )
+    return res
+
+
+def _read_tracks(
+    res: dict[str, Any],
+    odir: Path,
+    tiles: list[tuple[int, int, int, int]],
+    src_off: int,
+    nhw: tuple[int, int, int],
+    plate_hw: tuple[int, int],
+) -> list[Sam31Track]:
+    """The worker's objects as tracks on the frames. `src_off`: the first
+    folder of this run is tile number `src_off` (0 = the plate)."""
+    from live_action_aov.passes.matte.boxmask import BoxMask
+
+    n, h, w = nhw
+    ph, pw = plate_hw
+    out: list[Sam31Track] = []
+    for o in res["objects"]:
+        src = int(o.get("src", 0)) + src_off
+        win = tiles[src - 1] if src > 0 else None
+        with np.load(odir / o["file"]) as z:
+            boxes, data, hw = z["boxes"], z["data"], (int(z["hw"][0]), int(z["hw"][1]))
+        masks, pos = [], 0
+        for k in range(n):
+            y0, x0, y1, x1 = (int(v) for v in boxes[k])
+            if y1 <= y0 or x1 <= x0:
+                masks.append(BoxMask((h, w)))
+                continue
+            crop = data[pos : pos + (y1 - y0) * (x1 - x0)].reshape(y1 - y0, x1 - x0)
+            pos += crop.size
+            if win is None:  # whole frame: SAM 3.1 answers at the JPEG size = (h, w)
+                m = BoxMask.from_crop(hw, y0, x0, crop)
+                masks.append(m if hw == (h, w) else m.resized((h, w)))
+            else:  # a tile of the plate: back to its window, placed, plate -> frames
+                wh = (win[2] - win[0], win[3] - win[1])
+                t = BoxMask.from_crop(hw, y0, x0, crop)
+                t = t if hw == wh else t.resized(wh)
+                m = BoxMask.from_crop((ph, pw), win[0] + t.y0, win[1] + t.x0, t.crop)
+                masks.append(m if (ph, pw) == (h, w) else m.resized((h, w)))
+        out.append(
+            Sam31Track(
+                str(o["concept"]),
+                int(o["obj_id"]),
+                src,
+                int(o["seed"]),
+                masks,
+                # the second run's sessions numbered after the first run's
+                int(o.get("session", 0)) + (10_000 if src_off else 0),
+            )
+        )
+    return out
 
 
 def keep_small(

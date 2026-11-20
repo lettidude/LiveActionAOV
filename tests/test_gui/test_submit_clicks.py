@@ -120,6 +120,17 @@ def test_small_objects_option_reaches_sam3() -> None:
     assert sam3.params["small_objects"] == "max"
 
 
+def test_crowd_mode_is_per_shot_opt_in_and_reaches_sam3() -> None:
+    off = _shot(enabled_models=["sam3_matte_on"], small_objects="max")
+    assert (
+        "sam31_tiles"
+        not in next(c for c in _build_pass_configs(off) if c.name == "sam3_matte").params
+    )
+    on = _shot(enabled_models=["sam3_matte_on"], small_objects="off", crowd_mode=True)
+    params = next(c for c in _build_pass_configs(on) if c.name == "sam3_matte").params
+    assert params["sam31_tiles"] == "on" and params["small_objects"] == "auto"
+
+
 def test_clicks_without_concepts_disable_default_concepts() -> None:
     """Click objects + empty concepts field -> clicks ONLY: the built-in
     default concepts would duplicate a clicked object under another label

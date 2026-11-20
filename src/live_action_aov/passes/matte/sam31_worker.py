@@ -34,6 +34,14 @@ optional; left out, the run above is unchanged:
 - `--crops`: masks stored as per-frame boxes + crops (`boxes` (T, 4) as
   y0 x0 y1 x1, `data` the crops flattened, `hw`) instead of (T, H, W)
   stacks, which grow with objects x frames x resolution.
+- `--tile-max-objects N`: the object cap of the tile sessions (left out:
+  `--max-objects`). The model is built with the larger of the two and each
+  session gets its own.
+- `--free-between`: release the GPU cache after every session (crowd mode:
+  many sessions back to back).
+- `--no-primary`: no session must work (`--frames` is one more tile).
+Every session in `sessions` records its time, peak GPU memory, its object
+cap and whether it reached it (`cap_hit`).
 
 Two Windows shims, applied here instead of patching Meta's repo:
 - `sam3.model.decoder` forces the FLASH_ATTENTION SDPA kernel, which the
@@ -45,6 +53,7 @@ Two Windows shims, applied here instead of patching Meta's repo:
 Usage: python sam31_worker.py --frames DIR --out DIR --concepts '["person"]'
        --seed N [--checkpoint FILE] [--repo facebook/sam3.1]
        [--max-objects N] [--post-batch N] [--seeds JSON] [--tiles JSON] [--crops]
+       [--tile-max-objects N] [--free-between] [--no-primary]
 """
 
 from __future__ import annotations
@@ -130,6 +139,49 @@ def _close(pred, sid) -> None:  # type: ignore[no-untyped-def]
         pass
 
 
+def _set_cap(pred, a, src: int) -> int:  # type: ignore[no-untyped-def]
+    """The object cap for the sessions of folder `src` (0 = the plate);
+    0 = the model's own (unknown here)."""
+    cap = int(a.max_objects or 0)
+    if src > 0 and int(a.tile_max_objects or 0) > 0:
+        cap = int(a.tile_max_objects)
+    if cap > 0 and int(a.tile_max_objects or 0) > 0 and hasattr(pred.model, "max_num_objects"):
+        pred.model.max_num_objects = cap
+    return cap
+
+
+_PEAK = [0.0]  # the run's peak over sessions (each session resets torch's own)
+_START = [0.0]  # GPU memory already held when the current session starts
+
+
+def _stats(t1: float, cap: int, seeded: int, ids: int) -> dict:
+    """Per-session time, peak GPU memory, object cap and whether it was hit."""
+    import torch
+
+    peak = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
+    _PEAK[0] = max(_PEAK[0], peak)
+    return {
+        "seconds": round(time.time() - t1, 1),
+        "peak_gb": round(peak, 2),
+        "start_gb": round(_START[0], 2),
+        "cap": cap,
+        "cap_hit": bool(cap > 0 and max(seeded, ids) >= cap),
+    }
+
+
+def _free(a) -> None:  # type: ignore[no-untyped-def]
+    """`--free-between`: give the GPU cache back after a session."""
+    if not a.free_between:
+        return
+    import gc
+
+    import torch
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _run_small(pred, a, n: int) -> tuple[list, list]:  # type: ignore[no-untyped-def]
     """The small-objects run: every folder (plate, then tiles) x concept x
     seed frame is one session; masks kept as box crops. The primary
@@ -143,11 +195,16 @@ def _run_small(pred, a, n: int) -> tuple[list, list]:  # type: ignore[no-untyped
     dirs = [a.frames, *(json.loads(a.tiles) if a.tiles else [])]
     objects, sessions = [], []
     session = -1
+    cuda = torch.cuda.is_available()
     for src, fdir in enumerate(dirs):
+        cap = _set_cap(pred, a, src)
         for ci, concept in enumerate(json.loads(a.concepts)):
             for si, seed in enumerate(seeds):
                 session += 1
                 t1 = time.time()
+                if cuda:
+                    torch.cuda.reset_peak_memory_stats()
+                    _START[0] = torch.cuda.memory_allocated() / 1e9
                 sid = pred.handle_request({"type": "start_session", "resource_path": fdir})[
                     "session_id"
                 ]
@@ -179,18 +236,27 @@ def _run_small(pred, a, n: int) -> tuple[list, list]:  # type: ignore[no-untyped
                                 "seed": seed,
                                 "seeded": 0,
                                 "tracked": 0,
+                                "empty": True,
+                                **_stats(t1, cap, 0, 0),
                             }
                         )
                         _close(pred, sid)
+                        _free(a)
                         continue
-                    if src == 0 and si == 0:
+                    if src == 0 and si == 0 and not a.no_primary:
                         raise  # the primary session must work, as in the plain run
                     print(
                         f"src {src} '{concept}' seed {seed}: session SKIPPED - SAM 3.1 error: {e}",
                         flush=True,
                     )
                     sessions.append(
-                        {"src": src, "concept": concept, "seed": seed, "skipped": str(e)[-500:]}
+                        {
+                            "src": src,
+                            "concept": concept,
+                            "seed": seed,
+                            "skipped": str(e)[-500:],
+                            **_stats(t1, cap, 0, 0),
+                        }
                     )
                     try:
                         pred.handle_request({"type": "close_session", "session_id": sid})
@@ -225,6 +291,7 @@ def _run_small(pred, a, n: int) -> tuple[list, list]:  # type: ignore[no-untyped
                         "seed": seed,
                         "seeded": n_seed,
                         "tracked": kept,
+                        **_stats(t1, cap, n_seed, len(masks)),
                     }
                 )
                 print(
@@ -232,6 +299,7 @@ def _run_small(pred, a, n: int) -> tuple[list, list]:  # type: ignore[no-untyped
                     f"in {time.time() - t1:.0f}s",
                     flush=True,
                 )
+                _free(a)
     return objects, sessions
 
 
@@ -248,6 +316,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seeds", default="", help="JSON list of seed frames (overrides --seed)")
     ap.add_argument("--tiles", default="", help="JSON list of more JPEG folders")
     ap.add_argument("--crops", action="store_true", help="store box crops, not stacks")
+    ap.add_argument("--tile-max-objects", type=int, default=0, help="0 = --max-objects")
+    ap.add_argument("--free-between", action="store_true", help="empty the GPU cache per session")
+    ap.add_argument("--no-primary", action="store_true", help="no session must work")
     a = ap.parse_args(argv)
 
     import numpy as np
@@ -265,7 +336,8 @@ def main(argv: list[str] | None = None) -> int:
 
         ckpt = hf_hub_download(a.repo, "sam3.1_multiplex.pt")
     t0 = time.time()
-    build_kw = {"max_num_objects": a.max_objects} if a.max_objects > 0 else {}
+    build_cap = max(a.max_objects, a.tile_max_objects) if a.max_objects > 0 else 0
+    build_kw = {"max_num_objects": build_cap} if build_cap > 0 else {}
     pred = build_sam3_multiplex_video_predictor(checkpoint_path=ckpt, use_fa3=False, **build_kw)
     _drop_unknown_kwargs(pred)
     if a.post_batch > 0 and hasattr(pred.model, "postprocess_batch_size"):
@@ -311,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
     peak = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
+    peak = max(peak, _PEAK[0])
     with open(os.path.join(a.out, "result.json"), "w", encoding="utf-8") as f:
         json.dump(
             {
