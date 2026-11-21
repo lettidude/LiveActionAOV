@@ -28,9 +28,15 @@ uses [semantic versioning](https://semver.org/).
 - **One soft matte per object, named like its Cryptomatte object** (`object_channels` on the
   refiners, off by default): `mask_object.person_1`, `mask_object.person_2` ... next to the hard ID in
   the Cryptomatte, so the soft and the hard matte of an actor line up by name in comp.
-- **Cryptomatte IDs stay clean on proxy runs** (`proxy_upscale: "nearest"` on the cryptomatte pass,
-  off by default). The proxy result is scaled back to the plate without blending neighbouring IDs,
-  so every ID in the EXR is an object of the manifest.
+- **Cryptomatte IDs stay clean on proxy runs.** The proxy result is scaled back to the plate without
+  blending neighbouring IDs, so every ID in the EXR is an object of the manifest (the old scale-up
+  added IDs that name no object along every edge). On by default; `proxy_upscale: "linear"` on the
+  cryptomatte pass gives the older output.
+- **Pass parameters from the command line**: `run-shot --set <pass>.<param>=<value>` (repeatable),
+  e.g. `--set cryptomatte.proxy_upscale=nearest`.
+- **The COLMAP model says its scale.** The model under `camera/<shot>_v###_colmap/` is solved on
+  smaller frames than the plate; `camera/<shot>_v###_colmap.scale.json` now says how its pixels map
+  to the passes' pixels, for tools that sample the passes at its points.
 - **Camera as USD.** Each camera solve also writes `camera/<shot>_v###.camera.usda` with the camera
   and a coloured point cloud, for Houdini, Maya, Blender, Unreal and Nuke's USD 3D system.
 - **A point cloud you can read.** With a depth pass in the run, the point cloud in the Nuke script
@@ -86,6 +92,10 @@ uses [semantic versioning](https://semver.org/).
   template. The comp script points at the new name.
 
 ### Fixed
+- **Older Nuke versions still crashed on our Cryptomatte files.** Next to a Cryptomatte, the only
+  header keys with "cryptomatte" in the name are now the four Nuke reads; the Cryptomatte pass's
+  own keys are under `liveaov/crypto_pass/...` (tools reading them accept the older names too).
+  `liveaov inspect` on an older file lists the keys that would crash and the object count.
 - **Gaussian splat: one frame could come out washed out** while the others were fine. Fixed; the
   report gains `holdout_psnr_min_db` and `polish_steps`, and the log warns about a weak frame. Areas
   the camera never saw behind the masked objects are still a guess: check `splat.A`.
