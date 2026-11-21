@@ -179,6 +179,7 @@ camera_pycolmap      = "live_action_aov.passes.camera.pycolmap_track:PyColmapCam
 splat_gsplat         = "live_action_aov.passes.scene.gsplat_splat:GsplatSplatPass"
 depth_anything_v2    = "live_action_aov.passes.depth.depth_anything_v2:DepthAnythingV2Pass"
 video_depth_anything = "live_action_aov.passes.depth.video_depth_anything:VideoDepthAnythingPass"
+video_depth_steady   = "live_action_aov.passes.depth.steady_metric:SteadyMetricDepthPass"
 depthcrafter         = "live_action_aov.passes.depth.depthcrafter:DepthCrafterPass"
 depthpro             = "live_action_aov.passes.depth.depthpro:DepthProPass"
 dsine              = "live_action_aov.passes.normals.dsine:DSINEPass"
