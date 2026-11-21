@@ -15,7 +15,8 @@ px) the warp is rejected and the raw value is kept. This closes ~70% of the
 per-frame flicker seen in DA V2 / DSINE without full video models (design §9).
 
 Design decisions:
-- v1 is one-sided (only looks at t-1). v2+ blends both neighbours.
+- v1 is one-sided (only looks at t-1). The two-sided window (3/5/7 frames,
+  median / mean / blend) is `post/temporal_stabilise.py`, opt-in per pass.
 - Works on any channel name declared in `applied_to`. A channel absent at
   frame t-1 falls through untouched (covers clip endpoints).
 - Requires both `forward_flow` at t-1 and `backward_flow` at t from the
