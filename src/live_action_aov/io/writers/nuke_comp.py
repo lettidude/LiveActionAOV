@@ -16,7 +16,10 @@ Open it in Nuke and everything the tool wrote is already there:
 - the camera track (Camera2) with its point cloud (ReadGeo2) in a Scene and
   a ScanlineRender over the plate - the usual matchmove check;
 - with a splat + masks: a Keymix that swaps the first masked object for the
-  splat background, as a ready example of the clean-up.
+  splat background, as a ready example of the clean-up;
+- the matte nodes say which engine made them (`MatteInfo`: LTX Alpha whole
+  frame, ViTMatte, ...; SAM hard masks or soft edges), so "where is my LTX
+  matte" is answered by reading the node graph.
 
 Nuke quirks this has to follow (each one verified with Nuke 16 `-t`):
 
@@ -82,7 +85,8 @@ _GROUP_ORDER = ("matte", "depth", "normals", "position", "ao", "flow", "splat", 
 #: so scripts that look nodes up by name keep working).
 _PRETTY_LABEL = {
     "matte": "matte (hero RGBA)",
-    "foreground": "foreground (no owner)",
+    # LTX whole frame: everything LTX saw as foreground, owned or not.
+    "foreground": "foreground: all LTX foreground\n(owned or not)",
     "depth Z": "Z (depth)",
     "other Z_raw": "Z raw",
     "moge Z": "MoGe-3 Z (per frame)",
@@ -105,6 +109,58 @@ _PRETTY_LABEL = {
 
 def _pretty(label: str) -> str:
     return _PRETTY_LABEL.get(label, label)
+
+
+#: Pass name / run-report engine -> the name an artist knows.
+_ENGINE_NAME = {
+    "ltx_alpha_refiner": "LTX Alpha",
+    "ltx": "LTX Alpha",
+    "vitmatte_refiner": "ViTMatte",
+    "vitmatte": "ViTMatte",
+    "rvm_refiner": "RVM",
+    "matanyone2": "MatAnyone 2",
+    "birefnet_refiner": "BiRefNet",
+    "chroma_key": "chroma key",
+    "sam3_matte": "SAM 3",
+    "sam3": "SAM 3",
+    "sam3.1": "SAM 3.1",
+}
+_MODE_NAME = {"whole_frame": "whole frame", "per_object": "per object"}
+
+
+def engine_name(name: str) -> str:
+    return _ENGINE_NAME.get(name, name)
+
+
+def matte_engine_label(
+    refiner: str, engine: str = "", mode: str = "", partial: bool = False
+) -> str:
+    """What made `matte.rgba`, e.g. "LTX Alpha (whole frame)".
+
+    `refiner` is the pass that ran; `engine` what the run report says it
+    really used (LTX falls back to ViTMatte when ComfyUI is not there);
+    `mode` the LTX mode; `partial` = some objects were matted another way.
+    """
+    wanted = engine_name(refiner)
+    used = engine_name(engine) if engine else wanted
+    if used != wanted:
+        return f"{used} ({wanted} did not run)"
+    label = f"{used} ({_MODE_NAME.get(mode, mode)})" if mode else used
+    return label + ("\nsome objects: fallback, see run report" if partial else "")
+
+
+@dataclass
+class MatteInfo:
+    """Which engines made the mattes, for the node labels (all optional)."""
+
+    matte: str = ""  # matte.rgba engine, `matte_engine_label()`
+    detector: str = ""  # who made mask.* ("SAM 3.1")
+    soft_masks: bool = False  # mask.* refined by the matte engine (all masks)
+
+    def mask_note(self) -> str:
+        if self.soft_masks and self.matte:
+            return f"soft edge: {self.matte.splitlines()[0]}"
+        return f"{self.detector} hard mask" if self.detector else ""
 
 
 _GROUP_COLOR = {
@@ -152,7 +208,7 @@ class CompRead:
 
 
 def _q(s: str) -> str:
-    return s.replace("\\", "/").replace('"', '\\"')
+    return s.replace("\\", "/").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _node_name(s: str) -> str:
@@ -196,7 +252,11 @@ def _shuffles_for(channels: list[str]) -> list[tuple[str, str, list[tuple[str, s
         names = {c.split(".", 1)[1]: c for c in chans}
         rgba = [names[d] for d in _RGBA if d in names]
         rest = [c for c in chans if c not in rgba]
-        if rgba:
+        if rgba == [names.get("alpha")]:
+            # Alpha only (foreground.a, ao.a): in all four channels, like a
+            # mask, or the Viewer shows black RGB and the matte looks missing.
+            out.append((layer, layer, [(rgba[0], f"rgba.{d}") for d in _RGBA]))
+        elif rgba:
             out.append((layer, layer, [(c, f"rgba.{c.split('.', 1)[1]}") for c in rgba]))
         if len(rest) > 1 and not rgba:
             out.append(
@@ -248,7 +308,9 @@ def render_comp_script(
     points_obj_rel: str | None = None,
     points_tex_rel: str | None = None,
     crypto_rel_pattern: str | None = None,
+    matte_info: MatteInfo | None = None,
 ) -> str:
+    info = matte_info or MatteInfo()
     first, last = int(frame_range[0]), int(frame_range[1])
     w, h = int(resolution[0]), int(resolution[1])
     fmt = f"{w} {h} 0 0 {w} {h} {pixel_aspect:g} LiveActionAOV_{_node_name(shot_name)}"
@@ -341,6 +403,11 @@ def render_comp_script(
                     s.push(rvar)
                 k += 1
                 sname = _node_name(f"{layer}_{label}")
+                text = _pretty(label)
+                if layer == "matte" and info.matte:
+                    text += f"\n{info.matte}\nr g b a = heroes 1-4"
+                elif layer == "mask_extra" and info.mask_note():
+                    text += f"\n{info.mask_note()}"  # canonical mask.*, not a compare suffix
                 s.node(
                     "Shuffle2",
                     [
@@ -349,7 +416,7 @@ def render_comp_script(
                         "fromInput2 {{0} B}",
                         f"mappings {_mappings(pairs, order.get(layer, []))}",
                         f"name {sname}",
-                        f'label "{_q(_pretty(label))}"',
+                        f'label "{_q(text)}"',
                         f"xpos {sx}",
                         "ypos -250",
                     ],
@@ -369,6 +436,8 @@ def render_comp_script(
                     s.push(rvar)
                 k += 1
                 expr = masks[0]
+                note = info.mask_note()
+                all_label = f"every mask (max)\n{note}" if note else "every mask (max)"
                 for m in masks[1:]:
                     expr = f"max({expr}, {m})"
                 s.node(
@@ -376,7 +445,7 @@ def render_comp_script(
                     [
                         *(f'expr{i} "{expr}"' for i in range(4)),
                         "name All_objects_matte",
-                        'label "every mask (max)"',
+                        f'label "{_q(all_label)}"',
                         f"xpos {sx}",
                         "ypos -250",
                     ],
@@ -515,12 +584,13 @@ def render_comp_script(
 
     bd_lines: list[str] = []
     for i, (label, bx, by, bw, bh) in enumerate(backdrops):
+        title = f"matte: {info.matte.splitlines()[0]}" if label == "matte" and info.matte else label
         bd_lines += [
             "BackdropNode {",
             " inputs 0",
             f" name Backdrop_{i}_{_node_name(label)}",
             f" tile_color 0x{_GROUP_COLOR.get(label.split('/')[0], 0x555555FF):08x}",
-            f' label "<center><b>{_q(label)}</b>"',
+            f' label "<center><b>{_q(title)}</b>"',
             " note_font_size 24",
             f" xpos {bx}",
             f" ypos {by}",
@@ -539,4 +609,13 @@ def write_comp_script(path: Path, **kwargs: object) -> Path:
     return path
 
 
-__all__ = ["CompRead", "nuke_channel", "pass_group", "render_comp_script", "write_comp_script"]
+__all__ = [
+    "CompRead",
+    "MatteInfo",
+    "engine_name",
+    "matte_engine_label",
+    "nuke_channel",
+    "pass_group",
+    "render_comp_script",
+    "write_comp_script",
+]
