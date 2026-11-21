@@ -842,7 +842,7 @@ def _collect_nc_entries(shots: list[ShotState]) -> list[tuple[str, str, str]]:
 def _confirm_nc_consent(parent: QMainWindow, entries: list[tuple[str, str, str]]) -> bool:
     """Single per-submit confirmation dialog for non-commercial use.
 
-    We can't enforce the CC-BY-NC-4.0 terms technically — they govern
+    We can't enforce the non-commercial terms technically — they govern
     the *outputs* of the model. The dialog makes the legal implication
     visible so the user explicitly takes responsibility before the
     pipeline starts producing deliverables.
@@ -850,7 +850,7 @@ def _confirm_nc_consent(parent: QMainWindow, entries: list[tuple[str, str, str]]
     lines = [f"  • {shot} — {label}  ({tag})" for shot, label, tag in entries]
     msg = (
         "The following model(s) you've enabled are distributed under "
-        "non-commercial licenses (e.g. CC-BY-NC-4.0). Outputs from "
+        "non-commercial licences (licence next to each name). Outputs from "
         "these models cannot be used for commercial work regardless "
         "of what licence this tool itself ships under.\n\n"
         + "\n".join(lines)

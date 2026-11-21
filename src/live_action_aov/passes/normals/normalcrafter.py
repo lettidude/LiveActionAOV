@@ -89,14 +89,15 @@ class NormalCrafterPass(UtilityPass):
     name = "normalcrafter"
     version = "0.2.0"
     license = License(
-        spdx="MIT+Apache-2.0+SVD-NC",
+        spdx="MIT+Apache-2.0+SVD-Community",
         commercial_use=False,
         commercial_tool_resale=False,
         notes=(
-            "NormalCrafter is built on Stable Video Diffusion, whose "
-            "commercial terms are non-permissive. NormalCrafter's own "
-            "code is MIT and the retrained weights are Apache-2.0, but "
-            "the package inherits SVD-NC restrictions. Gated behind "
+            "NormalCrafter's own code is MIT and its weights are Apache-2.0, "
+            "but it is built on Stable Video Diffusion, now under the Stability "
+            "AI Community License (paid use only below a revenue threshold, "
+            "with registration), and its authors ask for business enquiries. "
+            "Kept non-commercial here until that is cleared. Gated behind "
             "--allow-noncommercial."
         ),
     )
