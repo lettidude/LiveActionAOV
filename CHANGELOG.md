@@ -24,6 +24,15 @@ uses [semantic versioning](https://semver.org/).
   both as a relative change and as a share of the shot's depth range, plus whole-frame pumping.
   Needs the flow pass and reads the written EXRs again; the EXRs themselves do not change.
 - Video Depth Anything can use its metric Small weights (`metric: true`, Apache-2.0): `Z` in metres.
+- **Anamorphic plates processed de-squeezed** (on by default; Preview tab → *Run the passes
+  de-squeezed*, CLI `--desqueeze/--no-desqueeze`, `Shot.desqueeze`). The models see square pixels;
+  every pass comes back at the plate's own size and pixel aspect, with exact Cryptomatte IDs and
+  motion vectors in plate pixels. Square-pixel plates and camera / splat runs are unchanged.
+- **Flow error for trackers**: `motion_fb.x/y` and `back_fb.x/y`, the forward-backward error of the
+  flow in plate pixels (CLI `--flow-fb-error`, flow param `fb_residual`).
+- **Tracker proxy**: a quarter-size EXR per frame in `passes/tracker/` with the flow, its error, Z and
+  the mattes, much quicker to read than the full utility EXR (Output tab → *Tracker proxy*, CLI
+  `--tracker-proxy`).
 - **Camera as USD.** Each camera solve also writes `camera/<shot>_v###.camera.usda` with the camera
   and a coloured point cloud, for Houdini, Maya, Blender, Unreal and Nuke's USD 3D system.
 - **A point cloud you can read.** With a depth pass in the run, the point cloud in the Nuke script
