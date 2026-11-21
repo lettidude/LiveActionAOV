@@ -53,6 +53,15 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         ),
     ],
     "Depth": [
+        # VDA Small's steadiness, fitted to MoGe-3's metres: Z in metres that
+        # does not move frame to frame, P from it with MoGe-3's FOV.
+        ModelEntry(
+            "video_depth_steady",
+            "Video Depth Anything, metres (steady, softer)",
+            "Apache-2.0 / MIT",
+            True,
+            ("video_depth_steady",),
+        ),
         ModelEntry(
             "depth_anything_v2",
             "Depth Anything v2",
@@ -65,7 +74,7 @@ PASS_CATALOG: dict[str, list[ModelEntry]] = {
         # to write (so it never overwrites another depth/normals backend).
         ModelEntry(
             "moge3_depth",
-            "MoGe-3 (metres + P, sharp)",
+            "MoGe-3 (metres + P, sharp, per frame)",
             "MIT",
             True,
             ("moge3",),
@@ -278,15 +287,18 @@ def has_noncommercial(keys: list[str]) -> list[ModelEntry]:
     return out
 
 
-def recommended_models() -> list[str]:
-    """The set we run daily: mattes + Cryptomatte, MoGe-3 depth and normals,
-    RAFT motion, camera track with the Gaussian splat background. Falls back
-    to the camera alone when gsplat is not installed (it needs a compiled
-    wheel), so the click never selects a pass that cannot run."""
+def recommended_models(steady_depth: bool = True) -> list[str]:
+    """The set we run daily: mattes + Cryptomatte, steady depth in metres,
+    MoGe-3 normals, RAFT motion, camera track with the Gaussian splat
+    background. `steady_depth=False` gives the previous set (MoGe-3 depth,
+    per frame). Falls back to the camera alone when gsplat is not installed
+    (it needs a compiled wheel), so the click never selects a pass that
+    cannot run."""
     import importlib.util
 
     camera = "splat_gsplat" if importlib.util.find_spec("gsplat") else "camera_pycolmap"
-    return ["sam3_matte_on", "cryptomatte", "moge3_depth", "moge3_normals", "flow", camera]
+    depth = "video_depth_steady" if steady_depth else "moge3_depth"
+    return ["sam3_matte_on", "cryptomatte", depth, "moge3_normals", "flow", camera]
 
 
 __all__ = [

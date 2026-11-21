@@ -21,6 +21,8 @@ import re
 # --- Depth ---
 CH_Z = "Z"
 CH_Z_RAW = "Z_raw"
+# Per-frame MoGe-3 depth kept next to a steady Z (metric reference, own layer).
+CH_Z_MOGE = "moge.Z"
 CH_DEPTH_CONFIDENCE = "depth.confidence"
 DEPTH_CHANNELS = (CH_Z, CH_Z_RAW, CH_DEPTH_CONFIDENCE)
 
@@ -235,6 +237,7 @@ __all__ = [
     "CH_SPLAT_R",
     "CH_SPLAT_Z",
     "CH_Z",
+    "CH_Z_MOGE",
     "CH_Z_RAW",
     "CRYPTOMATTE_CHANNELS",
     "CRYPTOMATTE_LEVELS",
