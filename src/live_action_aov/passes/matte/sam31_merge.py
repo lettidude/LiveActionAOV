@@ -29,6 +29,15 @@ each propagated both ways, merged here into one track per object:
    without it, the merge snowballed and collapsed separate objects into a
    few). Parts stay separate objects and the matte pass's own
    part / whole logic (`part_containment`) handles them.
+Over-merge guard (`split_guard` > 0): a link or duplicate merge is refused
+when, on at least `split_frames` shared frames, the two clusters' masks
+together fall into separate blobs and one of them, at least `split_guard`
+of the pair's area, belongs to one cluster only: one ID would then hold
+two objects. A track that briefly reads two people as one (smoke, motion
+blur) and gets linked to one of them shows exactly that. A limb that comes
+loose in the comparison copy is too small to count, and a person cut in
+two by a pole is two blobs in both tracks, so the guard leaves them alone.
+
 4. **Assembly.** Per frame, an object takes the mask of its highest
    priority member (primary session first), or a bigger member mask that
    contains it, plus the other members of that session on that frame.
@@ -73,6 +82,9 @@ class MergeConfig:
     dup_containment: float = 0.6
     dup_frames: float = 0.6
     dup_size_ratio: float = 0.5
+    split_guard: float = 0.0  # over-merge guard: large-blob share; 0 = off
+    split_frames: int = 1  # ...refuse on at least this many shared frames showing it
+    split_share: float = 0.0  # ...and on at least this share of the shared frames
     work_width: int = 480
 
 
@@ -184,6 +196,44 @@ def union(crops: Sequence[Crop]) -> Crop:
     return Crop(y0, x0, out)
 
 
+def foreign_blob(a: Crop, b: Crop, share: float) -> bool:
+    """`a` and `b` together fall into two or more separate blobs and one of
+    them, at least `share` of their joint area, belongs to one mask only
+    (the other does not touch it): a second object, not a loose limb or a
+    slightly different edge."""
+    import cv2
+
+    u = union([a, b])
+    if not u.area:
+        return False
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(u.m.astype(np.uint8), connectivity=8)
+    big = [k for k in range(1, n) if stats[k, cv2.CC_STAT_AREA] >= share * u.area]
+    if n < 3 or not big:
+        return False
+
+    def placed(c: Crop) -> np.ndarray:
+        out = np.zeros(u.m.shape, bool)
+        out[c.y0 - u.y0 : c.y1 - u.y0, c.x0 - u.x0 : c.x1 - u.x0] = c.m
+        return out
+
+    pa, pb = placed(a), placed(b)
+    for k in big:
+        blob = lab == k
+        if bool((blob & pa).any()) != bool((blob & pb).any()):
+            return True
+    return False
+
+
+def large_blobs(c: Crop, min_area: float) -> int:
+    """Separate (8-connected) blobs of `c` of at least `min_area` px."""
+    import cv2
+
+    if not c.area:
+        return 0
+    n, _, stats, _ = cv2.connectedComponentsWithStats(c.m.astype(np.uint8), connectivity=8)
+    return int((stats[1:n, cv2.CC_STAT_AREA] >= max(1.0, min_area)).sum())
+
+
 def dilate(c: Crop, r: int) -> Crop:
     import cv2
 
@@ -254,6 +304,7 @@ class MergeReport:
     stitched: int = 0
     duplicates: int = 0
     glitch_frames: int = 0
+    refused_split: int = 0
     merges: list[tuple[str, float, tuple[int, int], tuple[int, int]]] = field(default_factory=list)
 
 
@@ -297,11 +348,43 @@ def _merge_label(
     clusters: dict[int, set[int]] = {i: {i} for i in idx}
     of = {i: i for i in idx}
 
+    def frames_of(c: int) -> set[int]:
+        return set().union(*(tracks[t].small.keys() for t in clusters[c]))
+
+    def at(c: int, f: int) -> Crop | None:
+        ms = [tracks[t].small[f] for t in clusters[c] if f in tracks[t].small]
+        return union(ms) if ms else None
+
+    def splits(ca: int, cb: int) -> tuple[int, int] | None:
+        """The over-merge guard: on `split_frames` shared frames, one cluster
+        holds a large separate blob the other does not touch at all (and on
+        `split_share` of them). (frames showing it, shared frames) when the
+        merge is refused, else None."""
+        if cfg.split_guard <= 0:
+            return None
+        shared = sorted(frames_of(ca) & frames_of(cb))
+        hit = 0
+        for f in shared:
+            ma, mb = at(ca, f), at(cb, f)
+            if ma is not None and mb is not None and foreign_blob(ma, mb, cfg.split_guard):
+                hit += 1
+        need = max(1, cfg.split_frames, int(np.ceil(cfg.split_share * len(shared))))
+        return (hit, len(shared)) if hit >= need else None
+
     def join(a: int, b: int, why: str, score: float, force: bool = False) -> bool:
         ca, cb = of[a], of[b]
         if ca == cb:
             return False
         if not force and any(conflict(x, y) for x in clusters[ca] for y in clusters[cb]):
+            return False
+        refused = splits(ca, cb)
+        if refused is not None:
+            rep.refused_split += 1
+            ta, tb = tracks[a], tracks[b]
+            why_not = f"refused-split {refused[0]}/{refused[1]} f ({why})"
+            rep.merges.append(
+                (why_not, round(score, 3), (ta.seed, ta.obj_id), (tb.seed, tb.obj_id))
+            )
             return False
         clusters[ca] |= clusters.pop(cb)
         for x in clusters[ca]:
@@ -316,13 +399,6 @@ def _merge_label(
             break
         if k >= MIN_SHARED and tracks[i].session != tracks[j].session and join(i, j, "link", m):
             rep.linked += 1
-
-    def frames_of(c: int) -> set[int]:
-        return set().union(*(tracks[t].small.keys() for t in clusters[c]))
-
-    def at(c: int, f: int) -> Crop | None:
-        ms = [tracks[t].small[f] for t in clusters[c] if f in tracks[t].small]
-        return union(ms) if ms else None
 
     # 2. Fragments: one cluster ends, another starts just after, in its place.
     r = max(1, cfg.work_width // 60)
@@ -368,7 +444,11 @@ def _merge_label(
             (a, b), s = max(score.items(), key=lambda kv: kv[1])
             if s < cfg.dup_frames:
                 break
-            join(next(iter(clusters[a])), next(iter(clusters[b])), "duplicate", s, force=True)
+            if not join(
+                next(iter(clusters[a])), next(iter(clusters[b])), "duplicate", s, force=True
+            ):
+                score.pop((a, b))  # refused by the over-merge guard: they stay two
+                continue
             rep.duplicates += 1
             keep = of[a]
             score = {k: v for k, v in score.items() if a not in k and b not in k}
@@ -430,7 +510,9 @@ __all__ = [
     "RawTrack",
     "assemble",
     "best_member",
+    "foreign_blob",
     "glitch_frames",
+    "large_blobs",
     "make_track",
     "merge_tracks",
     "seed_frames",

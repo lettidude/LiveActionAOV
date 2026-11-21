@@ -14,6 +14,11 @@ uses [semantic versioning](https://semver.org/).
   shot (slower); a search that SAM 3.1 fails on is skipped instead of stopping the run. One person
   found twice stays one object. `sam31_tiles` `on` adds a zoomed tile search (opt-in).
   `small_objects` `off` gives exactly the previous result.
+- **SAM 3.1 Max: one ID per person, and a GPU check first.** A merge that would put two people in one
+  ID (a track that read them as one, in smoke or motion blur) is refused, and the log names each
+  refused merge; `sam31_split_frames` and `sam31_split_share` set how strict it is. Before a Max run,
+  the log warns when other jobs hold the GPU's memory, which makes SAM 3.1 many times slower;
+  `sam31_max_vram_check` `refuse` uses SAM 3 for the shot instead.
 - **Steady depth in metres, now the default depth.** *Video Depth Anything, metres (steady, softer)*
   (`video_depth_steady`): the depth holds still from frame to frame like Video Depth Anything's,
   and is in metres like MoGe-3's, so `P` stays in metres too and matches `Z`. **Use the recommended
@@ -59,6 +64,8 @@ uses [semantic versioning](https://semver.org/).
   detail.
 
 ### Changed
+- **`detector: auto` picks SAM 3.1 only on a card with at least 24 GB** (was 22); smaller cards use
+  SAM 3, and the log says why.
 - **Every camera now gets a GOOD / WEAK / FAILED verdict**, the COLMAP one and the rotation-only one
   included, like the fallback camera already had: it shows in the GUI, in the Nuke camera's label and
   in `liveaov qc`, and a camera that only rotates is flagged NODAL. The Gaussian splat skips a NODAL
