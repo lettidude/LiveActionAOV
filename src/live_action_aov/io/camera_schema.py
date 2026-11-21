@@ -21,7 +21,35 @@ recovery (from Depth Pro or user-hint) is a v2b task (spec §20.4).
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+import math
+
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+
+#: Horizontal FOV (degrees) a real rectilinear lens can have. 5 deg is a
+#: ~285 mm lens on a Super 35 film back (~410 mm on full frame); 130 deg is
+#: past the widest rectilinear cine primes (an 8 mm on Super 35 is ~115 deg).
+#: A pinhole camera nearer to 0 or 180 deg is a solver that went wrong, not
+#: a lens: its focal must never reach a camera or a geometry pass.
+PLAUSIBLE_FOV_X_DEG: tuple[float, float] = (5.0, 130.0)
+
+
+def fov_x_deg(fx_px: float, width_px: float) -> float | None:
+    """Horizontal FOV (degrees) of a pinhole camera, None without a focal."""
+    if fx_px <= 0 or width_px <= 0:
+        return None
+    return math.degrees(2.0 * math.atan(width_px / (2.0 * fx_px)))
+
+
+def plausible_fov_x(
+    fov: float | None, bounds: tuple[float, float] | None = PLAUSIBLE_FOV_X_DEG
+) -> bool:
+    """True when `fov` (degrees) is a lens a camera can have; `bounds` None
+    turns the check off (any finite FOV passes)."""
+    if fov is None or not math.isfinite(fov):
+        return False
+    if bounds is None:
+        return True
+    return float(bounds[0]) <= fov <= float(bounds[1])
 
 
 class ShotRef(BaseModel):
@@ -162,6 +190,10 @@ class CameraSolve(BaseModel):
     unregistered_frames: list[int] = Field(default_factory=list)
     points: list[ScenePoint] = Field(default_factory=list)
     quality: Quality = Field(default_factory=Quality)
+    # The lens range the solver judged this camera with (None = check off),
+    # so a pass that takes its focal (MoGe-3) agrees with it. Not written to
+    # the JSON: a solve read back from disk gets the default range.
+    _lens_fov_x_deg_range: tuple[float, float] | None = PrivateAttr(default=PLAUSIBLE_FOV_X_DEG)
 
 
 __all__ = [
