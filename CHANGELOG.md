@@ -7,6 +7,23 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Steady depth in metres, now the default depth.** *Video Depth Anything, metres (steady, softer)*
+  (`video_depth_steady`): the depth holds still from frame to frame like Video Depth Anything's,
+  and is in metres like MoGe-3's, so `P` stays in metres too and matches `Z`. **Use the recommended
+  set** and the CLI's `--depth-backend` now pick it. For the previous depth, pick *MoGe-3* in Depth
+  (sharp, per frame) or pass `--depth-backend depth_anything_v2` (the previous CLI default); saved
+  sessions keep the depth they were set to. Normals (MoGe-3) and the camera track are unchanged.
+  It is softer than MoGe-3: thin and distant detail is lost, so mattes stay the holdout.
+  MoGe-3's own per-frame depth comes along as a separate `moge` layer (`keep_moge_z`).
+  When a shot gives no trustworthy metres (dense smoke or fog, say), the pass delivers relative
+  depth instead, in the right near-to-far order, and says so in the run report; it also warns when
+  MoGe-3's own scale wanders through the shot. It maps to metres with a monotone curve that keeps the
+  far range (`fit: mono`, the default) or a straight line in disparity (`fit: affine`).
+- **Stability check in the run report** (`Shot.stability_qc`, CLI `--stability-qc`, off by default):
+  how much the delivered depth moves from frame to frame, on still background and on depth edges,
+  both as a relative change and as a share of the shot's depth range, plus whole-frame pumping.
+  Needs the flow pass and reads the written EXRs again; the EXRs themselves do not change.
+- Video Depth Anything can use its metric Small weights (`metric: true`, Apache-2.0): `Z` in metres.
 - **Camera as USD.** Each camera solve also writes `camera/<shot>_v###.camera.usda` with the camera
   and a coloured point cloud, for Houdini, Maya, Blender, Unreal and Nuke's USD 3D system.
 - **A point cloud you can read.** With a depth pass in the run, the point cloud in the Nuke script
@@ -39,6 +56,19 @@ uses [semantic versioning](https://semver.org/).
   detail.
 
 ### Changed
+- **MoGe-3 depth holds its scale on locked-off shots, no camera needed.** The frame-to-frame scale is now
+  measured on the still background only: outside every SAM mask, and through the motion vectors when
+  the run has them. When the background does not move (a locked-off or nodal shot) the scale is held
+  over a long window (`still_window`); otherwise a short window keeps a real push-in. A long clip run
+  in windows gets the same depth as in one go. People walking close to camera no longer pump the
+  depth. It needs mattes or Motion in the run (the recommended set has both);
+  `scale_ref: frame` gives the previous behaviour. When too little of the background is still, the
+  run report says the scale is not stabilised.
+- **Depth no longer takes its lens from a camera the camera check marked FAILED or NODAL.** MoGe-3 and
+  the steady depth then estimate the field of view themselves, and the run report says why.
+  `camera_fov_from: any` gives the previous behaviour.
+- The stability check in the run report also gives the scale step from frame to frame on the still
+  background (median, 95th percentile and worst frame).
 - **Every camera now gets a GOOD / WEAK / FAILED verdict**, the COLMAP one and the rotation-only one
   included, like the fallback camera already had: it shows in the GUI, in the Nuke camera's label and
   in `liveaov qc`, and a camera that only rotates is flagged NODAL. The Gaussian splat skips a NODAL

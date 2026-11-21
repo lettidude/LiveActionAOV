@@ -23,7 +23,7 @@ From one plate folder, one run writes a version folder next to it:
 |---|---|---|
 | **Mattes** | Soft, roto-grade alpha per object, with hair and motion blur | SAM 3.1 (or SAM 3) finds and tracks the objects; **LTX-2.5 Alpha** on the whole frame gives the soft edge when your ComfyUI has it, ViTMatte when it does not |
 | **Cryptomatte** | Every object as a pickable ID, like a CG render | from the same tracks |
-| **Depth** | `Z` in metres, plus `P` world position | MoGe-3 (default), Depth Anything V2, Video Depth Anything |
+| **Depth** | `Z` in metres, plus `P` world position | Video Depth Anything in metres (steady, default), MoGe-3 (sharp, per frame), Depth Anything V2, Video Depth Anything |
 | **Normals** | Camera-space `N`, steady over the shot | MoGe-3 |
 | **Motion** | Forward and backward vectors in pixels, Nuke VectorBlur names included | RAFT or MegaFlow |
 | **Camera** | A Nuke `Camera2` with its error and coverage in the label, the same camera as **USD** for Houdini, Maya, Blender and Unreal, a coloured point cloud of the set, COLMAP model | COLMAP, with the masked people kept out of the solve; nodal and depth-anchored fallbacks when parallax is short |
@@ -135,9 +135,11 @@ LTX runs in **your own ComfyUI** (the weights are not bundled; a one-click setup
 
 ### Geometry: depth in metres, normals, position
 
-**MoGe-3** (Microsoft, MIT) is the default for normals and the best choice for depth. One pass gives depth in metres, camera-space normals and a `P` world-position pass you can drop into PositionToPoints or a relight. No halo around people, real structure in hair and faces, and normals much steadier frame to frame than DSINE's.
+**MoGe-3** (Microsoft, MIT) is the default for normals and the sharpest choice for depth. One pass gives depth in metres, camera-space normals and a `P` world-position pass you can drop into PositionToPoints or a relight. No halo around people, real structure in hair and faces, and normals much steadier frame to frame than DSINE's.
 
 The tool fixes what a per-frame model gets wrong over a shot: one FOV per shot (from the camera track when there is one), a stabilised metric scale, letterbox bars cropped before the model sees them, sky flagged in `depth.confidence`.
+
+Depth defaults to **Video Depth Anything, metres (steady, softer)**, because a defocus, a fog or a relight reads `Z` on every frame and needs it to hold still: Video Depth Anything gives the steady shape, MoGe-3 gives the metres and the FOV, and `P` follows. Normals and the camera track keep using MoGe-3. It is softer than MoGe-3 (thin and distant detail is lost, so mattes stay the holdout), MoGe-3's own depth comes along as a `moge` layer, and a shot with no trustworthy metres (dense smoke, say) gets relative depth, flagged in the run report. When you need the sharpest single-frame depth instead, pick **MoGe-3** in Depth.
 
 <p align="center">
   <img src="docs/img/geometry.gif" alt="Depth in metres, camera-space normals and world position on a dark handheld shot with two people" width="900">
@@ -200,7 +202,7 @@ An early demo video (June 2026, the interface has changed since) is on [YouTube]
 |---|---|---|
 | Windows 11 | NVIDIA RTX 20 / 30 / 40 / 50 series | **Main platform.** Developed on an RTX 5090, used in production on 3090s and a 4060 (proxy mode). |
 | Linux (Ubuntu 22.04+) | NVIDIA RTX 20 / 30 / 40 / 50 series | Expected to work via `install.sh` (same CUDA and `uv` path), not regularly tested. Bug reports welcome. |
-| macOS (Apple Silicon) | M1 to M4 (MPS) | **Experimental, not yet tested on a real Mac.** Expected to run on the Apple GPU, in fp32 and slower than an NVIDIA card: depth (Depth Anything v2, Video Depth Anything), mattes, motion; the camera solve and Cryptomatte on the CPU. Not on Mac yet: MoGe-3 (the default depth and normals), the Gaussian splat background, DepthCrafter, NormalCrafter, Marigold. `liveaov doctor --mac` lists every pass, and the app stops before a run that has a pass the Mac cannot do. |
+| macOS (Apple Silicon) | M1 to M4 (MPS) | **Experimental, not yet tested on a real Mac.** Expected to run on the Apple GPU, in fp32 and slower than an NVIDIA card: depth (Depth Anything v2, Video Depth Anything), mattes, motion; the camera solve and Cryptomatte on the CPU. Not on Mac yet: MoGe-3 (the default normals) and the default steady depth in metres, which takes its metres from MoGe-3; the Gaussian splat background, DepthCrafter, NormalCrafter, Marigold. `liveaov doctor --mac` lists every pass, and the app stops before a run that has a pass the Mac cannot do. |
 | Any | AMD (ROCm) | Untested. |
 | Any | CPU only | Not supported. |
 

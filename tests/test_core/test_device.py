@@ -148,7 +148,14 @@ def test_every_built_in_pass_declares_its_mac_support() -> None:
 def test_the_mac_light_scope() -> None:
     passes = _registered()
     label = {n: c.device_support.mac for n, c in passes.items()}
-    for name in ("splat_gsplat", "depthcrafter", "normalcrafter", "marigold_v2_albedo", "moge3"):
+    for name in (
+        "splat_gsplat",
+        "depthcrafter",
+        "normalcrafter",
+        "marigold_v2_albedo",
+        "moge3",
+        "video_depth_steady",  # takes its metres from MoGe-3
+    ):
         assert label[name] is MacSupport.UNAVAILABLE
     for name in ("depth_anything_v2", "video_depth_anything", "sam3_matte", "vitmatte_refiner"):
         assert label[name] is MacSupport.MPS_FP32

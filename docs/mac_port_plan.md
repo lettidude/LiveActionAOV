@@ -44,7 +44,8 @@ stay on a PC on the network.
 
 1. **MoGe-3 does not run on a Mac as built.** Its sparse refiner uses
    FlexGEMM, which is pure Triton, and Triton has no macOS build. MoGe-3 is
-   the default depth + normals, and the camera's PnP fallback uses it.
+   the default normals, the default depth (steady, in metres) takes its
+   metres from it, and the camera's PnP fallback uses it.
    Options, in order of preference:
    - load MoGe-3 without the sparse refiner on Mac, behind a param (the
      vendored model supports `refiner=None`); output differs, so it needs

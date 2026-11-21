@@ -349,8 +349,9 @@ hardware.
   refiners), motion (RAFT, MegaFlow). The camera solve (COLMAP),
   Cryptomatte, the chroma key and the screen pull have no GPU model
   and run on the CPU.
-- Not on Mac yet: MoGe-3, the default depth and normals (its
-  refiner needs Triton, which has no Mac build), and with it the
+- Not on Mac yet: MoGe-3, the default normals (its refiner needs
+  Triton, which has no Mac build), and with it the default steady
+  depth in metres (it takes its metres from MoGe-3) and the
   camera's PnP fallback; the Gaussian splat background (its
   rasterizer needs CUDA); DepthCrafter and NormalCrafter (video
   diffusion); Marigold; the SAM 3.1 detector (its own CUDA

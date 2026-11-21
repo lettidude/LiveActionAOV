@@ -298,10 +298,11 @@ def run_shot(
         str,
         typer.Option(
             "--depth-backend",
-            help="Backend for the semantic `depth` pass. "
-            "Default: depth_anything_v2 (Apache-2.0, commercial OK).",
+            help="Backend for the semantic `depth` pass. Default: video_depth_steady "
+            "(metres that hold still over the shot; Apache-2.0 / MIT, commercial OK). "
+            "The previous default is `depth_anything_v2`; `moge3` is sharp per frame.",
         ),
-    ] = "depth_anything_v2",
+    ] = "video_depth_steady",
     normals_backend: Annotated[
         str,
         typer.Option(
@@ -401,6 +402,15 @@ def run_shot(
             "that many frames; `off` = always one go.",
         ),
     ] = "auto",
+    stability_qc: Annotated[
+        bool,
+        typer.Option(
+            "--stability-qc",
+            help="Add a stability block to the run report: how much the delivered depth "
+            "moves from frame to frame on static pixels and on depth edges. Needs the flow "
+            "pass; reads the written EXRs again. The EXRs do not change.",
+        ),
+    ] = False,
 ) -> None:
     """Run passes on the EXR sequence in `folder` and write sidecar EXRs."""
     raw_names = [p.strip() for p in passes.split(",") if p.strip()]
@@ -477,6 +487,7 @@ def run_shot(
             folder=folder,
             proxy_long_edge=proxy_long_edge,
             window_frames=window,
+            stability_qc=stability_qc,
             apply_display_transform=display_transform,
             colorspace=colorspace or "auto",
             sequence_pattern=pattern,

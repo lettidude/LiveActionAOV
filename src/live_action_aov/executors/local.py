@@ -271,6 +271,8 @@ class LocalExecutor(Executor):
         sidecar_template = layout_sidecar_template(shot)
         per_pass = getattr(shot, "delivery_layout", "multilayer") == "per_pass"
         written_channels: dict[str, Path] = {}
+        # Stability QC: where each frame's channels went (only when asked).
+        qc_index: dict[int, dict[str, Path]] = {}
         first_written: Path | None = None
         attrs_base: dict[str, Any] | None = None
 
@@ -648,6 +650,8 @@ class LocalExecutor(Executor):
                     )
                     for ch_name in t_channels:
                         written_channels.setdefault(ch_name, t_path)
+                    if shot.stability_qc:
+                        qc_index.setdefault(frame_idx, {}).update(dict.fromkeys(t_channels, t_path))
                 if first_written is None:
                     first_written = targets[0][0] if targets else out_path
 
@@ -769,6 +773,8 @@ class LocalExecutor(Executor):
             except Exception:
                 # A starter script is a convenience: never fail a finished run on it.
                 _log.warning("could not write the Nuke comp script", exc_info=True)
+            if shot.stability_qc:
+                _stability_qc(rr, qc_index, ordered, resolved_by_name)
             if failed_passes:
                 lines = [f"{n}: {why}" for n, why in failed_passes.items()]
                 _log.warning("Run finished WITHOUT %s", "; ".join(lines))
@@ -851,6 +857,32 @@ class LocalExecutor(Executor):
         for tag, path in (instance.emit_sidecars(shot) or {}).items():
             shot.sidecars[tag] = Path(path)
         return wrote
+
+
+def _stability_qc(
+    rr: RunReportBuilder,
+    index: dict[int, dict[str, Path]],
+    ordered: list[Any],
+    resolved_by_name: dict[str, Any],
+) -> None:
+    """Stability QC of the delivered depth (read back from the sidecars) into
+    the run report. Never raises: a QC must not fail a finished run."""
+    from live_action_aov.io.channels import CH_Z
+    from live_action_aov.qc.stability import depth_stability_from_files
+
+    owner = ""
+    for node in ordered:  # the last pass writing Z is the one delivered
+        _pc, cls = resolved_by_name[node.name]
+        if any(c.name == CH_Z for c in getattr(cls, "produces_channels", []) or []):
+            owner = node.name
+    if not owner or not index:
+        return
+    try:
+        metrics, warnings = depth_stability_from_files(index)
+        rr.stability(owner, CH_Z, metrics, warnings)
+        _log.info("Stability QC (%s, Z): %s", owner, metrics)
+    except Exception:
+        _log.warning("stability QC failed", exc_info=True)
 
 
 def _write_run_report(rr: RunReportBuilder, shot: Shot, status: str, error: str) -> None:
