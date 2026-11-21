@@ -841,6 +841,8 @@ def test_moge3_follows_the_camera_pass_lens_range(monkeypatch: pytest.MonkeyPatc
         )
         p.run_shot(_Reader(4), (1001, 1004))
         solve = next(iter(p.emit_artifacts()["camera_solve"].values()))
-        assert (camera_fov(solve) is not None) is expect_kept
+        # trust="any": these noise frames are FAILED by the camera check; the lens
+        # range alone decides here.
+        assert (camera_fov(solve, "any") is not None) is expect_kept
         # The range rides along in memory only: the JSON is unchanged.
         assert "lens_fov" not in solve.model_dump_json()
