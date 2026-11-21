@@ -25,7 +25,7 @@ Design decisions (from Phase 3 brainstorm):
   …) never takes a hero slot while a subject (person, animal, vehicle, a
   user click) is still unslotted. With the default concepts a car plate
   gave the four `matte.rgba` slots to the car, one person, a building and a
-  tree, and the second person none (A65 couple-car plate, 2026-11-09).
+  tree, and the second person none (a two-person car plate).
   Scenery keeps its `mask.<label>` channel and Cryptomatte id regardless.
 """
 

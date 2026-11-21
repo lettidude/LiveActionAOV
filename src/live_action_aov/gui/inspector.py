@@ -499,7 +499,7 @@ class InspectorPanel(QWidget):
             "SAM 3 sees about 1000 px: on a 4K plate a 40 px person reaches it as 10 px "
             "and is missed. Auto/Max also run detection on overlapping zoomed tiles "
             "(the tracker always follows the full frame), and keep objects down to "
-            "~10 px tall. Max finds ~90% of 12-96 px people; costs a few seconds per "
+            "~10 px tall. Max finds most small, far people; costs a few seconds per "
             "re-detection frame. Small objects keep SAM's edge (anti-aliased)."
         )
         self._small_objects_combo.currentIndexChanged.connect(self._on_small_objects_changed)

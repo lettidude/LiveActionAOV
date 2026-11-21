@@ -34,7 +34,7 @@ subject, fine hair on the hero). The others keep the whole-frame matte.
    never grows the crop: with the default concepts every object's box used to
    swallow the buildings and trees around it until it was the whole frame,
    and LTX, which mattes ONE salient foreground per crop, gave each object
-   somebody else's alpha (A65 couple-car plate, 2026-11-09). Scenery tracks
+   somebody else's alpha (a two-person plate). Scenery tracks
    themselves are not sent to LTX in all-masks mode: SAM's edge, lightly
    anti-aliased, like the small objects under `refine_min_px`.
 2. The crop is scaled to `long_edge` (multiple of 32) and sent to the user's
