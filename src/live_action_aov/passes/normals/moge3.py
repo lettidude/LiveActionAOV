@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -127,6 +128,8 @@ class MoGe3Pass(UtilityPass):
         self._camera_solve: Any = None
         self._first: int | None = None
         self._intrinsics: tuple[float, float, float, float] | None = None
+        # Letterbox box (x, y, w, h) of the last shot setup, in full-frame pixels.
+        self.letterbox: tuple[int, int, int, int] | None = None
         self.fov_source = ""
 
     # ------------------------------------------------------------------
@@ -230,8 +233,37 @@ class MoGe3Pass(UtilityPass):
         first, last = frame_range
         frames = list(range(first, last + 1))
         self._first = first
+        sample_imgs, run = self._shot_runner(reader, frames)
+
+        out: dict[int, dict[str, np.ndarray]] = {}
+        medians: list[float] = []
+        for f in frames:
+            img = sample_imgs.pop(f, None)
+            if img is None:
+                img, _ = reader.read_frame(f)
+            r = run(img)
+            valid = r["depth"][r["mask"]]
+            medians.append(float(np.median(valid)) if valid.size else float("nan"))
+            out[f] = self.postprocess(r)
+        if self.params["emit_depth"]:
+            gains = scale_gains(medians, int(self.params["scale_window"]))
+            sky = float(self.params["sky_depth_m"])
+            for f, g in zip(frames, gains, strict=True):
+                if g != 1.0:
+                    z = out[f][CH_Z]
+                    out[f][CH_Z] = np.where(out[f][CH_DEPTH_CONFIDENCE] > 0, z * g, sky).astype(
+                        np.float32
+                    )
+        return out
+
+    def _shot_runner(
+        self, reader: Any, frames: list[int]
+    ) -> tuple[dict[int, np.ndarray], Callable[[np.ndarray], dict[str, Any]]]:
+        """The shot-level setup (letterbox box, one FOV, intrinsics) and a
+        function that runs one full frame with it."""
         sample_imgs, (h, w), box = self._clip_setup(reader, frames)
         samples = list(sample_imgs)
+        self.letterbox = box
         x0, y0, cw, ch = box
         if box != (0, 0, w, h):
             _log.info("MoGe-3: letterbox cropped to %dx%d at (%d, %d)", cw, ch, x0, y0)
@@ -246,26 +278,24 @@ class MoGe3Pass(UtilityPass):
         fx = cw / (2.0 * math.tan(math.radians(fov) / 2.0))
         self._intrinsics = (fx / w, fx / h, (x0 + cw / 2.0) / w, (y0 + ch / 2.0) / h)
         _log.info("MoGe-3: horizontal FOV %.2f deg (%s)", fov, self.fov_source)
+        return sample_imgs, lambda img: run(img, fov)
 
-        out: dict[int, dict[str, np.ndarray]] = {}
-        medians: list[float] = []
+    def depth_at(
+        self, reader: Any, frame_range: tuple[int, int], frames: list[int]
+    ) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+        """Metric depth and validity mask of `frames` only, with the same
+        shot-level FOV and letterbox `run_shot` uses (a metric reference for
+        another depth backend). Sets the intrinsics artifact too."""
+        first, last = frame_range
+        self._first = first
+        sample_imgs, run = self._shot_runner(reader, list(range(first, last + 1)))
+        out: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         for f in frames:
-            img = sample_imgs.pop(f, None)
+            img = sample_imgs.get(f)
             if img is None:
                 img, _ = reader.read_frame(f)
-            r = run(img, fov)
-            valid = r["depth"][r["mask"]]
-            medians.append(float(np.median(valid)) if valid.size else float("nan"))
-            out[f] = self.postprocess(r)
-        if self.params["emit_depth"]:
-            gains = scale_gains(medians, int(self.params["scale_window"]))
-            sky = float(self.params["sky_depth_m"])
-            for f, g in zip(frames, gains, strict=True):
-                if g != 1.0:
-                    z = out[f][CH_Z]
-                    out[f][CH_Z] = np.where(out[f][CH_DEPTH_CONFIDENCE] > 0, z * g, sky).astype(
-                        np.float32
-                    )
+            r = run(img)
+            out[f] = (r["depth"], r["mask"])
         return out
 
     def _clip_setup(
