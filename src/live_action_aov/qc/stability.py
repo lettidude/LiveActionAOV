@@ -22,7 +22,7 @@ Two units side by side, because they rank depth passes differently:
   before/after runs share it). It under-weights the far range.
 ``jitter`` is the whole-frame scale pumping: |median of ln Z(t+1)/Z(t)| over
 the static set. Values are percent: median and 95th percentile over every
-pair. No verdict: numbers only.
+pair (and the worst pair, for ``jitter``). No verdict: numbers only.
 """
 
 from __future__ import annotations
@@ -195,6 +195,8 @@ def depth_stability(
             out[f"{name}_p95"] = round(float(np.percentile(v, 95)) * 100, 4)
     if jitter:
         out["jitter_med"] = round(float(np.median(jitter)) * 100, 4)
+        out["jitter_p95"] = round(float(np.percentile(jitter, 95)) * 100, 4)
+        out["jitter_max"] = round(float(np.max(jitter)) * 100, 4)
     warnings = []
     if rt_share and np.median(rt_share) < float(p["min_round_trip"]):
         warnings.append(

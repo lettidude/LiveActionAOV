@@ -50,6 +50,13 @@ def test_both_units_and_jitter() -> None:
     n, _ = qc.depth_stability(list(noisy), noisy.__getitem__)
     assert n["static_dlnz_med"] == pytest.approx(100 * 0.01 * np.sqrt(2) * 0.6745, rel=0.1)
     assert n["jitter_med"] < 0.05
+    # One bad frame in a steady clip: the median hides it, the worst pair does not.
+    bump = _clip(8)
+    bump[5] = {**bump[5], "Z": bump[5]["Z"] * 1.05}
+    j, _ = qc.depth_stability(list(bump), bump.__getitem__)
+    assert j["jitter_med"] < 0.05
+    assert j["jitter_max"] == pytest.approx(100 * np.log(1.05), rel=1e-3)
+    assert j["jitter_med"] <= j["jitter_p95"] <= j["jitter_max"]
 
 
 def test_mattes_are_left_out_of_the_static_set() -> None:

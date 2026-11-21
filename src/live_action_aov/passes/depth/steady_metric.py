@@ -116,6 +116,9 @@ class SteadyMetricDepthPass(UtilityPass):
         # (coefficient of variation over the reference frames).
         "scale_drift_warn": 0.15,
         "keep_moge_z": True,  # write MoGe-3's per-frame Z as its own layer (moge.Z)
+        # MoGe-3's FOV from the camera track: "usable" = not from a camera the
+        # camera check marked FAILED or nodal; "any" = the previous behaviour.
+        "camera_fov_from": "usable",
         "far_factor": 4.0,  # depth beyond far_factor x MoGe's 99th pct = sky
         "sky_depth_m": 10000.0,
         # Passed to MoGe-3 (same meaning as there).
@@ -144,6 +147,7 @@ class SteadyMetricDepthPass(UtilityPass):
         self._intrinsics: tuple[float, float, float, float] | None = None
         self._metric = True
         self.fit_report: dict[str, Any] = {}
+        self.fov_source = ""
         self._warnings: list[str] = []
 
     def prefetch_weights(self) -> str:
@@ -210,6 +214,7 @@ class SteadyMetricDepthPass(UtilityPass):
                 "fov_x_deg": self.params.get("fov_x_deg"),
                 "fov_note": self.params.get("fov_note", ""),
                 "letterbox_box": self.params.get("letterbox_box"),
+                "camera_fov_from": self.params.get("camera_fov_from", "usable"),
             }
         )
         moge.ingest_artifacts(self._camera_artifacts)
@@ -217,6 +222,8 @@ class SteadyMetricDepthPass(UtilityPass):
             moge_depth = moge.depth_at(reader, frame_range, frames if keep_moge else refs)
             self._intrinsics = moge._intrinsics
             box = moge.letterbox
+            moge_notes = list(moge._warnings)
+            self.fov_source = moge.fov_source
         finally:
             moge.unload()
             _free_gpu()
@@ -264,6 +271,7 @@ class SteadyMetricDepthPass(UtilityPass):
 
         self._metric = not degenerate
         self._warnings = [self._fit_note] if self._fit_note else []
+        self._warnings += moge_notes
         if degenerate:
             msg = "depth is RELATIVE, not metres: " + "; ".join(degenerate)
             self._warnings.append(msg)
@@ -330,6 +338,7 @@ class SteadyMetricDepthPass(UtilityPass):
         return {
             "engine": f"steady depth, fit {self.fit_report['fit']}",
             "metrics": metrics,
+            "extra": {"fov_source": self.fov_source},
             "warnings": list(self._warnings),
         }
 
