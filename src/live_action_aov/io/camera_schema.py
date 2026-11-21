@@ -120,6 +120,25 @@ class ScenePoint(BaseModel):
     track_length: int = 0
 
 
+class RefereeFrame(BaseModel):
+    """The held-out referee's result on one frame (`Quality.frames`).
+
+    `heldout_median_px`: median reprojection error, at plate resolution, of
+    the referee's points on this frame, measured with points the camera was
+    not fitted to; None when the frame could not be tested. `n_points`: how
+    many points that median is over. `ok`: the camera has a pose on this
+    frame and the referee could test it with enough points; a tested frame
+    with a large error stays `ok` (its error says how far off it is). The
+    names match `pnp_report.json` and the `frames` block of the camera-check
+    sidecar, so their readers take this block as it is."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    heldout_median_px: float | None = None
+    n_points: int = 0
+    ok: bool = False
+
+
 class Quality(BaseModel):
     """Metrics that let a compositor decide whether to trust the solve
     without rendering. `solve_confidence` aggregates the per-frame errors
@@ -146,6 +165,10 @@ class Quality(BaseModel):
     # and a splat are off the table whatever `backend.mapper` says. None =
     # no referee ran.
     nodal: bool | None = None
+    # The referee frame by frame, every frame of the solve (plate frame
+    # numbers): a shot median can hide a few bad frames, this shows them.
+    # Empty in a JSON written before it existed.
+    frames: dict[int, RefereeFrame] = Field(default_factory=dict)
 
 
 class CameraSolve(BaseModel):
@@ -171,6 +194,7 @@ __all__ = [
     "Extrinsic",
     "Intrinsics",
     "Quality",
+    "RefereeFrame",
     "ScenePoint",
     "ShotRef",
 ]
