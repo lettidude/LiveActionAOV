@@ -373,6 +373,55 @@ class SAM3MattePass(UtilityPass):
         # much of the frame on its biggest frame, on at least that many frames.
         "sam31_min_peak_coverage": 0.005,
         "sam31_min_frames": 3,
+        # SAM 3.1 with `small_objects` on ("off" = the run above, unchanged).
+        # Objects per session: `sam31_max_objects` (the model's own default
+        # is lower than a crowd). One session per seed frame in
+        # `sam31_seed_frames` ("auto" = "multi" with `small_objects` "max",
+        # else "single"; "multi" = `sample_frame` first, then the first and
+        # last frame and every `sam31_seed_every` frames; "single" =
+        # `sample_frame` only). A session other than the first one that
+        # SAM 3.1 fails on is logged and skipped.
+        # `sam31_tiles`: "on" = the plate's tiles each tracked as their own
+        # zoomed clip too (opt-in: a big subject can come back as one
+        # object per tile), "off".
+        # `sam31_work_size`: long side (px) a clip SAM 3.1 sees is shrunk to
+        # when its long side is over `sam31_work_size_above` (big plates
+        # only: its memory grows with objects x frames x clip size, and a
+        # full-res big plate with a high object cap can outgrow the card;
+        # smaller input runs as is). 0 = never shrink. Floor: present
+        # on `sam31_min_frames` frames, `min_object_px` tall and
+        # `sam31_small_min_peak_coverage` of the frame.
+        # `sam31_merge`: how the sessions' tracks become one per object.
+        # "tracks" (`sam31_merge` module): the same object linked across
+        # sessions (`sam31_link_iou`; tracks that coexist under
+        # `sam31_conflict_iou` stay two), a track lost and found again in
+        # place stitched (`sam31_stitch_iou`, up to `sam31_stitch_gap`
+        # frames), sudden whole-frame readings dropped (`sam31_glitch_*`),
+        # and duplicates merged. "duplicates": duplicates only. Duplicates:
+        # the smaller lies `sam31_merge_containment` inside the other on
+        # `sam31_merge_frames` of their shared frames and is at least
+        # `sam31_merge_size_ratio` of its size (a hand inside its body, a
+        # person inside a group mask: not merged). "auto" = "tracks" when
+        # there is more than one session, else "duplicates".
+        "sam31_max_objects": 64,
+        "sam31_post_batch": 0,  # frames post-processed at once; 0 = the model's
+        "sam31_seed_frames": "auto",
+        "sam31_seed_every": 40,
+        "sam31_tiles": "off",
+        "sam31_work_size": 1024,
+        "sam31_work_size_above": 1920,
+        "sam31_small_min_peak_coverage": 0.0003,
+        "sam31_merge": "auto",
+        "sam31_merge_containment": 0.6,
+        "sam31_merge_frames": 0.6,
+        "sam31_merge_size_ratio": 0.5,
+        "sam31_link_iou": 0.5,
+        "sam31_conflict_iou": 0.3,
+        "sam31_stitch_iou": 0.3,
+        "sam31_stitch_gap": 8,  # 0 = no stitch
+        "sam31_glitch_factor": 6.0,  # 0 = no glitch filter
+        "sam31_glitch_min_jump": 0.05,
+        "sam31_glitch_window": 0,  # frames either side; 0 = whole-track median
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -962,6 +1011,191 @@ class SAM3MattePass(UtilityPass):
             self._priority[next_id] = 0
             kept += 1
         _log.info("SAM 3.1: %d object(s) kept of %d.", kept, len(found))
+
+    def _sam31_seeds(self, n: int, seed_local: int) -> list[int]:
+        """Local seed frames of the small-objects SAM 3.1 run, the primary
+        (`sample_frame`) first."""
+        from live_action_aov.passes.matte.sam31_merge import seed_frames
+
+        mode = str(self.params.get("sam31_seed_frames", "auto")).lower()
+        if mode == "auto":
+            big = str(self.params.get("small_objects", "auto")).lower() == "max"
+            mode = "multi" if big else "single"
+        if mode != "multi":
+            return [seed_local]
+        return seed_frames(n, seed_local, int(self.params.get("sam31_seed_every", 40) or 0))
+
+    def _sam31_merge_config(self) -> Any:
+        from live_action_aov.passes.matte.sam31_merge import MergeConfig
+
+        g = self.params.get
+        return MergeConfig(
+            link_iou=float(g("sam31_link_iou", 0.5)),
+            conflict_iou=float(g("sam31_conflict_iou", 0.3)),
+            stitch_iou=float(g("sam31_stitch_iou", 0.3)),
+            stitch_gap=int(g("sam31_stitch_gap", 8) or 0),
+            glitch_factor=float(g("sam31_glitch_factor", 6.0) or 0.0),
+            glitch_min_jump=float(g("sam31_glitch_min_jump", 0.05)),
+            glitch_window=int(g("sam31_glitch_window", 0) or 0),
+            dup_containment=float(g("sam31_merge_containment", 0.6)),
+            dup_frames=float(g("sam31_merge_frames", 0.6) or 0.0),
+            dup_size_ratio=float(g("sam31_merge_size_ratio", 0.5)),
+        )
+
+    def _add_sam31_small(
+        self, frames: np.ndarray, concepts: list[str], seed_local: int, first: int
+    ) -> None:
+        """`_add_sam31` with `small_objects` on: object cap lifted, a relative
+        size floor, with "max" several seed frames whose tracks are merged
+        into one per object, optionally the plate's tiles tracked as zoomed
+        clips (see DEFAULT_PARAMS)."""
+        from live_action_aov.passes.matte import sam31_bridge
+
+        python = sam31_bridge.find_python(self.params)
+        n, h, w = int(frames.shape[0]), int(frames.shape[1]), int(frames.shape[2])
+        dh, dw = getattr(self, "_det_hw", None) or (h, w)
+        tiles: list[tuple[int, int, int, int]] = []
+        plate_frame: Any = None
+        big = str(self.params.get("small_objects", "auto")).lower() == "max"
+        if str(self.params.get("sam31_tiles", "off")).lower() == "on":
+            g = self._tile_grid(dh, dw) if big else max(2, self._tile_grid(dh, dw))
+            tiles = sam31_bridge.tile_windows(
+                dh, dw, g, float(self.params.get("tile_overlap", 0.2))
+            )
+            # Proxy mode: tiles are cut from the original plate, which shows
+            # the small people the proxy has already lost.
+            full = getattr(getattr(self, "_reader", None), "read_frame_full_res", None)
+            if tiles and (dh, dw) != (h, w):
+                if full is None:
+                    tiles = []
+                else:
+                    plate_frame = lambda k: np.asarray(full(first + k)[0], dtype=np.float32)  # noqa: E731
+        seeds = self._sam31_seeds(n, seed_local)
+        found = sam31_bridge.run_sam31_small(
+            frames,
+            concepts,
+            seeds,
+            python,
+            max_objects=int(self.params.get("sam31_max_objects", 64) or 0),
+            post_batch=int(self.params.get("sam31_post_batch", 0) or 0),
+            tiles=tiles,
+            plate_frame=plate_frame,
+            plate_hw=(dh, dw),
+            work_size=int(self.params.get("sam31_work_size", 1024) or 0),
+            work_above=int(self.params.get("sam31_work_size_above", 1920) or 0),
+            timeout_s=float(self.params.get("sam31_timeout_s", 3600)),
+            checkpoint=str(self.params.get("sam31_checkpoint", "") or ""),
+        )
+        min_frames = int(self.params.get("sam31_min_frames", 3))
+        min_cov = float(self.params.get("sam31_small_min_peak_coverage", 0.0003))
+        # `min_object_px` is plate px: scaled to these frames (1K proxy of 4K).
+        min_px = max(2.0, float(self.params.get("min_object_px", 10)) * h / float(dh))
+        # A tile track's coverage is of its tile (the clip SAM 3.1 saw), in frame px.
+        sy, sx = h / float(dh), w / float(dw)
+        seen = [0.0] + [(y1 - y0) * sy * (x1 - x0) * sx for y0, x0, y1, x1 in tiles]
+        n_sessions = len(seeds) * (1 + len(tiles))
+        how = str(self.params.get("sam31_merge", "auto")).lower()
+        if how == "auto":
+            how = "tracks" if n_sessions > 1 else "duplicates"
+        if how == "tracks":
+            kept = self._sam31_merge_tracks(found, min_px, min_cov, min_frames, seen)
+        else:
+            kept = self._sam31_merge_duplicates(found, min_px, min_cov, min_frames, seen)
+        used = {i.track_id for i in self._instances}
+        next_id = 1
+        for t in kept:
+            while next_id in used:
+                next_id += 1
+            used.add(next_id)
+            masks = MaskDict((first + k, t.masks[k]) for k in range(n))
+            self._instances.append(_DetectedInstance(next_id, t.label, masks))
+            self._priority[next_id] = 0
+        _log.info(
+            "SAM 3.1: %d object(s) kept from %d session(s).",
+            len(kept),
+            n_sessions * len(concepts),
+        )
+
+    def _sam31_merge_duplicates(
+        self, found: list[Any], min_px: float, min_cov: float, min_frames: int, seen: list[float]
+    ) -> list[Any]:
+        """Floor, then duplicates merged (`sam31_merge` "duplicates")."""
+        from live_action_aov.passes.matte import sam31_bridge
+
+        small = [
+            t for t in found if sam31_bridge.keep_small(t, min_px, min_cov, min_frames, seen[t.src])
+        ]
+        _log.info(
+            "SAM 3.1: %d object(s) over the floor (%d frames, %.1f px tall, %.2f%% of frame) of %d.",
+            len(small),
+            min_frames,
+            min_px,
+            100 * min_cov,
+            len(found),
+        )
+        kept, merged = sam31_bridge.merge_duplicates(
+            small,
+            contain=float(self.params.get("sam31_merge_containment", 0.6)),
+            frames_frac=float(self.params.get("sam31_merge_frames", 0.6)),
+            size_ratio=float(self.params.get("sam31_merge_size_ratio", 0.5)),
+        )
+        for a, b in merged:
+            _log.info(
+                "SAM 3.1: '%s' (src %d seed %d obj %d) is the same as src %d seed %d obj %d - merged.",
+                small[a].label,
+                small[a].src,
+                small[a].seed,
+                small[a].obj_id,
+                small[b].src,
+                small[b].seed,
+                small[b].obj_id,
+            )
+        return kept
+
+    def _sam31_merge_tracks(
+        self, found: list[Any], min_px: float, min_cov: float, min_frames: int, seen: list[float]
+    ) -> list[Any]:
+        """The sessions' tracks merged into one per object (`sam31_merge`
+        "tracks"), then the floor on the merged tracks (a stitched track
+        counts all its frames)."""
+        from live_action_aov.passes.matte import sam31_bridge
+
+        merged, rep, frames = sam31_bridge.merge_sessions(found, self._sam31_merge_config())
+        _log.info(
+            "SAM 3.1: %d raw track(s) -> %d object(s) (%d linked across sessions, "
+            "%d fragments stitched, %d duplicates merged, %d glitch frames dropped).",
+            rep.raw_tracks,
+            rep.objects,
+            rep.linked,
+            rep.stitched,
+            rep.duplicates,
+            rep.glitch_frames,
+        )
+        kept = []
+        for t, (saw, bad, held) in zip(merged, frames, strict=True):
+            ok = sam31_bridge.keep_small(t, min_px, min_cov, min_frames, seen[t.src])
+            _log.info(
+                "SAM 3.1: '%s' object (seed %d obj %d): its tracks saw it on %d frame(s), "
+                "%d glitch frame(s) dropped, it holds %d%s.",
+                t.label,
+                t.seed,
+                t.obj_id,
+                saw,
+                bad,
+                held,
+                "" if ok else " - under the floor, dropped",
+            )
+            if ok:
+                kept.append(t)
+        _log.info(
+            "SAM 3.1: %d object(s) over the floor (%d frames, %.1f px tall, %.2f%% of frame) of %d.",
+            len(kept),
+            min_frames,
+            min_px,
+            100 * min_cov,
+            len(merged),
+        )
+        return kept
 
     def _track_objects(
         self,
@@ -1567,7 +1801,10 @@ class SAM3MattePass(UtilityPass):
         self._track_objects(frames, objs, first, area_floor)
         if use31 and concepts:
             try:
-                self._add_sam31(frames, concepts, seed_local, first)
+                if str(self.params.get("small_objects", "auto")).lower() == "off":
+                    self._add_sam31(frames, concepts, seed_local, first)
+                else:
+                    self._add_sam31_small(frames, concepts, seed_local, first)
             except RuntimeError as e:
                 if str(self.params.get("detector", "auto")).lower() != "auto":
                     raise
