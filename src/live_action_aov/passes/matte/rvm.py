@@ -54,6 +54,7 @@ from live_action_aov.io.channels import (
     CH_MATTE_G,
     CH_MATTE_R,
     mask_channel,
+    object_channel,
 )
 from live_action_aov.passes.matte.boxmask import stack_box
 
@@ -193,6 +194,15 @@ def adaptive_band_px(mask: np.ndarray, frac: float, min_px: int, max_px: int) ->
     return int(np.clip(frac * np.sqrt(area), min_px, max_px))
 
 
+#: Slot -> Cryptomatte table fields the SAM pass puts on each hero; carried
+#: into `matte_heroes` so the sidecar header can name the slot's crypto object.
+SLOT_TABLE_KEYS = ("crypto_name", "crypto_id", "mean_area")
+
+
+def slot_table_fields(hero: dict[str, Any]) -> dict[str, Any]:
+    return {k: hero[k] for k in SLOT_TABLE_KEYS if k in hero}
+
+
 class RVMRefinerPass(UtilityPass):
     name = "rvm_refiner"
     version = "0.1.0"
@@ -261,6 +271,10 @@ class RVMRefinerPass(UtilityPass):
         # (86 -> 96 px at 1080, 155 at 4K): on a 1K proxy, 40-90 px people
         # came out as soft halos with the sand between them. 0 = refine all.
         "refine_min_px": "auto",
+        # One soft matte per refined object, `mask_object.<label>_<id>`, named
+        # like its Cryptomatte object, so the soft and the hard ID matte of an
+        # actor line up by name in comp. Off = only matte.rgba + mask.<label>.
+        "object_channels": False,
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -705,6 +719,22 @@ class RVMRefinerPass(UtilityPass):
         refine_min = max(96, round(0.08 * plate_h)) if str(rmp) == "auto" else int(rmp)
         n_small = 0
         n_skipped = 0
+        # `object_channels`: each refined object's soft matte, kept as a box
+        # crop per frame {local frame: (y0, x0, crop)} until the emit.
+        want_objects = bool(self.params.get("object_channels", False))
+        object_soft: dict[str, dict[int, tuple[int, int, np.ndarray]]] = {}
+
+        def _keep_object(tid: int, tr: dict[str, Any], stack: np.ndarray) -> None:
+            name = object_channel(f"{tr.get('label', 'object')}_{tid}")
+            crops = object_soft.setdefault(name, {})
+            for i in range(n_frames):
+                nz = np.nonzero(stack[i] > 0)
+                if not nz[0].size:
+                    continue
+                y0, y1 = int(nz[0].min()), int(nz[0].max()) + 1
+                x0, x1 = int(nz[1].min()), int(nz[1].max()) + 1
+                crops[i] = (y0, x0, np.array(stack[i, y0:y1, x0:x1], np.float32))
+
         for track_id in order:
             track = self._hard_masks.get(track_id)
             if track is None or not _wanted(track_id):
@@ -721,6 +751,11 @@ class RVMRefinerPass(UtilityPass):
             ):
                 small = refine_min > 0 and _median_height(track) < refine_min
                 if small or self._skip_refine(track_id, track):
+                    if want_objects:
+                        one = np.zeros((n_frames, plate_h, plate_w), np.float32)
+                        _paint_antialiased(one, track, frame_to_local)
+                        _keep_object(track_id, track, one)
+                        del one
                     label = str(track.get("label", "") or "")
                     if label:
                         acc = label_soft.setdefault(
@@ -768,6 +803,8 @@ class RVMRefinerPass(UtilityPass):
                     soft[i] = np.where(hit, soft[i] * (1.0 - kill), soft[i])
             if track_id in set(parent_of.values()):
                 whole_soft[track_id] = soft
+            if want_objects:
+                _keep_object(track_id, track, soft)
             label = str(track.get("label", "") or "")
             slot = hero_slot.get(track_id, "")
             channel = _SLOT_TO_CHANNEL.get(slot)
@@ -783,6 +820,7 @@ class RVMRefinerPass(UtilityPass):
                         "score": float(h.get("score", 0.0)),
                         "refined_frames": refined_frames,
                         "missing_hard_mask": False,
+                        **slot_table_fields(h),
                     }
                 )
             if refine_all and label:
@@ -887,6 +925,20 @@ class RVMRefinerPass(UtilityPass):
             # channel merge (field bug: matte came out black).
             for label, acc in label_soft.items():
                 d[_ch(mask_channel(label))] = acc[i]
+            if object_soft:
+                # Every object on every frame (a constant channel set across
+                # the clip); absent frames share one zero array.
+                zero = np.zeros((plate_h, plate_w), np.float32)
+                zero.setflags(write=False)  # shared: never written in place
+                for name, crops in object_soft.items():
+                    hit = crops.get(i)
+                    if hit is None:
+                        d[_ch(name)] = zero
+                        continue
+                    y0, x0, crop = hit
+                    full = np.zeros((plate_h, plate_w), np.float32)
+                    full[y0 : y0 + crop.shape[0], x0 : x0 + crop.shape[1]] = crop
+                    d[_ch(name)] = full
             out[f] = d
         return out
 

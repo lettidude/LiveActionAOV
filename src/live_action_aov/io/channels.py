@@ -149,6 +149,18 @@ def mask_channel(label: str) -> str:
     return f"{MASK_PREFIX}{safe or 'object'}"
 
 
+OBJECT_LAYER = "mask_object"
+"""Layer of the per-object soft mattes (`mask_object.<object>`), one channel
+per tracked object, named like its Cryptomatte object (`person_1`)."""
+
+
+def object_channel(name: str) -> str:
+    """`mask_object.<name>` for a Cryptomatte object name (`person_1`), made
+    channel-safe the same way as `mask_channel`."""
+    safe = re.sub(r"[^0-9A-Za-z_]+", "_", name.strip()).strip("_")
+    return f"{OBJECT_LAYER}.{safe or 'object'}"
+
+
 def is_mask_channel(name: str) -> bool:
     """True if `name` follows the `mask.<concept>` semantic-mask convention."""
     return name.startswith(MASK_PREFIX) and len(name) > len(MASK_PREFIX)
@@ -249,8 +261,10 @@ __all__ = [
     "MASK_PREFIX",
     "MATTE_CHANNELS",
     "NORMAL_CHANNELS",
+    "OBJECT_LAYER",
     "POSITION_CHANNELS",
     "SPLAT_CHANNELS",
     "is_mask_channel",
     "mask_channel",
+    "object_channel",
 ]

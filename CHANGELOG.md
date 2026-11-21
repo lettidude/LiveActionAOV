@@ -7,6 +7,25 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Hero slots in a fixed order, and a slot table.** `hero_order: coverage` on the SAM matte fills
+  `matte.r/g/b/a` biggest subject first (mean coverage of the frame over the shot); the default
+  ranking is unchanged. A hero can also be picked by its Cryptomatte name or by a box drawn on a
+  frame (`heroes`). The EXR header and the run report now say, per slot, which Cryptomatte object
+  it is (name, ID) and how much of the frame it covers.
+- **Crowds and empty frames.** More objects than `crowd_warn_above` gives a warning; `crowd_cap`
+  keeps only the biggest ones. When the frame SAM starts from shows none of the concepts, it looks
+  again on other frames instead of giving an empty Cryptomatte (`reseed_empty`). With SAM 3.1, a
+  concept with nothing to track now gives an empty result instead of stopping the run.
+- **LTX Alpha whole frame: an arm or a prop stays with its person** (`owner_rule: connected`, off by
+  default). Foreground joined to one person's mask goes to that person even where someone else is
+  closer: an outstretched hand, a held object, hair SAM missed.
+- **Holdout combine as a built-in step** (`holdout` in the job's post list). Writes
+  `holdout.<object>`: the object's soft matte with its neighbours held out (closed, grown and
+  feathered), plus an optional clean-up of soft strips along the neighbours that never touches the
+  object's own edge.
+- **LTX chunk joins in the run report.** A long shot matted in several LTX calls reports how well
+  the calls agree where they overlap, and warns at a join that does not.
+- **Wide SAM gates stay fast** (`gate_dilate: distance` on the LTX crop route).
 - **SAM 3.1 keeps small and late-entering people.** With `small_objects` on (the default), people
   far in the background and people who walk in later stay in the masks and the Cryptomatte. Big
   plates run at a size that fits the card (`sam31_work_size`). `small_objects` `max` also looks
@@ -19,6 +38,17 @@ uses [semantic versioning](https://semver.org/).
   refused merge; `sam31_split_frames` and `sam31_split_share` set how strict it is. Before a Max run,
   the log warns when other jobs hold the GPU's memory, which makes SAM 3.1 many times slower;
   `sam31_max_vram_check` `refuse` uses SAM 3 for the shot instead.
+- **Held objects go to the person holding them** (LTX Alpha whole frame, `held_objects`, off by
+  default). A bag, a phone or a tool that LTX mattes but SAM does not track was split between the
+  nearest people; with the option on it goes whole to the person whose hand (a `hand` part) or body
+  touches it. Something several people touch with no hand on it (water spray, the ground) keeps the
+  old split.
+- **One soft matte per object, named like its Cryptomatte object** (`object_channels` on the
+  refiners, off by default): `mask_object.person_1`, `mask_object.person_2` ... next to the hard ID in
+  the Cryptomatte, so the soft and the hard matte of an actor line up by name in comp.
+- **Cryptomatte IDs stay clean on proxy runs** (`proxy_upscale: "nearest"` on the cryptomatte pass,
+  off by default). The proxy result is scaled back to the plate without blending neighbouring IDs,
+  so every ID in the EXR is an object of the manifest.
 - **Steady depth in metres, now the default depth.** *Video Depth Anything, metres (steady, softer)*
   (`video_depth_steady`): the depth holds still from frame to frame like Video Depth Anything's,
   and is in metres like MoGe-3's, so `P` stays in metres too and matches `Z`. **Use the recommended

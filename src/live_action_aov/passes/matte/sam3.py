@@ -71,10 +71,12 @@ from live_action_aov.passes.matte.boxmask import (
     union_box,
 )
 from live_action_aov.passes.matte.rank import (
+    SLOT_ORDER,
     HeroOverride,
     Instance,
     RankWeights,
     is_scenery_label,
+    mean_coverage,
     rank_and_assign,
 )
 
@@ -374,7 +376,29 @@ class SAM3MattePass(UtilityPass):
             "user_priority": 0.0,
         },
         "max_heroes": 4,
-        "heroes": [],  # user overrides: [{"track_id": 17, "slot": "r"}]
+        # How the `matte.rgba` hero slots are filled: "score" = the ranking
+        # weights above; "coverage" = mean coverage of the frame over the
+        # shot, biggest first (`matte.r` = the biggest subject). The slots
+        # are locked for the whole shot either way.
+        "hero_order": "score",
+        # User overrides, each claims its slot before the order above:
+        # {"track_id": 17, "slot": "r"}, {"name": "person_3", "slot": "g"}
+        # (the object's Cryptomatte name, as in the run report), or
+        # {"box": [x1, y1, x2, y2], "frame": 1040, "slot": "b",
+        # "ref_size": [w, h]}: the object covering most of that box on that
+        # frame (plate numbering; default the sample frame).
+        "heroes": [],
+        # Crowds: more objects than `crowd_warn_above` logs a warning (it
+        # slows the matte refiners and SAM down a lot); `crowd_cap` > 0
+        # keeps only the N biggest detected objects (mean coverage; user
+        # clicks are always kept), 0 = keep all.
+        "crowd_warn_above": 20,
+        "crowd_cap": 0,
+        # The seed frame shows none of the concepts (a range cut where
+        # nobody is in shot yet): look again on other frames (first, last,
+        # quarter points) before giving an empty result. Off = the empty
+        # result, as before.
+        "reseed_empty": True,
         # Interactive click-to-mask prompts (GUI viewport, v0.3). Each entry:
         # {"name": str, "seed_frame": int (plate numbering), "points":
         # [[x, y, label], ...] (label 1=fg, 0=bg), "box": [x1, y1, x2, y2] |
@@ -502,6 +526,10 @@ class SAM3MattePass(UtilityPass):
         # part track_id -> whole track_id ("hair" -> "person").
         self._parent: dict[int, int] = {}
         self._heroes: list[Any] = []  # list[rank.HeroSlot]
+        self._n_frames = 1
+        self._crowd_warning = ""
+        self._crowd_dropped: list[str] = []
+        self._reseeded = ""
         self._concepts_found: list[str] = []
         self._plate_shape: tuple[int, int] = (0, 0)
         # Flow snapshot (optional) — used for motion-energy feature when
@@ -1153,7 +1181,10 @@ class SAM3MattePass(UtilityPass):
             concepts,
             seeds,
             python,
-            max_objects=int(self.params.get("sam31_max_objects", 64) or 0),
+            max_objects=_capped(
+                int(self.params.get("sam31_max_objects", 64) or 0),
+                int(self.params.get("crowd_cap", 0) or 0),
+            ),
             post_batch=int(self.params.get("sam31_post_batch", 0) or 0),
             tiles=tiles,
             plate_frame=plate_frame,
@@ -1742,6 +1773,8 @@ class SAM3MattePass(UtilityPass):
         self._plate_shape = (plate_h, plate_w)
 
         seed_local = _pick_seed_frame(n_frames, self.params["sample_frame"])
+        self._n_frames = n_frames
+        self._crowd_warning, self._crowd_dropped, self._reseeded = "", [], ""
 
         concepts = [str(c) for c in self.params["concepts"]]
         # Box crops (test fakes and older overrides return dense masks).
@@ -1757,6 +1790,18 @@ class SAM3MattePass(UtilityPass):
         if concepts:
             _log.info("SAM3 matte: detector %s (%s).", "SAM 3.1" if use31 else "SAM 3", why)
         seeds = [] if use31 else self._detect_frame(frames, seed_local, concepts)
+        cap = int(self.params.get("crowd_cap", 0) or 0)
+        if cap > 0 and len(seeds) > cap:
+            # Track only the biggest: a crowd costs tracker time per object.
+            keep = sorted(seeds, key=lambda s: (-float(s[2].sum()), s[0]))[:cap]
+            ids = {s[0] for s in keep}
+            self._crowd_dropped = [crypto_name(s[1], s[0]) for s in seeds if s[0] not in ids]
+            self._crowd_warning = (
+                f"crowd: {len(seeds)} objects on the seed frame, tracked the {cap} biggest "
+                f"(crowd_cap); dropped {len(seeds) - cap}"
+            )
+            _log.warning("SAM3 matte: %s.", self._crowd_warning)
+            seeds = [s for s in seeds if s[0] in ids]
 
         # Pre-flight host-RAM check (fail fast, before the minutes-long track).
         # Peak host RAM is dominated by holding every instance's whole-clip mask
@@ -1798,7 +1843,8 @@ class SAM3MattePass(UtilityPass):
         # Size floor: `_size_ok` (box height with tiles on, area fraction off).
         area_floor = None
 
-        def seed_objs(found: list[Any]) -> list[dict[str, Any]]:
+        def seed_objs(found: list[Any], at: int | None = None) -> list[dict[str, Any]]:
+            seed_at = seed_local if at is None else at
             out: list[dict[str, Any]] = []
             for track_id, label, seed_mask in found:
                 if seed_mask.shape != (plate_h, plate_w):
@@ -1810,7 +1856,7 @@ class SAM3MattePass(UtilityPass):
                     {
                         "obj_id": track_id,
                         "label": label,
-                        "seed_local": seed_local,
+                        "seed_local": seed_at,
                         "mask": seed_mask,
                         "priority": 0,
                     }
@@ -1908,12 +1954,46 @@ class SAM3MattePass(UtilityPass):
                 if fallback:
                     self._track_objects(frames, fallback, first, area_floor)
 
+        # --- Empty seed frame: look on other frames -----------------------
+        found_any = any(self._priority.get(i.track_id, 0) == 0 for i in self._instances)
+        if concepts and not found_any and bool(self.params.get("reseed_empty", True)):
+            for alt in reseed_frames(n_frames, seed_local):
+                if use31:
+                    try:
+                        if str(self.params.get("small_objects", "auto")).lower() == "off":
+                            self._add_sam31(frames, concepts, alt, first)
+                        else:
+                            self._add_sam31_small(frames, concepts, alt, first)
+                    except RuntimeError as e:
+                        _log.warning("SAM 3.1 re-seed on frame %d failed: %s", first + alt, e)
+                        continue
+                else:
+                    more = seed_objs(self._detect_frame(frames, alt, concepts), alt)
+                    if more:
+                        self._track_objects(frames, more, first, area_floor)
+                if any(self._priority.get(i.track_id, 0) == 0 for i in self._instances):
+                    self._reseeded = (
+                        f"seed frame {first + seed_local} showed none of {concepts}: "
+                        f"re-seeded on frame {first + alt}"
+                    )
+                    _log.warning("SAM3 matte: %s.", self._reseeded)
+                    seed_local = alt
+                    break
+            else:
+                _log.warning(
+                    "SAM3 matte: none of %s found on the seed frame or on frames %s: "
+                    "no objects for this range.",
+                    concepts,
+                    [first + a for a in reseed_frames(n_frames, seed_local)],
+                )
+
         # --- Re-detection: objects that enter later / the tracker lost ---
         stride = self.params.get("redetect_stride")
         if stride and concepts and not use31:
             self._redetect(frames, concepts, int(stride), seed_local, first, area_floor)
         if self._user_concepts:
             _warn_unmatched_concepts(concepts, {i.label for i in self._instances})
+        self._apply_crowd_cap(n_frames)
 
         # --- One owner per pixel -------------------------------------------
         if bool(self.params.get("exclusive_masks", True)) and len(self._instances) > 1:
@@ -1995,11 +2075,7 @@ class SAM3MattePass(UtilityPass):
 
         # Build the light Instance objects and rank them.
         rank_weights = RankWeights(**self.params["ranking"])
-        overrides = [
-            HeroOverride(track_id=int(h["track_id"]), slot=h["slot"])
-            for h in (self.params.get("heroes") or [])
-            if "track_id" in h and "slot" in h
-        ]
+        overrides = self._hero_overrides(first, plate_h, plate_w, seed_local)
         # A click object the user gave a slot to (GUI Masks tab).
         live = {i.track_id for i in self._instances}
         taken: set[str] = {str(o.slot) for o in overrides}
@@ -2017,7 +2093,17 @@ class SAM3MattePass(UtilityPass):
             n_clip_frames=n_frames,
             max_heroes=int(self.params["max_heroes"]),
             overrides=overrides,
+            order=str(self.params.get("hero_order", "score") or "score").lower(),
         )
+        self._n_frames = n_frames
+        for h in self._heroes:
+            _log.info(
+                "SAM3 matte: slot %s = %s (%s), mean coverage %.2f%% of frame.",
+                h.slot,
+                crypto_name(h.label, h.track_id),
+                crypto_hex(h.label, h.track_id),
+                100.0 * mean_coverage(h.instance, n_frames),
+            )
         hero_ids = {h.track_id for h in self._heroes}
         held = [i for i in ranked_input if i.scenery and i.track_id not in hero_ids]
         if held and len(self._heroes) == int(self.params["max_heroes"]):
@@ -2028,6 +2114,70 @@ class SAM3MattePass(UtilityPass):
                 ", ".join(f"{i.label}_{i.track_id}" for i in held),
             )
         return per_frame
+
+    def _apply_crowd_cap(self, n_frames: int) -> None:
+        """`crowd_warn_above` / `crowd_cap` on the detected objects (user
+        clicks always stay and never count)."""
+        det = [i for i in self._instances if self._priority.get(i.track_id, 0) == 0]
+        warn_n = int(self.params.get("crowd_warn_above", 0) or 0)
+        cap = int(self.params.get("crowd_cap", 0) or 0)
+
+        def cover(inst: _DetectedInstance) -> float:
+            tot = sum(_area_fraction(m) for m in inst.masks.values() if m is not None)
+            return tot / max(n_frames, 1)
+
+        if cap > 0 and len(det) > cap:
+            ranked = sorted(det, key=lambda i: (-cover(i), i.track_id))
+            drop = {i.track_id for i in ranked[cap:]}
+            self._crowd_dropped += [crypto_name(i.label, i.track_id) for i in ranked[cap:]]
+            self._instances = [i for i in self._instances if i.track_id not in drop]
+            self._crowd_warning = (
+                f"crowd: {len(det)} objects found, kept the {cap} biggest (crowd_cap); "
+                f"dropped {len(drop)}"
+            )
+            _log.warning("SAM3 matte: %s: %s.", self._crowd_warning, ", ".join(self._crowd_dropped))
+        elif warn_n > 0 and len(det) > warn_n:
+            self._crowd_warning = (
+                f"crowd: {len(det)} objects (more than {warn_n}): the matte refiners take "
+                f"much longer; set crowd_cap to keep only the biggest"
+            )
+            _log.warning("SAM3 matte: %s.", self._crowd_warning)
+
+    def _hero_overrides(
+        self, first: int, plate_h: int, plate_w: int, seed_local: int
+    ) -> list[HeroOverride]:
+        """The `heroes` param as slot overrides: by track id, by Cryptomatte
+        name, or by a box drawn on a frame. An entry that names nothing in
+        this run is logged and skipped."""
+        out: list[HeroOverride] = []
+        taken: set[str] = set()
+        live = {i.track_id: i for i in self._instances}
+        by_name = {crypto_name(i.label, i.track_id): i.track_id for i in self._instances}
+        for h in self.params.get("heroes") or []:
+            slot = str(h.get("slot", "")).lower()
+            if slot not in SLOT_ORDER or slot in taken:
+                continue
+            tid: int | None = None
+            if "track_id" in h:
+                tid = int(h["track_id"])
+            elif h.get("name"):
+                tid = by_name.get(str(h["name"]))
+            elif h.get("box"):
+                f = int(h.get("frame", first + seed_local))
+                ref = h.get("ref_size") or None
+                sx = plate_w / float(ref[0]) if ref and float(ref[0]) > 0 else 1.0
+                sy = plate_h / float(ref[1]) if ref and float(ref[1]) > 0 else 1.0
+                b = h["box"]
+                box = (float(b[0]) * sx, float(b[1]) * sy, float(b[2]) * sx, float(b[3]) * sy)
+                tid = box_owner(list(live.values()), f, box)
+            if tid is None or tid not in live:
+                _log.warning(
+                    "SAM3 matte: hero %s for slot %s matches no object - skipped.", h, slot
+                )
+                continue
+            out.append(HeroOverride(track_id=tid, slot=slot))  # type: ignore[arg-type]
+            taken.add(slot)
+        return out
 
     def _to_rank_instance(
         self,
@@ -2115,13 +2265,32 @@ class SAM3MattePass(UtilityPass):
             )
         concepts = [str(c) for c in (self.params.get("concepts") or [])]
         found = {i.label for i in self._instances}
+        slots = self.slot_table()
+        slot_of = {int(r["id"]): r["slot"] for r in slots}
+        for o in objects:
+            o["crypto_name"] = crypto_name(o["name"], int(o["id"]))
+            o["crypto_id"] = crypto_hex(o["name"], int(o["id"]))
+            known = [a for a in o["area"] if a is not None]
+            o["mean_area"] = round(sum(known) / max(self._n_frames, 1), 6)
+            if int(o["id"]) in slot_of:
+                o["slot"] = slot_of[int(o["id"])]
+        extra: dict[str, Any] = {"concepts": concepts, "slots": slots}
+        if self._crowd_dropped:
+            extra["crowd_dropped"] = list(self._crowd_dropped)
         out: dict[str, Any] = {
             "engine": self.detector_used,
             "engine_reason": self.detector_reason,
             "objects": objects,
             "metrics": {"matte.objects": len(objects)},
-            "extra": {"concepts": concepts},
+            "extra": extra,
         }
+        warnings: list[str] = []
+        if self._crowd_warning:
+            warnings.append(self._crowd_warning)
+        if self._reseeded:
+            warnings.append(self._reseeded)
+        if warnings:
+            out["warnings"] = warnings
         if self.detector_fallback:
             out["fallbacks"] = [
                 {"wanted": "sam3.1", "used": "sam3", "reason": self.detector_fallback}
@@ -2137,6 +2306,22 @@ class SAM3MattePass(UtilityPass):
                 if c not in found
             ]
         return out
+
+    def slot_table(self) -> list[dict[str, Any]]:
+        """Hero slot -> object: Cryptomatte name and id, mean coverage of the
+        frame over the shot, frames present (run report `extra.slots`)."""
+        return [
+            {
+                "slot": h.slot,
+                "id": int(h.track_id),
+                "label": h.label,
+                "crypto_name": crypto_name(h.label, h.track_id),
+                "crypto_id": crypto_hex(h.label, h.track_id),
+                "mean_area": round(mean_coverage(h.instance, self._n_frames), 6),
+                "frames_present": len(h.instance.frames),
+            }
+            for h in self._heroes
+        ]
 
     def emit_artifacts(self) -> dict[str, dict[int, Any]]:
         if not self._instances and not self._heroes:
@@ -2190,6 +2375,10 @@ class SAM3MattePass(UtilityPass):
                     # Reference the frames where the instance is present so
                     # the refiner can skip empty frames cheaply.
                     "frames": list(h.instance.frames),
+                    # Slot -> Cryptomatte table (sidecar header + run report).
+                    "crypto_name": crypto_name(h.label, h.track_id),
+                    "crypto_id": crypto_hex(h.label, h.track_id),
+                    "mean_area": round(mean_coverage(h.instance, self._n_frames), 6),
                 }
             )
 
@@ -2755,4 +2944,55 @@ def _mean_or_zero(values: list[float]) -> float:
     return float(sum(values) / len(values))
 
 
-__all__ = ["SAM3MattePass"]
+def _capped(max_objects: int, cap: int) -> int:
+    """SAM 3.1's per-session object cap with `crowd_cap` (0 = no cap)."""
+    if cap <= 0:
+        return max_objects
+    return cap if max_objects <= 0 else min(max_objects, cap)
+
+
+def crypto_name(label: str, track_id: int) -> str:
+    """The object's Cryptomatte name (`cryptomatte` pass: `<label>_<id>`)."""
+    return f"{label or 'object'}_{int(track_id)}"
+
+
+def crypto_hex(label: str, track_id: int) -> str:
+    """The object's Cryptomatte id as the manifest writes it (8 hex digits)."""
+    from live_action_aov.io.cryptomatte import name_to_id
+
+    return name_to_id(crypto_name(label, track_id))[1]
+
+
+def reseed_frames(n_frames: int, tried: int) -> list[int]:
+    """Other seed frames to look on when `tried` showed nothing: the first
+    and last frame, then the quarter points, nearest to `tried` first."""
+    if n_frames <= 1:
+        return []
+    cands = [0, n_frames - 1, n_frames // 4, (3 * n_frames) // 4, n_frames // 2]
+    out = list(dict.fromkeys(c for c in cands if c != tried))
+    return sorted(out, key=lambda c: (abs(c - tried), c))
+
+
+def box_owner(
+    instances: list[Any], frame: int, box: tuple[float, float, float, float]
+) -> int | None:
+    """Track id of the object covering most of `box` (x1, y1, x2, y2, frame
+    px) on `frame`; None when none does. Parts lose to wholes only by area."""
+    x1, y1, x2, y2 = (int(round(v)) for v in box)
+    best, best_px = None, 0
+    for inst in instances:
+        m = inst.masks.get(frame)
+        if m is None:
+            continue
+        bm = BoxMask.from_dense(m)
+        y0, x0, yy, xx = bm.box
+        iy0, ix0, iy1, ix1 = max(y0, y1), max(x0, x1), min(yy, y2), min(xx, x2)
+        if iy1 <= iy0 or ix1 <= ix0:
+            continue
+        px = int(np.count_nonzero(bm.crop[iy0 - y0 : iy1 - y0, ix0 - x0 : ix1 - x0]))
+        if px > best_px:
+            best, best_px = int(inst.track_id), px
+    return best
+
+
+__all__ = ["SAM3MattePass", "box_owner", "crypto_hex", "crypto_name", "reseed_frames"]

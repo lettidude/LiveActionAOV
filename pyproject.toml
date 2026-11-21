@@ -202,6 +202,7 @@ temporal_smooth      = "live_action_aov.post.temporal_smooth:TemporalSmoother"
 position_from_depth  = "live_action_aov.post.position_from_depth:PositionFromDepth"
 ssao                 = "live_action_aov.post.ssao:SSAOPost"
 matte_layering       = "live_action_aov.post.matte_layering:MatteLayeringPost"
+holdout              = "live_action_aov.post.holdout:HoldoutPost"
 
 [project.entry-points."live_action_aov.executors"]
 local    = "live_action_aov.executors.local:LocalExecutor"

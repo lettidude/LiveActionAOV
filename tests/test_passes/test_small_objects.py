@@ -318,7 +318,14 @@ def test_proxy_detection_reads_the_original_plate() -> None:
 
 def test_proxy_detection_off_uses_the_proxy_frames() -> None:
     _ProxyFake.seen = []
-    p = _ProxyFake({"concepts": ["person"], "redetect_stride": None, "small_objects": "off"})
+    p = _ProxyFake(
+        {
+            "concepts": ["person"],
+            "redetect_stride": None,
+            "small_objects": "off",
+            "reseed_empty": False,
+        }
+    )
     p.run_shot(_ProxyReader(), (1, 2))
     assert _ProxyFake.seen == [(60, 80)]
 

@@ -49,6 +49,7 @@ from live_action_aov.io.channels import (
     CH_MATTE_G,
     CH_MATTE_R,
 )
+from live_action_aov.passes.matte.rvm import slot_table_fields
 
 # Slot → channel map duplicated from rvm.py rather than shared. The matte
 # package deliberately keeps its channel contract per-file so a hypothetical
@@ -276,6 +277,7 @@ class MatAnyone2RefinerPass(UtilityPass):
                     "score": float(hero.get("score", 0.0)),
                     "refined_frames": refined_frames,
                     "missing_hard_mask": False,
+                    **slot_table_fields(hero),
                 }
             )
 
