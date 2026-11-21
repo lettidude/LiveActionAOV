@@ -55,6 +55,7 @@ _RGBA = ("red", "green", "blue", "alpha")
 _GROUP_OF_LAYER = {
     "Z": "depth",
     "Z_raw": "depth",
+    "moge": "depth",
     "depth": "depth",
     "N": "normals",
     "normals": "normals",
@@ -84,6 +85,7 @@ _PRETTY_LABEL = {
     "foreground": "foreground (no owner)",
     "depth Z": "Z (depth)",
     "other Z_raw": "Z raw",
+    "moge Z": "MoGe-3 Z (per frame)",
     "depth_extra confidence": "depth confidence",
     "N": "N (normals)",
     "P": "P (world position)",
