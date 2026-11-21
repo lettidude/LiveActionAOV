@@ -92,6 +92,7 @@ def shot_to_dict(s: ShotState) -> dict[str, Any]:
         "refine_all_masks": bool(s.refine_all_masks),
         "refiner_outline": bool(s.refiner_outline),
         "small_objects": s.small_objects,
+        "crowd_mode": bool(s.crowd_mode),
         "detector": s.detector,
         "camera_pnp_fallback": bool(s.camera_pnp_fallback),
         "work_range": None if s.work_range is None else [int(v) for v in s.work_range],
@@ -169,6 +170,7 @@ def shot_from_dict(d: dict[str, Any]) -> ShotState:
         refine_all_masks=bool(d.get("refine_all_masks", False)),
         refiner_outline=bool(d.get("refiner_outline", False)),
         small_objects=str(d.get("small_objects", "auto")),
+        crowd_mode=bool(d.get("crowd_mode", False)),
         detector=str(d.get("detector", "sam3")),
         camera_pnp_fallback=bool(d.get("camera_pnp_fallback", True)),
         work_range=(
