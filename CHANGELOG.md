@@ -7,6 +7,19 @@ uses [semantic versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Steady depth in metres, now the default depth.** *Video Depth Anything, metres (steady, softer)*
+  (`video_depth_steady`): the depth holds still from frame to frame like Video Depth Anything's,
+  and is in metres like MoGe-3's, so `P` stays in metres too and matches `Z`. **Use the recommended
+  set** and the CLI's `--depth-backend` now pick it. For the previous depth, pick *MoGe-3* in Depth
+  (sharp, per frame) or pass `--depth-backend depth_anything_v2` (the previous CLI default); saved
+  sessions keep the depth they were set to. Normals (MoGe-3) and the camera track are unchanged.
+  It is softer than MoGe-3: thin and distant detail is lost, so mattes stay the holdout.
+  MoGe-3's own per-frame depth comes along as a separate `moge` layer (`keep_moge_z`).
+  When a shot gives no trustworthy metres (dense smoke or fog, say), the pass delivers relative
+  depth instead, in the right near-to-far order, and says so in the run report; it also warns when
+  MoGe-3's own scale wanders through the shot. It maps to metres with a monotone curve that keeps the
+  far range (`fit: mono`, the default) or a straight line in disparity (`fit: affine`).
+- Video Depth Anything can use its metric Small weights (`metric: true`, Apache-2.0): `Z` in metres.
 - **The camera check, frame by frame.** The camera `.json` now lists every frame of the solve under
   `quality.frames`: the held-out error on that frame (plate pixels, `heldout_median_px`), how many
   points it was measured on (`n_points`) and `ok` (the camera has a pose there and the check could
