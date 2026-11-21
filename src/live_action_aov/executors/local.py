@@ -1218,6 +1218,9 @@ def _base_attrs(
             pass
         base[f"{METADATA_NAMESPACE}/flow/direction"] = "bidirectional"
         base[f"{METADATA_NAMESPACE}/flow/unit"] = "pixels_at_plate_res"
+        # forward/backward .v point UP (Nuke axes); motion/back .y point down.
+        # Absent on older renders, where the aliases still pointed down.
+        base[f"{METADATA_NAMESPACE}/flow/nuke_aliases_v"] = "up"
     # Depth-pass normalization constants (trap 5 — per-clip, not per-frame).
     for art_key, attr_key in (
         ("depth_norm_min", "depth/normalization/min"),

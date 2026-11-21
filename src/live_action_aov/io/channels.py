@@ -48,9 +48,11 @@ POSITION_CHANNELS = (CH_P_X, CH_P_Y, CH_P_Z)
 # --- Flow (pixels at plate resolution) ---
 # The spec (§5.1) locks motion.x/y + back.x/y as the canonical names. Nuke's
 # VectorBlur and the wider VFX ecosystem expect the "forward/backward .u/.v"
-# convention, so we also emit those as aliases of the same data — Nuke then
-# auto-wires its motion nodes without the comp artist picking channels
-# manually. Two naming conventions, identical pixel values per channel.
+# convention, so we also emit those as aliases — Nuke then auto-wires its
+# motion nodes without the comp artist picking channels manually.
+# Axis convention: motion.* / back.* are image space (x right, y DOWN, like
+# numpy rows); forward.* / backward.* follow Nuke (u right, v UP), so
+# forward.u == motion.x and forward.v == -motion.y (same for backward/back).
 CH_MOTION_X = "motion.x"
 CH_MOTION_Y = "motion.y"
 CH_BACK_X = "back.x"

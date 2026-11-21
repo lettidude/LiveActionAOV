@@ -80,11 +80,12 @@ def test_raft_forward_motion_is_nonzero_on_moving_subject() -> None:
         assert channels[ch].shape == (plate_h, plate_w), f"{ch} wrong shape"
         assert channels[ch].dtype == np.float32
 
-    # Aliases must exactly equal their canonical counterparts.
+    # Nuke aliases: u == x, v == -y (Nuke's y axis points up; motion/back are image space).
     assert np.array_equal(channels[CH_FORWARD_U], channels[CH_MOTION_X])
-    assert np.array_equal(channels[CH_FORWARD_V], channels[CH_MOTION_Y])
+    assert np.array_equal(channels[CH_FORWARD_V], -channels[CH_MOTION_Y])
     assert np.array_equal(channels[CH_BACKWARD_U], channels[CH_BACK_X])
-    assert np.array_equal(channels[CH_BACKWARD_V], channels[CH_BACK_Y])
+    assert np.array_equal(channels[CH_BACKWARD_V], -channels[CH_BACK_Y])
+    assert channels[CH_FORWARD_V].dtype == np.float32
 
     # Forward motion on the square: we shifted +8 px in x, so motion.x should
     # be positive on average inside the moving region.
@@ -145,6 +146,11 @@ def test_raft_run_shot_produces_per_frame_channels_and_artifacts() -> None:
             CH_BACKWARD_V,
         ):
             assert ch in per_frame[f]
+        # run_shot path: same Nuke alias convention (regression: v used to be y-down).
+        assert np.array_equal(per_frame[f][CH_FORWARD_U], per_frame[f][CH_MOTION_X])
+        assert np.array_equal(per_frame[f][CH_FORWARD_V], -per_frame[f][CH_MOTION_Y])
+        assert np.array_equal(per_frame[f][CH_BACKWARD_U], per_frame[f][CH_BACK_X])
+        assert np.array_equal(per_frame[f][CH_BACKWARD_V], -per_frame[f][CH_BACK_Y])
 
     # Endpoint frames have zero motion for the missing direction:
     # frame 1 has no backward pair → back.x/y all zero

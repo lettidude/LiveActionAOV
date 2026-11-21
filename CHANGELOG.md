@@ -75,6 +75,10 @@ uses [semantic versioning](https://semver.org/).
   template. The comp script points at the new name.
 
 ### Fixed
+- **Nuke vector names now match VectorBlur's direction.** `forward.u/v` and `backward.u/v` use
+  Nuke's axes (v points up). Older renders had v upside down, so diagonal motion blurred along the
+  mirrored diagonal. If a script of yours negates `forward.v` to compensate, remove that for new
+  renders (new EXRs carry `liveaov/flow/nuke_aliases_v = up`). `motion.x/y` and `back.x/y` are unchanged.
 - **Gaussian splat: one frame could come out washed out** while the others were fine. Fixed; the
   report gains `holdout_psnr_min_db` and `polish_steps`, and the log warns about a weak frame. Areas
   the camera never saw behind the masked objects are still a guess: check `splat.A`.
