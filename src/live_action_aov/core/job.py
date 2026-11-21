@@ -163,6 +163,11 @@ class Shot(BaseModel):
     tracker_proxy: bool = False
     tracker_proxy_scale: float = 0.25
 
+    # Run-report QC: how steady the delivered depth is over time, read back
+    # from the written EXRs (needs the flow pass). Off by default: it reads
+    # every frame again. The EXRs are the same either way.
+    stability_qc: bool = False
+
     status: ShotStatus = "new"
     notes: str = ""
 

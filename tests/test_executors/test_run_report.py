@@ -146,3 +146,51 @@ def test_a_failed_run_still_writes_its_report(test_plate_1080p: Path, tmp_path: 
     by = {p.name: p.status for p in rep.passes}
     assert by == {"rr_depth": "ran", "rr_broken": "failed"}
     assert rep.needs_human[0].kind == "run_failed"
+
+
+class _Flow(_Base):
+    """Still camera: zero motion and back vectors."""
+
+    name = "rr_flow"
+    temporal_mode = TemporalMode.PER_FRAME
+    produces_channels = [ChannelSpec(name=n) for n in ("motion.x", "motion.y", "back.x", "back.y")]
+
+    def postprocess(self, tensor: np.ndarray) -> dict[str, np.ndarray]:
+        h, w = tensor.shape[1:3] if tensor.ndim == 4 else tensor.shape[:2]
+        z = np.zeros((h, w), dtype=np.float32)
+        return dict.fromkeys(("motion.x", "motion.y", "back.x", "back.y"), z)
+
+
+def _sidecar_pixels(out: Path) -> dict[str, np.ndarray]:
+    from live_action_aov.qc.stability import read_frame
+
+    files = sorted((out / "rr" / "v002").rglob("*.exr"))
+    px: dict[str, np.ndarray] = {}
+    for f in files:
+        for k, v in read_frame({"x": f}, ("",)).items():
+            px[f"{f.name}:{k}"] = v
+    return px
+
+
+def test_stability_qc_is_off_by_default_and_changes_no_pixel(
+    test_plate_1080p: Path, tmp_path: Path
+) -> None:
+    get_registry().register_pass(_Flow.name, _Flow)
+    off = _job(test_plate_1080p, tmp_path / "off", ["rr_flow", "rr_depth"])
+    assert off.shot.stability_qc is False
+    live_action_aov.run(off)
+    rep_off = load_report(tmp_path / "off" / "rr" / "v002" / "logs" / "rr_v002.run_report.json")
+    assert "stability" not in rep_off.summaries
+
+    on = _job(test_plate_1080p, tmp_path / "on", ["rr_flow", "rr_depth"])
+    on.shot.stability_qc = True
+    live_action_aov.run(on)
+    rep_on = load_report(tmp_path / "on" / "rr" / "v002" / "logs" / "rr_v002.run_report.json")
+    block = rep_on.summaries["stability"][CH_Z]
+    assert block["pass"] == "rr_depth"
+    assert block["pairs"] == 2 and block["static_dlnz_med"] == 0.0
+    assert block["round_trip_valid"] == 100.0
+
+    a, b = _sidecar_pixels(tmp_path / "off"), _sidecar_pixels(tmp_path / "on")
+    assert a.keys() == b.keys() and a
+    assert all(np.array_equal(a[k], b[k]) for k in a)

@@ -19,6 +19,10 @@ uses [semantic versioning](https://semver.org/).
   depth instead, in the right near-to-far order, and says so in the run report; it also warns when
   MoGe-3's own scale wanders through the shot. It maps to metres with a monotone curve that keeps the
   far range (`fit: mono`, the default) or a straight line in disparity (`fit: affine`).
+- **Stability check in the run report** (`Shot.stability_qc`, CLI `--stability-qc`, off by default):
+  how much the delivered depth moves from frame to frame, on still background and on depth edges,
+  both as a relative change and as a share of the shot's depth range, plus whole-frame pumping.
+  Needs the flow pass and reads the written EXRs again; the EXRs themselves do not change.
 - Video Depth Anything can use its metric Small weights (`metric: true`, Apache-2.0): `Z` in metres.
 - **Anamorphic plates processed de-squeezed** (on by default; Preview tab → *Run the passes
   de-squeezed*, CLI `--desqueeze/--no-desqueeze`, `Shot.desqueeze`). The models see square pixels;
@@ -61,6 +65,19 @@ uses [semantic versioning](https://semver.org/).
   detail.
 
 ### Changed
+- **MoGe-3 depth holds its scale on locked-off shots, no camera needed.** The frame-to-frame scale is now
+  measured on the still background only: outside every SAM mask, and through the motion vectors when
+  the run has them. When the background does not move (a locked-off or nodal shot) the scale is held
+  over a long window (`still_window`); otherwise a short window keeps a real push-in. A long clip run
+  in windows gets the same depth as in one go. People walking close to camera no longer pump the
+  depth. It needs mattes or Motion in the run (the recommended set has both);
+  `scale_ref: frame` gives the previous behaviour. When too little of the background is still, the
+  run report says the scale is not stabilised.
+- **Depth no longer takes its lens from a camera the camera check marked FAILED or NODAL.** MoGe-3 and
+  the steady depth then estimate the field of view themselves, and the run report says why.
+  `camera_fov_from: any` gives the previous behaviour.
+- The stability check in the run report also gives the scale step from frame to frame on the still
+  background (median, 95th percentile and worst frame).
 - **Every camera now gets a GOOD / WEAK / FAILED verdict**, the COLMAP one and the rotation-only one
   included, like the fallback camera already had: it shows in the GUI, in the Nuke camera's label and
   in `liveaov qc`, and a camera that only rotates is flagged NODAL. The Gaussian splat skips a NODAL
