@@ -106,6 +106,24 @@ def resolve_device_name(
     return "cpu"
 
 
+def forced_device(allowed: Any = DEFAULT_DEVICES) -> str | None:
+    """The device `LAOV_DEVICE` asks for, when this run honours it
+    (`cuda`, `cuda:1`, `mps`, `cpu`); None when it is unset, `auto`, or
+    ignored. For code that hands work to another process: that process
+    has to be told, it does not go through `pick_device`."""
+    asked = os.environ.get(ENV_VAR, "").strip().lower()
+    if not asked or asked == "auto":
+        return None
+    devices = getattr(allowed, "devices", allowed)
+    return asked if resolve_device_name(devices) == asked else None
+
+
+def cuda_index(name: str | None) -> int | None:
+    """`cuda:1` -> 1; `cuda`, another device or None -> None."""
+    kind, _, idx = (name or "").partition(":")
+    return int(idx) if kind == "cuda" and idx.isdigit() else None
+
+
 def pick_device(allowed: Any = DEFAULT_DEVICES) -> torch.device:
     """The torch device for a pass. `allowed` is the pass's
     `device_support` (or a plain list of device names)."""

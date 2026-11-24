@@ -362,7 +362,9 @@ hardware.
 - `LAOV_DEVICE` forces a device for every pass: `cpu`, `mps`,
   `cuda`, `cuda:1`, or `auto` (the default order). A device the
   machine or the pass does not have falls back to the default order
-  with a warning.
+  with a warning. The SAM 3.1 detector follows it too: `cuda:1`
+  runs it on that card, and on `cpu` or `mps` the matte pass uses
+  SAM 3 instead (SAM 3.1 needs an NVIDIA card).
 
 ### AMD GPUs (ROCm)
 

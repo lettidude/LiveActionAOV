@@ -202,3 +202,131 @@ def test_auto_detector_falls_back_to_sam3_when_sam31_fails(
     strict = _FakeSAM3({**kw, "detector": "sam3.1"})
     with pytest.raises(RuntimeError, match="out of memory"):
         strict.run_shot(_Reader(frames), frame_range=(1, n))
+
+
+# --- LAOV_DEVICE reaches the worker --------------------------------------------
+
+
+def _devices(monkeypatch: pytest.MonkeyPatch, *, cuda: bool, mps: bool = False) -> None:
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+
+
+def test_worker_device_arguments_and_environment() -> None:
+    assert sam31_bridge.worker_device("") == ([], {})  # nothing asked: nothing changes
+    assert sam31_bridge.worker_device("cuda") == (["--device", "cuda"], {})
+    assert sam31_bridge.worker_device("cuda:1") == (
+        ["--device", "cuda"],
+        {"CUDA_VISIBLE_DEVICES": "1"},
+    )
+    # A card number counts inside a list the user already set.
+    assert sam31_bridge.worker_device("cuda:1", {"CUDA_VISIBLE_DEVICES": "2, 3"})[1] == {
+        "CUDA_VISIBLE_DEVICES": "3"
+    }
+    for other in ("cpu", "mps"):
+        with pytest.raises(RuntimeError, match="NVIDIA card only"):
+            sam31_bridge.worker_device(other)
+
+
+def test_run_sam31_tells_the_worker_its_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict] = []
+
+    def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        a = dict(zip(cmd[3::2], cmd[4::2], strict=False))
+        seen.append({"cmd": list(cmd), "env": dict(kw["env"])})
+        out = Path(a["--out"])
+        out.mkdir()
+        (out / "result.json").write_text(json.dumps({"objects": []}))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(sam31_bridge.subprocess, "run", fake_run)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    frames = np.zeros((2, 8, 8, 3), np.float32)
+
+    sam31_bridge.run_sam31(frames, ["person"], 0, "py312")  # as before: no device word
+    assert "--device" not in seen[-1]["cmd"]
+    assert "CUDA_VISIBLE_DEVICES" not in seen[-1]["env"]
+
+    sam31_bridge.run_sam31(frames, ["person"], 0, "py312", device="cuda:1")
+    assert seen[-1]["cmd"][-2:] == ["--device", "cuda"]
+    assert seen[-1]["env"]["CUDA_VISIBLE_DEVICES"] == "1"
+
+    with pytest.raises(RuntimeError, match="NVIDIA card only"):
+        sam31_bridge.run_sam31(frames, ["person"], 0, "py312", device="cpu")
+    assert len(seen) == 2  # refused before the worker was started
+
+
+def test_worker_refuses_a_device_it_cannot_use() -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("laov_sam31_worker", sam31_bridge.WORKER)
+    assert spec is not None and spec.loader is not None
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+    base = ["--frames", "nowhere", "--out", "nowhere", "--concepts", "[]", "--seed", "0"]
+    # Before torch or Meta's package is touched: it never runs somewhere else.
+    assert worker.main([*base, "--device", "cpu"]) == 3
+    assert worker.main([*base, "--device", "mps"]) == 3
+
+
+def test_auto_detector_follows_laov_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    from live_action_aov.core import device
+    from live_action_aov.passes.matte import sam3
+
+    asked: list[int] = []
+
+    def vram(index: int = 0) -> float:
+        asked.append(index)
+        return 31.8
+
+    monkeypatch.setattr(sam31_bridge, "available", lambda params=None: (True, "py312"))
+    monkeypatch.setattr(sam3, "_total_vram_gb", vram)
+    _devices(monkeypatch, cuda=True, mps=True)
+    p = SAM3MattePass({})
+
+    monkeypatch.delenv(device.ENV_VAR, raising=False)  # unset: exactly as before
+    assert p._resolve_detector() == ("sam3.1", "installed")
+    assert asked == [0]
+
+    for other in ("cpu", "mps"):
+        monkeypatch.setenv(device.ENV_VAR, other)
+        det, why = p._resolve_detector()
+        assert det == "sam3" and other in why and device.ENV_VAR in why
+
+    monkeypatch.setenv(device.ENV_VAR, "cuda:1")  # the memory check reads that card
+    assert p._resolve_detector() == ("sam3.1", "installed")
+    assert asked[-1] == 1
+
+    _devices(monkeypatch, cuda=False)  # an override the machine cannot honour is ignored
+    assert p._resolve_detector() == ("sam3.1", "installed")
+    assert asked[-1] == 0
+
+
+def test_matte_pass_hands_its_device_to_sam31(monkeypatch: pytest.MonkeyPatch) -> None:
+    from live_action_aov.core import device
+
+    n, h, w = 5, 48, 64
+    got: list[str] = []
+
+    def fake(frames, concepts, seed, python, **kw):  # type: ignore[no-untyped-def]
+        got.append(kw.get("device", "missing"))
+        return [sam31_bridge.Sam31Object("person", 0, _stack(n, h, w, 8, 44, 4, 24))]
+
+    monkeypatch.setattr(sam31_bridge, "run_sam31", fake)
+    monkeypatch.setattr(sam31_bridge, "find_python", lambda p: "py312")
+    _devices(monkeypatch, cuda=True)
+    frames = [np.full((h, w, 3), 0.5, np.float32) for _ in range(n)]
+    kw = {
+        "detector": "sam3.1",
+        "concepts": ["person"],
+        "layer_order": "area",
+        "small_objects": "off",
+    }
+
+    monkeypatch.delenv(device.ENV_VAR, raising=False)
+    _NoSAM3(kw).run_shot(_Reader(frames), frame_range=(1, n))
+    monkeypatch.setenv(device.ENV_VAR, "cuda:1")
+    _NoSAM3(kw).run_shot(_Reader(frames), frame_range=(1, n))
+    assert got == ["", "cuda:1"]

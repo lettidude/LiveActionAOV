@@ -22,8 +22,12 @@ Two Windows shims, applied here instead of patching Meta's repo:
 - `start_session` passes `offload_state_to_cpu`, which the multiplex model's
   `init_state` does not accept (upstream f1647e8): unknown keywords dropped.
 
+`--device` holds the worker to the device the run was asked to use. SAM 3.1
+has an NVIDIA-only model, so anything but `cuda` is refused (exit 3), and
+`cuda` without a visible card is refused too, instead of running elsewhere.
+
 Usage: python sam31_worker.py --frames DIR --out DIR --concepts '["person"]'
-       --seed N [--checkpoint FILE] [--repo facebook/sam3.1]
+       --seed N [--checkpoint FILE] [--repo facebook/sam3.1] [--device cuda]
 """
 
 from __future__ import annotations
@@ -70,10 +74,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, required=True, help="seed frame index (0-based)")
     ap.add_argument("--checkpoint", default="")
     ap.add_argument("--repo", default="facebook/sam3.1")
+    ap.add_argument("--device", default="", help="'' = the default; cuda = an NVIDIA card or stop")
     a = ap.parse_args(argv)
+    if a.device and a.device != "cuda":
+        print(f"SAM 3.1 runs on an NVIDIA card only (asked for {a.device})", file=sys.stderr)
+        return 3
 
     import numpy as np
     import torch
+
+    if a.device == "cuda" and not torch.cuda.is_available():
+        print("SAM 3.1 was asked to run on an NVIDIA card and sees none", file=sys.stderr)
+        return 3
     from sam3.model_builder import build_sam3_multiplex_video_predictor
 
     _shims()

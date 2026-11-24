@@ -17,6 +17,10 @@ its own environment: this module writes the frames as JPEGs, runs
 The interpreter: the `sam31_python` param, else the `LAOV_SAM31_PYTHON`
 environment variable, else the folder `liveaov setup-sam31` installs into
 (`default_dir()`). Setup: docs/install.md, "SAM 3.1".
+
+The device: SAM 3.1 runs on an NVIDIA card only. When `LAOV_DEVICE` names a
+device, the worker is told (`worker_device`): `cuda:1` runs it on that card,
+`cpu` / `mps` are refused before anything is started.
 """
 
 from __future__ import annotations
@@ -84,6 +88,32 @@ def available(params: dict[str, Any] | None = None) -> tuple[bool, str]:
         return False, str(e)
 
 
+def worker_device(
+    device: str, env: dict[str, str] | None = None
+) -> tuple[list[str], dict[str, str]]:
+    """Worker arguments and environment changes that hold SAM 3.1 to
+    `device` (`cuda`, `cuda:1`, ...). "" = nothing: the worker's default.
+
+    SAM 3.1 puts its model on the first card it can see, so a card number
+    becomes `CUDA_VISIBLE_DEVICES` for the worker (counted inside a list
+    the user already set). Another kind of device raises: SAM 3.1 has no
+    CPU or Apple GPU path."""
+    if not device:
+        return [], {}
+    kind, _, idx = device.partition(":")
+    if kind != "cuda":
+        raise RuntimeError(
+            f"SAM 3.1 runs on an NVIDIA card only, and this run is on {device} "
+            "(LAOV_DEVICE). Use the SAM 3 detector, or unset LAOV_DEVICE."
+        )
+    if not idx:
+        return ["--device", "cuda"], {}
+    listed = (env or {}).get("CUDA_VISIBLE_DEVICES", "")
+    visible = [v.strip() for v in listed.split(",") if v.strip()]
+    card = visible[int(idx)] if idx.isdigit() and int(idx) < len(visible) else idx
+    return ["--device", "cuda"], {"CUDA_VISIBLE_DEVICES": card}
+
+
 def run_sam31(
     frames: np.ndarray,
     concepts: list[str],
@@ -91,11 +121,17 @@ def run_sam31(
     python: str,
     timeout_s: float = 3600.0,
     checkpoint: str = "",
+    device: str = "",
 ) -> list[Sam31Object]:
     """Track `concepts` through `frames` ((T, H, W, 3) display-referred
-    0..1) with SAM 3.1. Masks come back at the frames' resolution."""
+    0..1) with SAM 3.1. Masks come back at the frames' resolution.
+    `device`: the device the run was asked to use ("" = the default)."""
     from PIL import Image
 
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
+    env["PYTHONUTF8"] = "1"
+    device_args, device_env = worker_device(device, env)  # refuses before any work
+    env.update(device_env)
     work = make_work_dir("laov_sam31_")
     try:
         fdir, odir = work / "frames", work / "out"
@@ -119,10 +155,13 @@ def run_sam31(
         ]
         if checkpoint:
             cmd += ["--checkpoint", checkpoint]
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "VIRTUAL_ENV"))}
-        env["PYTHONUTF8"] = "1"
+        cmd += device_args
         _log.info(
-            "SAM 3.1: %d frames, concepts %s, seed frame %d", len(frames), concepts, seed_local
+            "SAM 3.1: %d frames, concepts %s, seed frame %d%s",
+            len(frames),
+            concepts,
+            seed_local,
+            f", device {device}" if device else "",
         )
         try:
             proc = subprocess.run(
@@ -158,4 +197,11 @@ def keep_object(stack: np.ndarray, min_peak_coverage: float, min_frames: int) ->
     return bool(cov.max() >= min_peak_coverage and (cov > 0).sum() >= min_frames)
 
 
-__all__ = ["Sam31Object", "find_python", "keep_object", "read_results", "run_sam31"]
+__all__ = [
+    "Sam31Object",
+    "find_python",
+    "keep_object",
+    "read_results",
+    "run_sam31",
+    "worker_device",
+]

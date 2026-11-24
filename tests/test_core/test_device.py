@@ -273,3 +273,29 @@ def test_video_depth_anything_follows_the_device() -> None:
         p._device = torch.device(dev)
         p._infer_clip(np.zeros((1, 2, 2, 3), np.uint8))
         assert (seen["device"], seen["fp32"]) == (dev, fp32)
+
+
+def test_forced_device_is_only_an_override_the_run_honours(monkeypatch: pytest.MonkeyPatch) -> None:
+    gpu = ("cuda", "mps", "cpu")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    monkeypatch.delenv(device.ENV_VAR, raising=False)
+    assert device.forced_device(gpu) is None  # unset
+    monkeypatch.setenv(device.ENV_VAR, "auto")
+    assert device.forced_device(gpu) is None
+    monkeypatch.setenv(device.ENV_VAR, " CUDA:1 ")
+    assert device.forced_device(gpu) == "cuda:1"
+    assert device.forced_device(DeviceSupport(devices=gpu)) == "cuda:1"
+    monkeypatch.setenv(device.ENV_VAR, "cpu")
+    assert device.forced_device(gpu) == "cpu"
+    monkeypatch.setenv(device.ENV_VAR, "mps")  # not on this machine: ignored
+    assert device.forced_device(gpu) is None
+    monkeypatch.setenv(device.ENV_VAR, "cuda")
+    assert device.forced_device(("cpu",)) is None  # the pass has no GPU model
+
+
+def test_cuda_index() -> None:
+    assert device.cuda_index("cuda:1") == 1
+    assert device.cuda_index("cuda") is None
+    assert device.cuda_index("cpu") is None
+    assert device.cuda_index(None) is None
