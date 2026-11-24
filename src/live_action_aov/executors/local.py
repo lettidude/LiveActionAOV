@@ -255,7 +255,14 @@ class LocalExecutor(Executor):
                 ),
             )
             report(0.05, "Analysing plate exposure…")
-            wrapped.analyze(shot.frame_range)
+            analysis = wrapped.analyze(shot.frame_range)
+            # The EV the passes will see, and where it came from: the same
+            # value goes into the header as `input/exposure_offset`.
+            _log.info(
+                "Plate exposure: %+.2f EV (%s)",
+                float(shot.transform.computed_exposure_ev or 0.0),
+                analysis.get("source", "?"),
+            )
             reader = wrapped
         else:
             reader = raw_reader
