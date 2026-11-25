@@ -745,3 +745,155 @@ def test_fov_from_a_partial_colmap_solve():
 
     assert mod._fov_x_deg(solve_with(960.0)) == pytest.approx(90.0)
     assert mod._fov_x_deg(solve_with(0.0)) is None
+
+
+# ---------------------------------------------------------------------------
+# pycolmap kept out of this process (`colmap_isolate`, the default on a Mac)
+# ---------------------------------------------------------------------------
+
+
+def test_colmap_isolate_is_on_by_default_on_a_mac_only(monkeypatch: pytest.MonkeyPatch):
+    for platform, want in (("darwin", True), ("win32", False), ("linux", False)):
+        monkeypatch.setattr(mod.sys, "platform", platform)
+        assert mod.pycolmap_isolated(dict(PyColmapCameraPass.DEFAULT_PARAMS)) is want
+        assert mod.pycolmap_isolated({}) is want
+        assert mod.pycolmap_isolated({"colmap_isolate": True}) is True
+        assert mod.pycolmap_isolated({"colmap_isolate": "on"}) is True
+        assert mod.pycolmap_isolated({"colmap_isolate": False}) is False
+        assert mod.pycolmap_isolated({"colmap_isolate": "false"}) is False
+
+
+def test_a_reconstruction_as_plain_data_builds_the_same_camera(tmp_path: Path):
+    """What the COLMAP child hands back gives the same camera, number for
+    number, as the pycolmap objects it was saved from."""
+    from live_action_aov.passes.camera import colmap_plain
+
+    rec = _Rec([n for _, n in _FRAMES])
+    rec.images[4].has_pose = lambda: False  # type: ignore[method-assign]  # one frame without a pose
+    # pycolmap's matrices are column-major: the layout has to make the trip
+    # too, or numpy rounds the camera positions differently in the last digit.
+    rot = rec.images[2]._pose.rotation
+    rot._R = np.asfortranarray(rot._R)
+    colmap_plain.write_snapshot(rec, tmp_path / "model.npz")
+    plain = colmap_plain.read_snapshot(tmp_path / "model.npz")
+    assert plain.num_reg_images() == 3 and not plain.images[4].has_pose
+    assert plain.images[2].cam_from_world.rotation.matrix().flags.f_contiguous
+    assert plain.images[1].cam_from_world.rotation.matrix().flags.c_contiguous
+    kw: dict[str, Any] = {
+        "frame_list": _FRAMES,
+        "plate_wh": (2048, 1080),
+        "params": dict(PyColmapCameraPass.DEFAULT_PARAMS),
+        "verdict": _verdict(),
+    }
+    a = build_solve_from_reconstruction(rec, **kw)
+    b = build_solve_from_reconstruction(plain, **kw)
+    assert a.model_dump_json() == b.model_dump_json()
+    assert b.unregistered_frames == [1004] and len(b.points) == 40
+
+
+def _no_pycolmap_here(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loading pycolmap in this process is an error (on a Mac it is a crash)."""
+    real_import = mod.importlib.import_module
+    real_find = mod.importlib.util.find_spec
+
+    def guarded(name: str, *a: Any, **kw: Any) -> Any:
+        assert name != "pycolmap", "pycolmap loaded in the pass's own process"
+        return real_import(name, *a, **kw)
+
+    def installed(name: str, *a: Any, **kw: Any) -> Any:
+        return object() if name == "pycolmap" else real_find(name, *a, **kw)
+
+    monkeypatch.setattr(mod.importlib, "import_module", guarded)
+    monkeypatch.setattr(mod.importlib.util, "find_spec", installed)
+
+
+def test_the_isolated_camera_gets_its_solve_from_the_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from live_action_aov.passes.camera import colmap_plain
+
+    _no_pycolmap_here(monkeypatch)
+    seen: dict[str, Any] = {}
+
+    def fake_child(workdir, image_dir, mask_dir, names, params, timeout_s=0.0, snapshot=None):
+        seen["snapshot"] = snapshot
+        model_dir = workdir / "sparse" / "0"
+        model_dir.mkdir(parents=True)
+        colmap_plain.write_snapshot(_Rec(names[:3], cam_w=192, cam_h=108), snapshot)
+        return model_dir
+
+    monkeypatch.setattr(mod, "run_colmap_subprocess", fake_child)
+    # `colmap_subprocess: False` does not bring COLMAP back into this process.
+    p = PyColmapCameraPass({"colmap_isolate": True, "colmap_subprocess": False})
+    assert p.run_shot(_Reader(4, static=True), (1001, 1004)) == {}
+    assert seen["snapshot"] is not None and seen["snapshot"].is_file()
+    assert p._solve is not None and p._sparse_dir is not None
+    q = p._solve.quality
+    assert q.registered_frame_count == 3 and q.total_frame_count == 4
+    assert q.verdict in {"GOOD", "WEAK", "FAILED"}
+    p.unload()
+
+
+def test_the_isolated_camera_reads_the_matches_through_the_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    import json
+    import types
+
+    from live_action_aov.passes.camera import colmap_plain
+
+    _no_pycolmap_here(monkeypatch)
+    rng = np.random.default_rng(1)
+    pairs = [
+        (0, 1, rng.random((40, 2)), rng.random((40, 2))),
+        (1, 3, rng.random((31, 2)), rng.random((31, 2))),
+    ]
+    colmap_plain.save_pairs(tmp_path / "none.npz", [])
+    assert colmap_plain.load_pairs(tmp_path / "none.npz") == []
+    db = tmp_path / "database.db"
+    db.write_bytes(b"")
+    answer: dict[str, Any] = {"code": 0}
+
+    def fake_run(cmd, **kw):
+        assert cmd[1:3] == ["-m", "live_action_aov.passes.camera.colmap_worker"]
+        job = json.loads(Path(cmd[3]).read_text(encoding="utf-8"))
+        assert job["mode"] == "pairs" and job["frame_list"] == [[f, n] for f, n in _FRAMES]
+        if answer["code"] == 0:
+            out = {"error": answer["error"]} if "error" in answer else {"pairs": job["pairs"]}
+            colmap_plain.save_pairs(Path(job["pairs"]), pairs)
+            Path(job["result"]).write_text(json.dumps(out), encoding="utf-8")
+        return types.SimpleNamespace(returncode=answer["code"], stdout="a\nb\nlast line\n")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    back = mod.read_verified_pairs_subprocess(db, _FRAMES)
+    assert [(i, j) for i, j, _a, _b in back] == [(0, 1), (1, 3)]
+    for (_i, _j, xi, xj), (_k, _l, yi, yj) in zip(pairs, back, strict=True):
+        assert np.array_equal(xi, yi) and np.array_equal(xj, yj)
+    # A child that says why, or dies: an ordinary error, and the rotation-only
+    # fallback declines instead of failing the camera.
+    answer["error"] = "database is not readable"
+    with pytest.raises(RuntimeError, match="not readable"):
+        mod.read_verified_pairs_subprocess(db, _FRAMES)
+    answer["code"] = 0xC0000005
+    with pytest.raises(RuntimeError, match=r"could not be read.*last line"):
+        mod.read_verified_pairs_subprocess(db, _FRAMES)
+    p = PyColmapCameraPass({"colmap_isolate": True})
+    with caplog.at_level(logging.INFO, logger=mod._log.name):
+        assert p._solve_nodal(db, _FRAMES, (8, 8), (8, 8), tmp_path, None) is None
+    assert "cannot read COLMAP's matches" in caplog.text
+
+
+def test_the_colmap_child_loads_neither_torch_nor_pycolmap_up_front():
+    """The child exists to keep pycolmap away from PyTorch: importing the
+    camera modules must bring in neither."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "import live_action_aov.passes.camera.colmap_worker\n"
+        "import live_action_aov.passes.camera.colmap_plain\n"
+        "import live_action_aov.passes.camera.pycolmap_track\n"
+        "sys.exit(1 if 'torch' in sys.modules or 'pycolmap' in sys.modules else 0)\n"
+    )
+    assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0

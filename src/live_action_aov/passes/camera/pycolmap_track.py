@@ -39,6 +39,8 @@ Honest limits:
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
+import importlib.util
 import json
 import logging
 import math
@@ -192,6 +194,11 @@ class PyColmapCameraPass(UtilityPass):
         # run, and the fallbacks still get their turn. 0 = no time limit.
         "colmap_subprocess": True,
         "colmap_timeout_s": 0,
+        # This process never loads pycolmap: everything that needs it runs
+        # in the COLMAP child, which hands the result back as plain data
+        # (passes/camera/colmap_plain.py). "auto" = on a Mac only, where
+        # pycolmap and PyTorch cannot share a process; True / False force it.
+        "colmap_isolate": "auto",
         "keep_workdir": False,
     }
 
@@ -242,7 +249,11 @@ class PyColmapCameraPass(UtilityPass):
         self, reader: Any, frame_range: tuple[int, int]
     ) -> dict[int, dict[str, np.ndarray]]:
         try:
-            import pycolmap  # noqa: F401
+            if pycolmap_isolated(self.params):
+                if importlib.util.find_spec("pycolmap") is None:
+                    raise ImportError("pycolmap")
+            else:
+                import pycolmap  # noqa: F401
         except ImportError as e:  # pragma: no cover — optional extra
             raise ImportError(
                 "pycolmap is required for the camera track. Install with: "
@@ -551,11 +562,15 @@ class PyColmapCameraPass(UtilityPass):
         frame_list: list[tuple[int, str]],
     ) -> Any:
         """COLMAP reconstruction (pycolmap `Reconstruction`); sets
-        `_sparse_dir`. In a child process unless `colmap_subprocess` is off."""
+        `_sparse_dir`. In a child process unless `colmap_subprocess` is off.
+        With `colmap_isolate` it is always the child, and what comes back
+        is the reconstruction as plain data (`colmap_plain`)."""
         names = [n for _, n in frame_list]
-        if not self.params.get("colmap_subprocess", True):
+        isolated = pycolmap_isolated(self.params)
+        if not isolated and not self.params.get("colmap_subprocess", True):
             rec, self._sparse_dir = run_colmap(workdir, image_dir, mask_dir, names, self.params)
             return rec
+        snapshot = workdir / "colmap_model.npz" if isolated else None
         model_dir = run_colmap_subprocess(
             workdir,
             image_dir,
@@ -563,7 +578,13 @@ class PyColmapCameraPass(UtilityPass):
             names,
             self.params,
             timeout_s=float(self.params.get("colmap_timeout_s", 0) or 0),
+            snapshot=snapshot,
         )
+        if snapshot is not None:
+            from live_action_aov.passes.camera.colmap_plain import read_snapshot
+
+            self._sparse_dir = model_dir
+            return read_snapshot(snapshot)
         pycolmap: Any = importlib.import_module("pycolmap")
         self._sparse_dir = model_dir
         return pycolmap.Reconstruction(str(model_dir))
@@ -585,8 +606,13 @@ class PyColmapCameraPass(UtilityPass):
 
         if not db_path.is_file():  # COLMAP crashed before writing its database
             return None
+        read = (
+            read_verified_pairs_subprocess
+            if pycolmap_isolated(self.params)
+            else read_verified_pairs
+        )
         try:
-            pairs = read_verified_pairs(db_path, frame_list)
+            pairs = read(db_path, frame_list)
         except RuntimeError as e:  # a database left half-written by a crash
             _log.info("Camera solve: nodal fallback cannot read COLMAP's matches (%s).", e)
             return None
@@ -1188,27 +1214,27 @@ def run_colmap_subprocess(
     image_names: list[str],
     params: dict[str, Any],
     timeout_s: float = 0.0,
+    snapshot: Path | None = None,
 ) -> Path:
     """`run_colmap` in a child Python (`colmap_worker`): a native crash
     (pycolmap can segfault in SIFT extraction on long shots) becomes a
     RuntimeError here instead of killing the whole run. Returns the model
-    folder."""
+    folder. With `snapshot` the child also saves the reconstruction there
+    as plain data (`colmap_plain.read_snapshot`)."""
     job = workdir / "colmap_job.json"
     result = workdir / "colmap_result.json"
     result.unlink(missing_ok=True)
-    job.write_text(
-        json.dumps(
-            {
-                "workdir": str(workdir),
-                "image_dir": str(image_dir),
-                "mask_dir": str(mask_dir) if mask_dir is not None else None,
-                "image_names": list(image_names),
-                "params": {k: params[k] for k in _COLMAP_PARAMS if k in params},
-                "result": str(result),
-            }
-        ),
-        encoding="utf-8",
-    )
+    spec: dict[str, Any] = {
+        "workdir": str(workdir),
+        "image_dir": str(image_dir),
+        "mask_dir": str(mask_dir) if mask_dir is not None else None,
+        "image_names": list(image_names),
+        "params": {k: params[k] for k in _COLMAP_PARAMS if k in params},
+        "result": str(result),
+    }
+    if snapshot is not None:
+        spec["snapshot"] = str(snapshot)
+    job.write_text(json.dumps(spec), encoding="utf-8")
     cmd = [sys.executable, "-m", "live_action_aov.passes.camera.colmap_worker", str(job)]
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     proc = subprocess.Popen(
@@ -1255,6 +1281,65 @@ def run_colmap_subprocess(
     if "error" in out:
         raise RuntimeError(out["error"])
     return Path(out["model_dir"])
+
+
+def pycolmap_isolated(params: dict[str, Any]) -> bool:
+    """True when this process must not load pycolmap (`colmap_isolate`):
+    by default on a Mac only."""
+    v = params.get("colmap_isolate", "auto")
+    if isinstance(v, str):
+        low = v.strip().lower()
+        if low in ("", "auto"):
+            return sys.platform == "darwin"
+        return low in ("1", "true", "yes", "on")
+    return bool(v)
+
+
+def read_verified_pairs_subprocess(
+    db_path: Path, frame_list: list[tuple[int, str]], min_inliers: int = 30
+) -> list[tuple[int, int, np.ndarray, np.ndarray]]:
+    """`read_verified_pairs` in a child Python (`colmap_worker`), for a
+    process that must not load pycolmap. Same result; any failure of the
+    child is a RuntimeError."""
+    from live_action_aov.passes.camera.colmap_plain import load_pairs
+
+    work = db_path.parent
+    job, result, out = (
+        work / "colmap_pairs_job.json",
+        work / "colmap_pairs_result.json",
+        work / "colmap_pairs.npz",
+    )
+    result.unlink(missing_ok=True)
+    job.write_text(
+        json.dumps(
+            {
+                "mode": "pairs",
+                "db": str(db_path),
+                "frame_list": [[int(f), str(name)] for f, name in frame_list],
+                "min_inliers": int(min_inliers),
+                "pairs": str(out),
+                "result": str(result),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cmd = [sys.executable, "-m", "live_action_aov.passes.camera.colmap_worker", str(job)]
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        creationflags=flags,
+    )
+    if proc.returncode != 0 or not result.is_file():
+        tail = " | ".join((proc.stdout or "").strip().splitlines()[-2:])
+        raise RuntimeError(f"COLMAP's matches could not be read (exit {proc.returncode}). {tail}")
+    res = json.loads(result.read_text(encoding="utf-8"))
+    if "error" in res:
+        raise RuntimeError(res["error"])
+    return load_pairs(out)
 
 
 #: SIFT extraction RAM per thread, GB per megapixel of the solve image
@@ -1752,6 +1837,9 @@ def build_solve_from_pnp(
 
 def _image_reprojection_errors(reconstruction: Any, im: Any) -> np.ndarray:
     """Pixel residuals (solve res) of every triangulated observation in `im`."""
+    saved = getattr(im, "reprojection_errors", None)
+    if saved is not None:  # computed next to COLMAP (`colmap_plain`)
+        return np.asarray(saved, dtype=np.float64)
     errs: list[float] = []
     for p2d in im.points2D:
         has = p2d.has_point3D
@@ -1894,11 +1982,13 @@ def world_point_to_gl(xyz: tuple[float, float, float]) -> tuple[float, float, fl
 
 
 def _pycolmap_version() -> str:
+    """pycolmap's version, without loading it just to ask."""
+    loaded: Any = sys.modules.get("pycolmap")
+    if loaded is not None:
+        return str(getattr(loaded, "__version__", "unknown"))
     try:
-        pycolmap: Any = importlib.import_module("pycolmap")  # no usable type stubs
-
-        return str(getattr(pycolmap, "__version__", "unknown"))
-    except ImportError:  # pragma: no cover
+        return importlib.metadata.version("pycolmap")
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover
         return "unknown"
 
 
