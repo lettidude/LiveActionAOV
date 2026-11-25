@@ -290,10 +290,14 @@ def test_auto_detector_follows_laov_device(monkeypatch: pytest.MonkeyPatch) -> N
     assert p._resolve_detector() == ("sam3.1", "installed")
     assert asked == [0]
 
-    for other in ("cpu", "mps"):
-        monkeypatch.setenv(device.ENV_VAR, other)
-        det, why = p._resolve_detector()
-        assert det == "sam3" and other in why and device.ENV_VAR in why
+    monkeypatch.setenv(device.ENV_VAR, "cpu")
+    det, why = p._resolve_detector()
+    assert det == "sam3" and "cpu" in why and device.ENV_VAR in why
+
+    # SAM 3 is kept off the Apple GPU, so asking for it does not move the
+    # matte pass: it stays where it would be without the override.
+    monkeypatch.setenv(device.ENV_VAR, "mps")
+    assert p._resolve_detector() == ("sam3.1", "installed")
 
     monkeypatch.setenv(device.ENV_VAR, "cuda:1")  # the memory check reads that card
     assert p._resolve_detector() == ("sam3.1", "installed")

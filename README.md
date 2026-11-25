@@ -202,7 +202,7 @@ An early demo video (June 2026, the interface has changed since) is on [YouTube]
 |---|---|---|
 | Windows 11 | NVIDIA RTX 20 / 30 / 40 / 50 series | **Main platform.** Developed on an RTX 5090, used in production on 3090s and a 4060 (proxy mode). |
 | Linux (Ubuntu 22.04+) | NVIDIA RTX 20 / 30 / 40 / 50 series | Expected to work via `install.sh` (same CUDA and `uv` path), not regularly tested. Bug reports welcome. |
-| macOS (Apple Silicon) | M1 to M4 (MPS) | **Experimental, not yet tested on a real Mac.** Expected to run on the Apple GPU, in fp32 and slower than an NVIDIA card: depth (Depth Anything v2, Video Depth Anything), mattes, motion; the camera solve and Cryptomatte on the CPU. Not on Mac yet: MoGe-3 (the default normals) and the default steady depth in metres, which takes its metres from MoGe-3; the Gaussian splat background, DepthCrafter, NormalCrafter, Marigold. `liveaov doctor --mac` lists every pass, and the app stops before a run that has a pass the Mac cannot do. |
+| macOS (Apple Silicon) | M1 to M4 (MPS) | **Experimental, not yet tested on a real Mac.** Expected to run on the Apple GPU, in fp32 and slower than an NVIDIA card: depth (Depth Anything v2, Video Depth Anything), the matte refiners, motion; the camera solve, Cryptomatte and, for now, SAM 3 (which finds the objects for the mattes) on the CPU. Not on Mac yet: MoGe-3 (the default normals) and the default steady depth in metres, which takes its metres from MoGe-3; the Gaussian splat background, DepthCrafter, NormalCrafter, Marigold. `liveaov doctor --mac` lists every pass, and the app stops before a run that has a pass the Mac cannot do. |
 | Any | AMD (ROCm) | Untested. |
 | Any | CPU only | Not supported. |
 

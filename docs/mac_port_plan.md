@@ -12,8 +12,9 @@ Every pass is marked `mac_verified=False` until it has been.
 - **A per-pass declaration** (`DeviceSupport` on `UtilityPass`,
   `core/pass_base.py`): which devices the pass can be placed on, and what
   is expected on a Mac: `mps` (Apple GPU), `mps_fp32` (Apple GPU, fp32
-  only), `cpu` (no GPU model), `unavailable`, `unknown`. A pass that does
-  not list `mps` never lands on the Apple GPU.
+  only), `cpu` (no GPU model), `cpu_only` (a GPU model kept on the CPU on
+  a Mac), `unavailable`, `unknown`. A pass that does not list `mps` never
+  lands on the Apple GPU.
 - **Reporting**: `liveaov doctor --mac` prints the table (by itself on a
   Mac). The GUI shows an "experimental" banner on a Mac; Submit stops on a
   pass that cannot run there and asks before running unverified ones.
@@ -28,7 +29,8 @@ What a Mac user should get first, all on the Apple GPU in fp32 unless noted:
 | Depth | Depth Anything v2, Video Depth Anything | Apple GPU |
 | Depth (NC) | Depth Pro | Apple GPU |
 | Normals (NC) | DSINE | Apple GPU |
-| Mattes | SAM 3 + ViTMatte / RVM / BiRefNet / MatAnyone2 | Apple GPU |
+| Mattes | SAM 3 (finds and tracks the objects) | CPU for now (the Apple GPU is off for it) |
+| Mattes | ViTMatte / RVM / BiRefNet / MatAnyone2 (edges) | Apple GPU |
 | Mattes | chroma key, screen pull | CPU |
 | Cryptomatte | from the SAM 3 tracks | CPU |
 | Motion | RAFT, MegaFlow | Apple GPU |

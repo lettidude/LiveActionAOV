@@ -345,10 +345,13 @@ hardware.
   (half precision stays NVIDIA-only), so expect them to be slower
   than on an RTX card.
 - Expected to run on the Apple GPU: depth (Depth Anything v2, Video
-  Depth Anything, Depth Pro), normals (DSINE), mattes (SAM 3 and the
-  refiners), motion (RAFT, MegaFlow). The camera solve (COLMAP),
-  Cryptomatte, the chroma key and the screen pull have no GPU model
-  and run on the CPU.
+  Depth Anything, Depth Pro), normals (DSINE), the matte refiners
+  (ViTMatte, RVM, BiRefNet, MatAnyone2), motion (RAFT, MegaFlow). The
+  camera solve (COLMAP), Cryptomatte, the chroma key and the screen
+  pull have no GPU model and run on the CPU.
+- SAM 3, which finds and tracks the objects for the mattes, runs on
+  the CPU on a Mac for now: the Apple GPU is off for it, so mattes
+  take longer there.
 - Not on Mac yet: MoGe-3, the default normals (its refiner needs
   Triton, which has no Mac build), and with it the default steady
   depth in metres (it takes its metres from MoGe-3) and the

@@ -52,6 +52,7 @@ class MacSupport(str, Enum):
     MPS = "mps"  # runs on the Apple GPU
     MPS_FP32 = "mps_fp32"  # runs on the Apple GPU in fp32 only (no fp16 / bf16)
     CPU = "cpu"  # no GPU model: the same code on any machine
+    CPU_ONLY = "cpu_only"  # a GPU model kept on the CPU on a Mac (Apple GPU off for it)
     UNAVAILABLE = "unavailable"  # needs CUDA, or too heavy for a Mac
     UNKNOWN = "unknown"  # not declared (third-party passes)
 
@@ -78,6 +79,7 @@ class DeviceSupport(BaseModel):
             MacSupport.MPS: "Apple GPU",
             MacSupport.MPS_FP32: "Apple GPU, fp32",
             MacSupport.CPU: "CPU (no GPU model)",
+            MacSupport.CPU_ONLY: "CPU on a Mac (Apple GPU off)",
             MacSupport.UNAVAILABLE: "not available on Mac",
             MacSupport.UNKNOWN: "unknown",
         }[self.mac]

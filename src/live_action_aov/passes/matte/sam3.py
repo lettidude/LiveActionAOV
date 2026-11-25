@@ -234,10 +234,11 @@ class SAM3MattePass(UtilityPass):
             "upstream LICENSE before any defense-adjacent deployment."
         ),
     )
+    # No "mps": on a Mac SAM 3 stays on the CPU for now (NVIDIA, else CPU).
     device_support = DeviceSupport(
-        devices=("cuda", "mps", "cpu"),
-        mac=MacSupport.MPS_FP32,
-        mac_notes="SAM 3 runs in this process (bf16 is CUDA-only). The SAM 3.1 detector runs in its own CUDA environment: not on Mac.",
+        devices=("cuda", "cpu"),
+        mac=MacSupport.CPU_ONLY,
+        mac_notes="SAM 3 runs on the CPU on a Mac for now (slower): the Apple GPU is off for it. The SAM 3.1 detector runs in its own CUDA environment: not on Mac.",
     )
     pass_type = PassType.SEMANTIC
     temporal_mode = TemporalMode.VIDEO_CLIP

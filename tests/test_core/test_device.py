@@ -157,8 +157,11 @@ def test_the_mac_light_scope() -> None:
         "video_depth_steady",  # takes its metres from MoGe-3
     ):
         assert label[name] is MacSupport.UNAVAILABLE
-    for name in ("depth_anything_v2", "video_depth_anything", "sam3_matte", "vitmatte_refiner"):
+    for name in ("depth_anything_v2", "video_depth_anything", "vitmatte_refiner"):
         assert label[name] is MacSupport.MPS_FP32
+    # SAM 3 is kept off the Apple GPU: on a Mac it runs on the CPU.
+    assert label["sam3_matte"] is MacSupport.CPU_ONLY
+    assert passes["sam3_matte"].device_support.devices == ("cuda", "cpu")
     assert label["flow"] is MacSupport.MPS_FP32
     assert label["cryptomatte"] is MacSupport.CPU
     assert label["camera_pycolmap"] is MacSupport.CPU
