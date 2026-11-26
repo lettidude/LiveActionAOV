@@ -225,6 +225,11 @@ def test_doctor_lists_the_mac_table(monkeypatch: pytest.MonkeyPatch) -> None:
     from live_action_aov.passes.matte import ltx_alpha
 
     monkeypatch.setattr(ltx_alpha, "comfy_check", lambda params=None: (False, "not reachable"))
+    _machine(monkeypatch, cuda=False, mps=True)  # on a Mac the table shows by itself
+    on_mac = CliRunner().invoke(app, ["doctor"])
+    assert on_mac.exit_code == 0, on_mac.stdout
+    assert "On a Mac" in on_mac.stdout
+    _machine(monkeypatch, cuda=False, mps=False)  # anywhere else: only when asked
     plain = CliRunner().invoke(app, ["doctor"])
     assert plain.exit_code == 0, plain.stdout
     assert "On a Mac" not in plain.stdout

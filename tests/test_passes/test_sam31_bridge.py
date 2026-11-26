@@ -144,8 +144,10 @@ def test_matte_pass_uses_sam31_masks_without_loading_sam3(monkeypatch: pytest.Mo
 
 
 def test_auto_detector_picks_sam31_only_when_it_can_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    from live_action_aov.core import device
     from live_action_aov.passes.matte import sam3
 
+    monkeypatch.delenv(device.ENV_VAR, raising=False)  # no device forced
     p = SAM3MattePass({})
     assert p.params["detector"] == "auto"
     assert p._resolve_detector()[0] == "sam3"  # not installed (conftest)
@@ -179,11 +181,13 @@ class _FakeSAM3(SAM3MattePass):
 def test_auto_detector_falls_back_to_sam3_when_sam31_fails(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    from live_action_aov.core import device
     from live_action_aov.passes.matte import sam3
 
     def boom(*a, **kw):  # type: ignore[no-untyped-def]
         raise RuntimeError("SAM 3.1 worker failed (exit 1): CUDA out of memory")
 
+    monkeypatch.delenv(device.ENV_VAR, raising=False)  # no device forced
     monkeypatch.setattr(sam31_bridge, "available", lambda params=None: (True, "py312"))
     monkeypatch.setattr(sam31_bridge, "find_python", lambda p: "py312")
     monkeypatch.setattr(sam31_bridge, "run_sam31", boom)
