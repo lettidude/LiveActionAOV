@@ -21,6 +21,8 @@ Three small things, no model code:
 
 from __future__ import annotations
 
+import re
+import sys
 from dataclasses import dataclass, field
 
 #: Proxy long edges the GUI offers, biggest first. None = the full plate.
@@ -87,7 +89,35 @@ def detect_ram() -> tuple[float | None, float | None]:
         vm = psutil.virtual_memory()
         return float(vm.total) / 2**30, float(vm.available) / 2**30
     except Exception:  # psutil comes with torch's stack; without it: unknown
+        # ... except on a Mac, where the system's own tools can tell.
+        return _mac_ram() if sys.platform == "darwin" else (None, None)
+
+
+def _mac_ram() -> tuple[float | None, float | None]:
+    """(installed, available) RAM in GB on a Mac, from `sysctl` and
+    `vm_stat`. None for what cannot be read; never raises."""
+    import subprocess
+
+    def ask(*cmd: str) -> str:
+        return subprocess.run(list(cmd), capture_output=True, text=True, timeout=2).stdout
+
+    try:
+        total = float(int(ask("sysctl", "-n", "hw.memsize").strip())) / 2**30
+    except Exception:
         return None, None
+    if total <= 0:
+        return None, None
+    try:
+        out = ask("vm_stat")
+        page = int(re.search(r"page size of (\d+) bytes", out).group(1))  # type: ignore[union-attr]
+        pages = {
+            k: int(v)
+            for k, v in re.findall(r"^Pages (free|inactive|speculative):\s+(\d+)\.", out, re.M)
+        }
+        free = float(pages["free"] + pages["inactive"] + pages.get("speculative", 0)) * page
+        return total, free / 2**30
+    except Exception:
+        return total, None
 
 
 def _apple_chip_name() -> str:
@@ -278,8 +308,9 @@ def _suggest_mac(
     proxy: int | None = None if long_edge <= cap else cap
     notes = [
         "Mac support is experimental and not checked on real Apple hardware yet.",
-        f"Proxy {proxy or long_edge}: the Apple GPU shares the {ram:.0f} GB of RAM "
-        "with everything else, so start small.",
+        f"Proxy {proxy or long_edge}: the Apple GPU shares the "
+        + (f"{ram:.0f} GB of RAM" if ram else "RAM")
+        + " with everything else, so start small.",
         "SAM 3: SAM 3.1 needs an NVIDIA card.",
         "Not on Mac: the Gaussian splat, DepthCrafter, NormalCrafter, Marigold.",
     ]

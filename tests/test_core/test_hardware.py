@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 import itertools
+import subprocess
+import sys
+import types
+from typing import Any
+
+import pytest
 
 from live_action_aov.core import hardware as hwm
 from live_action_aov.core.hardware import Hardware
@@ -14,6 +20,64 @@ def test_detect_never_raises_and_reads_ram() -> None:
     hw = hwm.detect()
     assert hw.ram_gb is None or hw.ram_gb > 0
     assert isinstance(hw.summary(), str)
+
+
+_VM_STAT = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               10000.
+Pages active:                            300000.
+Pages inactive:                           50000.
+Pages speculative:                         5536.
+Pages wired down:                        120000.
+"""
+
+
+def _mac_without_psutil(monkeypatch: pytest.MonkeyPatch, answers: dict[str, Any]) -> None:
+    """A Mac where psutil is not installed; `answers` maps a tool to what it prints."""
+
+    def fake_run(cmd: list[str], **kw: Any) -> Any:
+        out = answers[cmd[0]]
+        if isinstance(out, Exception):
+            raise out
+        return types.SimpleNamespace(stdout=out, returncode=0)
+
+    monkeypatch.setitem(sys.modules, "psutil", None)  # importing it fails
+    monkeypatch.setattr(hwm.sys, "platform", "darwin")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+
+def test_a_mac_without_psutil_still_reads_its_ram(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mac_without_psutil(monkeypatch, {"sysctl": "17179869184\n", "vm_stat": _VM_STAT})
+    total, free = hwm.detect_ram()
+    assert total == 16.0
+    assert free == pytest.approx((10000 + 50000 + 5536) * 16384 / 2**30)
+    mac = Hardware("Apple M2", None, total, free, backend="mps")
+    assert "16 GB unified memory" in mac.summary()
+    notes = " ".join(hwm.suggest(mac, UHD, 24).notes)
+    assert "shares the 16 GB of RAM" in notes
+
+
+def test_ram_the_mac_cannot_tell_stays_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mac_without_psutil(monkeypatch, {"sysctl": "17179869184\n", "vm_stat": "nothing useful"})
+    assert hwm.detect_ram() == (16.0, None)
+    _mac_without_psutil(monkeypatch, {"sysctl": OSError("no sysctl"), "vm_stat": _VM_STAT})
+    assert hwm.detect_ram() == (None, None)
+    unknown = Hardware("Apple M2", None, None, None, backend="mps")
+    assert "RAM unknown" in unknown.summary()
+    notes = " ".join(hwm.suggest(unknown, UHD, 24).notes)
+    assert "shares the RAM with everything else" in notes and "0 GB" not in notes
+
+
+def test_off_a_mac_ram_without_psutil_is_unknown_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_tools(*a: Any, **kw: Any) -> Any:
+        raise AssertionError("no system tool is asked off a Mac")
+
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(subprocess, "run", no_tools)
+    for platform in ("win32", "linux"):
+        monkeypatch.setattr(hwm.sys, "platform", platform)
+        assert hwm.detect_ram() == (None, None)
 
 
 def test_tiers_follow_the_card() -> None:
