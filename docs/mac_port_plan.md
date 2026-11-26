@@ -90,10 +90,17 @@ PowerShell desktop shortcut. A Mac version needs:
 
 ## CI
 
-`.github/workflows/macos-cpu.yml` is a draft, started by hand only: it
-installs on a hosted Apple Silicon runner and runs the CPU tests with
-`LAOV_DEVICE=cpu`. Hosted runners do not reliably expose the Apple GPU, so
-CI proves the install and the logic, not MPS.
+Two draft workflows, run on pushes to the groundwork branch (and by hand
+once they are on `main`):
+
+- `.github/workflows/macos-cpu.yml` installs on a hosted Apple Silicon
+  runner and runs the CPU tests with `LAOV_DEVICE=cpu`.
+- `.github/workflows/camera-check.yml` installs the camera extra on a hosted
+  Mac and on Linux and runs a short camera solve on a clip it draws itself.
+  The same check runs on any machine: `uv run python scripts/camera_check.py`.
+
+Hosted runners have no GPU to count on, so CI proves the install and the
+logic, not MPS and not speed.
 
 ## First day with a Mac: checklist
 
