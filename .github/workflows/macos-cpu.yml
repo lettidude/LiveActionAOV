@@ -1,0 +1,47 @@
+# DRAFT - Apple Silicon install + CPU tests (see docs/mac_port_plan.md).
+# Runs on pushes to the Apple Silicon groundwork branch only, and by hand
+# once this file is on main (Actions tab -> "macOS CPU (draft)" -> Run
+# workflow). When it has been seen green it can join ci.yml.
+#
+# Hosted macOS runners do not reliably expose the Apple GPU (MPS), so this
+# proves the install and the device logic, not MPS: LAOV_DEVICE=cpu.
+name: macOS CPU (draft)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/mac-mps-groundwork]
+
+jobs:
+  test-macos:
+    runs-on: macos-15  # Apple Silicon (arm64)
+    timeout-minutes: 60
+    env:
+      UV_PYTHON: "3.11"
+      LAOV_DEVICE: cpu
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      # Core + dev only: the model extras (MoGe-3's Triton refiner, gsplat)
+      # are what the Mac port still has to sort out.
+      - run: uv sync --extra dev
+      - run: uv run python -c "import torch; print(torch.__version__, 'mps:', torch.backends.mps.is_available())"
+      - run: uv run liveaov doctor --mac
+      # Device choice only: no model is loaded or downloaded.
+      - name: SAM 3 stays on the CPU on a Mac
+        run: |
+          uv run python - <<'EOF'
+          from live_action_aov.core.device import mps_available, resolve_device_name
+          from live_action_aov.passes.matte.rvm import RVMRefinerPass
+          from live_action_aov.passes.matte.sam3 import SAM3MattePass
+
+          print("Apple GPU visible on this runner:", mps_available())
+          for ask in ("auto", "mps"):
+              sam = resolve_device_name(SAM3MattePass.device_support.devices, override=ask)
+              rvm = resolve_device_name(RVMRefinerPass.device_support.devices, override=ask)
+              print(f"LAOV_DEVICE={ask}: SAM 3 -> {sam} | RVM refiner -> {rvm}")
+              assert sam == "cpu", sam
+          EOF
+      - name: Run tests (skip GPU)
+        run: uv run pytest -m "not gpu" -v

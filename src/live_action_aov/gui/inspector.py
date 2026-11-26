@@ -32,6 +32,7 @@ emit `shot_updated` so the viewport re-renders with the new settings.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -2016,4 +2017,4 @@ def _machine() -> tuple[hardware.Hardware, bool]:
         _MACHINE = (hardware.detect(), sam31_bridge.available({})[0])
     hw, sam31 = _MACHINE
     _total, free = hardware.detect_ram()
-    return hardware.Hardware(hw.gpu_name, hw.vram_gb, hw.ram_gb, free), sam31
+    return dataclasses.replace(hw, ram_free_gb=free), sam31

@@ -53,7 +53,9 @@ import numpy as np
 
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -107,6 +109,10 @@ class _MarigoldV2BridgeBase(UtilityPass):
             "the frozen Qwen-Image-Edit-2509 backbone is Apache-2.0 (Alibaba). "
             "Training datasets keep their own licences (weights only)."
         ),
+    )
+    device_support = DeviceSupport(
+        mac=MacSupport.UNAVAILABLE,
+        mac_notes="A 20B model in its own CUDA environment.",
     )
     temporal_mode = TemporalMode.VIDEO_CLIP  # run_shot batches the whole shot
     input_colorspace = "srgb_display"

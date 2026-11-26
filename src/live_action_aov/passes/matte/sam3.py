@@ -53,8 +53,11 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.device import cuda_index, forced_device, pick_device
 from live_action_aov.core.pass_base import (
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -96,14 +99,15 @@ def _available_ram_bytes() -> int | None:
         return None
 
 
-def _total_vram_gb() -> float | None:
-    """The first CUDA card's memory in GB, or None when it can't be read."""
+def _total_vram_gb(index: int = 0) -> float | None:
+    """A CUDA card's memory in GB (the first one unless `index` says
+    otherwise), or None when it can't be read."""
     try:
         import torch
 
         if not torch.cuda.is_available():
             return None
-        return float(torch.cuda.get_device_properties(0).total_memory) / 2**30
+        return float(torch.cuda.get_device_properties(index).total_memory) / 2**30
     except Exception:
         return None
 
@@ -229,6 +233,12 @@ class SAM3MattePass(UtilityPass):
             "but military / ITAR applications are prohibited. Consult the "
             "upstream LICENSE before any defense-adjacent deployment."
         ),
+    )
+    # No "mps": on a Mac SAM 3 stays on the CPU for now (NVIDIA, else CPU).
+    device_support = DeviceSupport(
+        devices=("cuda", "cpu"),
+        mac=MacSupport.CPU_ONLY,
+        mac_notes="SAM 3 runs on the CPU on a Mac for now (slower): the Apple GPU is off for it. The SAM 3.1 detector runs in its own CUDA environment: not on Mac.",
     )
     pass_type = PassType.SEMANTIC
     temporal_mode = TemporalMode.VIDEO_CLIP
@@ -455,7 +465,7 @@ class SAM3MattePass(UtilityPass):
         )
 
         repo = str(self.params["model_id"])
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         self._dtype = torch.float32
 
         # SAM 3 (and other Meta releases) are gated on the HF Hub. The raw
@@ -913,8 +923,14 @@ class SAM3MattePass(UtilityPass):
         ok, _ = sam31_bridge.available(self.params)
         if not ok:
             return "sam3", "SAM 3.1 is not installed: `liveaov setup-sam31`"
+        # LAOV_DEVICE reaches SAM 3.1 too: it is an NVIDIA-only model in
+        # its own process, so on another device the concepts go to SAM 3.
+        forced = forced_device(self.device_support)
+        if forced is not None and not forced.startswith("cuda"):
+            return "sam3", f"SAM 3.1 needs an NVIDIA card, this run is on {forced} (LAOV_DEVICE)"
         need = float(self.params.get("sam31_min_vram_gb", 22.0))
-        vram = _total_vram_gb()
+        card = cuda_index(forced)
+        vram = _total_vram_gb() if card is None else _total_vram_gb(card)
         if vram is not None and vram < need:
             return "sam3", f"SAM 3.1 wants a {need:.0f} GB card, this one has {vram:.0f} GB"
         return "sam3.1", "installed"
@@ -937,6 +953,7 @@ class SAM3MattePass(UtilityPass):
             python,
             timeout_s=float(self.params.get("sam31_timeout_s", 3600)),
             checkpoint=str(self.params.get("sam31_checkpoint", "") or ""),
+            device=forced_device(self.device_support) or "",
         )
         min_cov = float(self.params.get("sam31_min_peak_coverage", 0.005))
         min_frames = int(self.params.get("sam31_min_frames", 3))

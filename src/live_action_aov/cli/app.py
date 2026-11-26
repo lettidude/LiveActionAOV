@@ -650,13 +650,22 @@ def doctor(
         str,
         typer.Option("--comfy-url", help="The ComfyUI that runs LTX Alpha."),
     ] = "http://127.0.0.1:8188",
+    mac: Annotated[
+        bool,
+        typer.Option(
+            "--mac",
+            help="Also list what each pass is expected to do on an Apple Silicon Mac "
+            "(shown by itself on a Mac). Mac support is experimental.",
+        ),
+    ] = False,
 ) -> None:
     """Check this machine and propose settings: the card and RAM, SAM 3.1,
     ComfyUI + the LTX models, gsplat, and the proxy size / detector /
     long-shot windows that fit."""
     import importlib.util
+    import os
 
-    from live_action_aov.core import hardware
+    from live_action_aov.core import device, hardware
     from live_action_aov.gui.cuda_check import cuda_state
     from live_action_aov.passes.matte import sam31_bridge
     from live_action_aov.passes.matte.ltx_alpha import comfy_check
@@ -671,7 +680,16 @@ def doctor(
 
     hw = hardware.detect()
     cuda = cuda_state()
-    line(cuda.available, "GPU", hw.summary() if cuda.available else cuda.advisory)
+    if cuda.available:
+        line(True, "GPU", hw.summary())
+    elif hw.backend == "mps":
+        line(None, "GPU", hw.summary())
+    else:
+        line(False, "GPU", cuda.advisory)
+    forced = os.environ.get(device.ENV_VAR, "").strip()
+    if forced:
+        picked = device.resolve_device_name(("cuda", "mps", "cpu"))
+        line(None, "Device", f"{device.ENV_VAR}={forced}: the passes use {picked}")
     if hw.ram_free_gb is not None:
         line(None, "RAM free now", f"{hw.ram_free_gb:.0f} GB")
     sam31_ok, sam31_why = sam31_bridge.available({})
@@ -714,6 +732,19 @@ def doctor(
             f"  run-shot:{flag or ' (no --proxy)'}; the detector and the windows are automatic.",
             highlight=False,
         )
+
+    if mac or hw.backend == "mps":
+        from live_action_aov.core.registry import get_registry
+
+        reg = get_registry()
+        rows = device.mac_table({n: reg.get_pass(n) for n in reg.list_passes()})
+        console.print(
+            "\n[bold]On a Mac (Apple Silicon)[/bold] - experimental, "
+            "not checked on real Apple hardware yet:",
+            highlight=False,
+        )
+        for name, status, note in rows:
+            console.print(f"  - {name}: {status}" + (f". {note}" if note else ""), highlight=False)
 
 
 # ---------------------------------------------------------------------------

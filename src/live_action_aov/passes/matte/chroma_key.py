@@ -43,7 +43,11 @@ from typing import Any
 
 import numpy as np
 
-from live_action_aov.core.pass_base import License
+from live_action_aov.core.pass_base import (
+    DeviceSupport,
+    License,
+    MacSupport,
+)
 from live_action_aov.passes.matte.rvm import RVMRefinerPass
 
 _log = logging.getLogger(__name__)
@@ -75,6 +79,7 @@ class ChromaKeyPass(RVMRefinerPass):
             "on a real green/blue screen typically beats ML matting."
         ),
     )
+    device_support = DeviceSupport(devices=("cpu",), mac=MacSupport.CPU)
 
     # Deterministic per-frame maths — temporally stable by construction.
     smoothable_channels: list[str] = []

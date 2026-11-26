@@ -52,7 +52,12 @@ from typing import Any
 
 import numpy as np
 
-from live_action_aov.core.pass_base import License
+from live_action_aov.core.device import pick_device
+from live_action_aov.core.pass_base import (
+    DeviceSupport,
+    License,
+    MacSupport,
+)
 from live_action_aov.core.runtime_env import load_local_first
 from live_action_aov.io.channels import (
     CH_MATTE_A,
@@ -77,6 +82,11 @@ class ViTMatteRefinerPass(RVMRefinerPass):
             "construction. Trained on Composition-1K (Adobe DIM research "
             "dataset) — same provenance bar as the BiRefNet fine-tunes."
         ),
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="fp16 is CUDA-only.",
     )
 
     # Per-frame model → flicker possible → smoothable (same as BiRefNet).
@@ -117,7 +127,7 @@ class ViTMatteRefinerPass(RVMRefinerPass):
         model_id = str(self.params["model_id"])
         self._processor = load_local_first(VitMatteImageProcessor.from_pretrained, model_id)
         model = load_local_first(VitMatteForImageMatting.from_pretrained, model_id)
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         self._dtype = (
             torch.float16
             if self.params.get("precision") == "fp16" and self._device.type == "cuda"

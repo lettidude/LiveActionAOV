@@ -42,6 +42,52 @@ class License(BaseModel):
     notes: str = ""
 
 
+class MacSupport(str, Enum):
+    """What a pass is expected to do on an Apple Silicon Mac.
+
+    Expectations, not results: `DeviceSupport.mac_verified` stays False
+    until the pass has been run on a real Mac.
+    """
+
+    MPS = "mps"  # runs on the Apple GPU
+    MPS_FP32 = "mps_fp32"  # runs on the Apple GPU in fp32 only (no fp16 / bf16)
+    CPU = "cpu"  # no GPU model: the same code on any machine
+    CPU_ONLY = "cpu_only"  # a GPU model kept on the CPU on a Mac (Apple GPU off for it)
+    UNAVAILABLE = "unavailable"  # needs CUDA, or too heavy for a Mac
+    UNKNOWN = "unknown"  # not declared (third-party passes)
+
+
+class DeviceSupport(BaseModel):
+    """Per-pass device declaration, read by `core.device.pick_device`,
+    `liveaov doctor` and the GUI submit check.
+
+    `devices`: the torch devices the pass can be placed on, in no order
+    (the order is CUDA, MPS, CPU). The default is what every pass did
+    before Mac support: CUDA, else the CPU.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    devices: tuple[str, ...] = ("cuda", "cpu")
+    mac: MacSupport = MacSupport.UNKNOWN
+    mac_verified: bool = False
+    mac_notes: str = ""
+
+    def mac_label(self) -> str:
+        """One short phrase for the doctor table and the submit dialog."""
+        base = {
+            MacSupport.MPS: "Apple GPU",
+            MacSupport.MPS_FP32: "Apple GPU, fp32",
+            MacSupport.CPU: "CPU (no GPU model)",
+            MacSupport.CPU_ONLY: "CPU on a Mac (Apple GPU off)",
+            MacSupport.UNAVAILABLE: "not available on Mac",
+            MacSupport.UNKNOWN: "unknown",
+        }[self.mac]
+        if self.mac in (MacSupport.UNAVAILABLE, MacSupport.UNKNOWN):
+            return base
+        return base if self.mac_verified else f"{base} (unverified)"
+
+
 class PassType(str, Enum):
     """Pass family. The v2+ values are declared now so the architecture flows
     through them from day one (design §14, decision 5)."""
@@ -119,6 +165,9 @@ class UtilityPass(ABC):
     vram_estimate_gb_fn: Callable[[int, int], float] = staticmethod(lambda w, h: 0.0)
     model_native_resolution: tuple[int, int] | None = None
     supports_tiling: bool = False
+    # Where the model can run (CUDA / Apple GPU / CPU) and what is expected
+    # on a Mac. Default = CUDA, else the CPU; Mac unknown.
+    device_support: DeviceSupport = DeviceSupport()
     # True for passes that only make sense on the whole plate (a camera
     # solve, the Gaussian splat): the executor refuses them when the shot
     # has a crop, instead of solving from a quarter of the image.
@@ -355,8 +404,10 @@ class DisplayTransformParams(BaseModel):
 
 __all__ = [
     "ChannelSpec",
+    "DeviceSupport",
     "DisplayTransformParams",
     "License",
+    "MacSupport",
     "PassProtocolError",
     "PassType",
     "SidecarSpec",

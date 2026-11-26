@@ -1,0 +1,51 @@
+# DRAFT - the camera track on a hosted Apple Silicon Mac and on Linux.
+# Runs on pushes to the Apple Silicon groundwork branch only, and by hand
+# once this file is on main (Actions tab -> "Camera check (draft)" -> Run
+# workflow). Other pull requests do not run it.
+#
+# Hosted runners have no GPU: this proves the install with the camera extra
+# and a short camera solve on the CPU, on a clip the job draws itself
+# (scripts/camera_check.py). It says nothing about speed or the Apple GPU.
+name: Camera check (draft)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/mac-mps-groundwork]
+
+jobs:
+  camera:
+    name: camera (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-latest]  # macos-15 = Apple Silicon (arm64)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      UV_PYTHON: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --extra dev --extra camera
+      # One at a time: this step must not load both in one process.
+      - run: uv run python -c "import torch; print('torch', torch.__version__)"
+      - run: uv run python -c "import importlib.metadata as m; print('pycolmap', m.version('pycolmap'))"
+      # What an artist gets on this machine. On a Mac the camera solver is
+      # kept out of the main process, and the check fails if it gets in.
+      - name: Camera check (this machine's default)
+        run: uv run python scripts/camera_check.py --out camera_check_out/default
+      - name: Camera check (solver kept out of the main process)
+        run: uv run python scripts/camera_check.py --out camera_check_out/isolated --isolate on
+      # For information only: the same run with the solver in the main
+      # process, which a Mac does not allow. It does not decide the job.
+      - name: Control on a Mac (solver in the main process)
+        if: runner.os == 'macOS'
+        timeout-minutes: 10
+        run: |
+          set +e
+          uv run python scripts/camera_check.py --out camera_check_out/control --isolate off
+          echo "control exit code: $?"
+      - name: Camera tests with the camera extra installed
+        if: runner.os == 'Linux'
+        run: uv run pytest tests/test_passes/test_pycolmap_camera.py -m "not gpu" -q

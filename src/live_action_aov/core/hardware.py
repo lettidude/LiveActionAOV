@@ -7,7 +7,8 @@
 
 Three small things, no model code:
 
-- `detect()` reads the first CUDA card (name, memory) and the host RAM.
+- `detect()` reads the first CUDA card (name, memory), or the Apple GPU
+  on a Mac (experimental, unverified), and the host RAM.
 - `suggest()` turns that plus the plate into settings a person would
   otherwise have to know: the proxy size, the detector, and a one-line
   reason for each. It PROPOSES; the GUI and `liveaov doctor` show it and
@@ -20,6 +21,8 @@ Three small things, no model code:
 
 from __future__ import annotations
 
+import re
+import sys
 from dataclasses import dataclass, field
 
 #: Proxy long edges the GUI offers, biggest first. None = the full plate.
@@ -45,8 +48,14 @@ class Hardware:
     vram_gb: float | None = None  # the card's total memory
     ram_gb: float | None = None  # installed
     ram_free_gb: float | None = None  # available now
+    # "cuda", "mps" (an Apple Silicon Mac: the GPU shares the RAM, so
+    # vram_gb stays None) or None (no GPU torch can use).
+    backend: str | None = None
 
     def summary(self) -> str:
+        if self.backend == "mps":
+            ram = f"{self.ram_gb:.0f} GB unified memory" if self.ram_gb else "RAM unknown"
+            return f"{self.gpu_name or 'Apple GPU'} (MPS, experimental), {ram}"
         gpu = (
             f"{self.gpu_name} ({self.vram_gb:.0f} GB)"
             if self.gpu_name and self.vram_gb
@@ -80,23 +89,74 @@ def detect_ram() -> tuple[float | None, float | None]:
         vm = psutil.virtual_memory()
         return float(vm.total) / 2**30, float(vm.available) / 2**30
     except Exception:  # psutil comes with torch's stack; without it: unknown
+        # ... except on a Mac, where the system's own tools can tell.
+        return _mac_ram() if sys.platform == "darwin" else (None, None)
+
+
+def _mac_ram() -> tuple[float | None, float | None]:
+    """(installed, available) RAM in GB on a Mac, from `sysctl` and
+    `vm_stat`. None for what cannot be read; never raises."""
+    import subprocess
+
+    def ask(*cmd: str) -> str:
+        return subprocess.run(list(cmd), capture_output=True, text=True, timeout=2).stdout
+
+    try:
+        total = float(int(ask("sysctl", "-n", "hw.memsize").strip())) / 2**30
+    except Exception:
         return None, None
+    if total <= 0:
+        return None, None
+    try:
+        out = ask("vm_stat")
+        page = int(re.search(r"page size of (\d+) bytes", out).group(1))  # type: ignore[union-attr]
+        pages = {
+            k: int(v)
+            for k, v in re.findall(r"^Pages (free|inactive|speculative):\s+(\d+)\.", out, re.M)
+        }
+        free = float(pages["free"] + pages["inactive"] + pages.get("speculative", 0)) * page
+        return total, free / 2**30
+    except Exception:
+        return total, None
+
+
+def _apple_chip_name() -> str:
+    """ "Apple M2 Pro" on a Mac; "Apple GPU" when it cannot be read."""
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["sysctl", "-n", "machdep.cpu.brand_string"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        ).stdout.strip()
+        return out or "Apple GPU"
+    except Exception:
+        return "Apple GPU"
 
 
 def detect() -> Hardware:
-    """The first CUDA card and the host RAM. Never raises."""
+    """The first CUDA card (else the Apple GPU) and the host RAM. Never raises."""
+    from live_action_aov.core import device
+
     name: str | None = None
     vram: float | None = None
+    backend: str | None = None
     try:
         import torch
 
         if torch.cuda.is_available():
             name = str(torch.cuda.get_device_name(0))
             vram = float(torch.cuda.get_device_properties(0).total_memory) / 2**30
+            backend = "cuda"
+        elif device.mps_available():
+            name = _apple_chip_name()
+            backend = "mps"
     except Exception:
         pass
     total, free = detect_ram()
-    return Hardware(gpu_name=name, vram_gb=vram, ram_gb=total, ram_free_gb=free)
+    return Hardware(gpu_name=name, vram_gb=vram, ram_gb=total, ram_free_gb=free, backend=backend)
 
 
 def proxy_size(resolution: tuple[int, int], long_edge: int | None) -> tuple[int, int]:
@@ -176,6 +236,8 @@ def suggest(
     """Settings for this plate on this machine, with the reason for each."""
     notes: list[str] = []
     vram = hw.vram_gb
+    if hw.backend == "mps":
+        return _suggest_mac(hw, resolution, n_frames, channels)
     if vram is None:
         return Suggestion(
             "none",
@@ -233,6 +295,29 @@ def suggest(
             f"({hw.ram_free_gb:.0f} GB free): run in windows of {window} frames."
         )
     return Suggestion(tier, title, proxy, detector, window, tuple(notes))
+
+
+def _suggest_mac(
+    hw: Hardware, resolution: tuple[int, int], n_frames: int, channels: int
+) -> Suggestion:
+    """A cautious start on an Apple Silicon Mac. Not tuned on real Mac
+    hardware yet: small proxies, SAM 3 (SAM 3.1 needs CUDA)."""
+    ram = hw.ram_gb or 0.0
+    cap = 1280 if ram >= 32 else 960
+    long_edge = max(int(resolution[0]), int(resolution[1]))
+    proxy: int | None = None if long_edge <= cap else cap
+    notes = [
+        "Mac support is experimental and not checked on real Apple hardware yet.",
+        f"Proxy {proxy or long_edge}: the Apple GPU shares the "
+        + (f"{ram:.0f} GB of RAM" if ram else "RAM")
+        + " with everything else, so start small.",
+        "SAM 3: SAM 3.1 needs an NVIDIA card.",
+        "Not on Mac: the Gaussian splat, DepthCrafter, NormalCrafter, Marigold.",
+    ]
+    window = plan_windows(resolution, n_frames, hw.ram_free_gb, proxy, channels)
+    if window is not None:
+        notes.append(f"{n_frames} frames: run in windows of {window} frames to fit the RAM.")
+    return Suggestion("mac", "Mac (experimental)", proxy, "sam3", window, tuple(notes))
 
 
 __all__ = [

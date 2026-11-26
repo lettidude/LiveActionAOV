@@ -49,7 +49,9 @@ import numpy as np
 from live_action_aov.core.output_layout import SPLAT_DIR, file_name, sub_dir
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     SidecarSpec,
     TemporalMode,
@@ -101,6 +103,11 @@ class GsplatSplatPass(UtilityPass):
         commercial_use=True,
         commercial_tool_resale=True,
         notes="gsplat (nerfstudio-project) is Apache-2.0; no pretrained weights.",
+    )
+    device_support = DeviceSupport(
+        devices=("cuda",),
+        mac=MacSupport.UNAVAILABLE,
+        mac_notes="gsplat is CUDA-only.",
     )
     pass_type = PassType.SCENE_3D
     temporal_mode = TemporalMode.VIDEO_CLIP

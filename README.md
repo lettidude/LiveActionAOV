@@ -35,7 +35,7 @@ Everything lands in one multi-layer EXR per frame (or one sequence per pass, you
 
 ## Requirements
 
-- **Windows 11** (main platform) or Linux. macOS is best-effort, see [compatibility](#compatibility).
+- **Windows 11** (main platform) or Linux. macOS on Apple Silicon is experimental and not yet tested on a real Mac, see [compatibility](#compatibility).
 - **NVIDIA GPU**, RTX 20-series or newer. **16 GB** of VRAM runs everything at proxy resolution; **24 GB** runs 4K; **8 GB** is not enough for the matte and flow models. Driver 570 or newer for the 50-series.
 - **RAM**: 32 GB for short shots at 2K, 64 GB or more for 4K. A clip that does not fit is run in overlapping windows of frames by itself, so a long shot is slower, not a crash.
 - **Disk**: about 15 GB for the install, about 10 GB of model weights for the default set, up to 40 GB with every optional model.
@@ -202,7 +202,7 @@ An early demo video (June 2026, the interface has changed since) is on [YouTube]
 |---|---|---|
 | Windows 11 | NVIDIA RTX 20 / 30 / 40 / 50 series | **Main platform.** Developed on an RTX 5090, used in production on 3090s and a 4060 (proxy mode). |
 | Linux (Ubuntu 22.04+) | NVIDIA RTX 20 / 30 / 40 / 50 series | Expected to work via `install.sh` (same CUDA and `uv` path), not regularly tested. Bug reports welcome. |
-| macOS (Apple Silicon) | M1 to M4 (MPS) | Best-effort. Some passes run on MPS, the fp16-only models do not. The app says which before you submit. |
+| macOS (Apple Silicon) | M1 to M4 (MPS) | **Experimental, not yet tested on a real Mac.** Expected to run on the Apple GPU, in fp32 and slower than an NVIDIA card: depth (Depth Anything v2, Video Depth Anything), the matte refiners, motion; the camera solve, Cryptomatte and, for now, SAM 3 (which finds the objects for the mattes) on the CPU. Not on Mac yet: MoGe-3 (the default normals) and the default steady depth in metres, which takes its metres from MoGe-3; the Gaussian splat background, DepthCrafter, NormalCrafter, Marigold. `liveaov doctor --mac` lists every pass, and the app stops before a run that has a pass the Mac cannot do. |
 | Any | AMD (ROCm) | Untested. |
 | Any | CPU only | Not supported. |
 

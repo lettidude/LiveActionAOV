@@ -32,7 +32,9 @@ import numpy as np
 
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -56,6 +58,7 @@ class CryptomattePass(UtilityPass):
             "SAM-License-1.0); this pass only repackages its masks."
         ),
     )
+    device_support = DeviceSupport(devices=("cpu",), mac=MacSupport.CPU)
     pass_type = PassType.SEMANTIC
     temporal_mode = TemporalMode.VIDEO_CLIP
     input_colorspace = "srgb_display"

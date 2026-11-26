@@ -73,9 +73,12 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.device import pick_device
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -100,6 +103,7 @@ class NormalCrafterPass(UtilityPass):
             "--allow-noncommercial."
         ),
     )
+    device_support = DeviceSupport(mac=MacSupport.UNAVAILABLE, mac_notes="fp16 video diffusion.")
     pass_type = PassType.GEOMETRIC
     temporal_mode = TemporalMode.VIDEO_CLIP
     temporal_window = 14
@@ -209,7 +213,7 @@ class NormalCrafterPass(UtilityPass):
             variant="fp16" if use_fp16 else None,
         )
 
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         self._dtype = weight_dtype
 
         offload = self.params.get("cpu_offload")

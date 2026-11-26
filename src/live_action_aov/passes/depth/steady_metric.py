@@ -55,7 +55,9 @@ import numpy as np
 
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -85,6 +87,10 @@ class SteadyMetricDepthPass(UtilityPass):
             "aligned to MoGe-3 ViT-L (MIT). Base / Large VDA weights are "
             "CC-BY-NC-4.0 and never used here."
         ),
+    )
+    device_support = DeviceSupport(
+        mac=MacSupport.UNAVAILABLE,
+        mac_notes="Takes its metres from MoGe-3, which is not on Mac.",
     )
     pass_type = PassType.GEOMETRIC
     temporal_mode = TemporalMode.VIDEO_CLIP

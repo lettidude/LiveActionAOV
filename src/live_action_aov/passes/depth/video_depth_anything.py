@@ -62,9 +62,12 @@ from typing import Any
 
 import numpy as np
 
+from live_action_aov.core.device import pick_device
 from live_action_aov.core.pass_base import (
     ChannelSpec,
+    DeviceSupport,
     License,
+    MacSupport,
     PassType,
     TemporalMode,
     UtilityPass,
@@ -115,6 +118,11 @@ class VideoDepthAnythingPass(UtilityPass):
             "models are CC-BY-NC-4.0 (the upstream README) and this pass "
             "refuses them; they were accepted until 2026-11-10, which was wrong."
         ),
+    )
+    device_support = DeviceSupport(
+        devices=("cuda", "mps", "cpu"),
+        mac=MacSupport.MPS_FP32,
+        mac_notes="fp16 is CUDA-only.",
     )
     pass_type = PassType.GEOMETRIC
     temporal_mode = TemporalMode.VIDEO_CLIP
@@ -201,7 +209,7 @@ class VideoDepthAnythingPass(UtilityPass):
         state = torch.load(ckpt, map_location="cpu", weights_only=False)
         model.load_state_dict(state, strict=True)
 
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = pick_device(self.device_support)
         model = model.to(self._device).eval()
         self._model = model
 
@@ -292,7 +300,9 @@ class VideoDepthAnythingPass(UtilityPass):
     def _infer_clip(self, frames_u8: np.ndarray) -> np.ndarray:
         """Drive the model on the full clip. Overridable in tests."""
         assert self._model is not None
-        device_str = "cuda" if self._device.type == "cuda" else "cpu"
+        # The model's own autocast follows this string, so it must be the
+        # device the weights are on. fp16 stays CUDA-only (fp32 on a Mac).
+        device_str = self._device.type
         # target_fps argument is only used internally for FPS bookkeeping
         # when saving MP4s; we pass a nominal value and drop the returned
         # fps since we write EXRs.
@@ -301,7 +311,7 @@ class VideoDepthAnythingPass(UtilityPass):
             target_fps=24.0,
             input_size=int(self.params["input_size"]),
             device=device_str,
-            fp32=self._fp32,
+            fp32=self._fp32 or device_str == "mps",
         )
         return depth.astype(np.float32, copy=False)
 
