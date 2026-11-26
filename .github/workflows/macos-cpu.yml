@@ -14,7 +14,7 @@ on:
 
 jobs:
   test-macos:
-    runs-on: macos-14  # Apple Silicon (arm64)
+    runs-on: macos-15  # Apple Silicon (arm64)
     timeout-minutes: 60
     env:
       UV_PYTHON: "3.11"

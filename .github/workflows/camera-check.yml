@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-latest]  # macos-14 = Apple Silicon (arm64)
+        os: [macos-15, ubuntu-latest]  # macos-15 = Apple Silicon (arm64)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
