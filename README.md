@@ -238,8 +238,8 @@ Licences change. This table was checked against each repository on 10 November 2
 
 LiveActionAOV is released under the [Business Source License 1.1](LICENSE):
 
-- **Free** for individuals and freelancers working on their own, for studios with fewer than 10 people, and for any non-commercial use (education, research, personal projects).
-- **Studios of 10 or more people** need a one-off commercial licence per major version: see [COMMERCIAL.md](COMMERCIAL.md) and ask for a quote.
+- **Free** for individuals and freelancers working on their own, for companies and studios with fewer than 10 people, and for any non-commercial use (education, research, personal projects).
+- **Companies and studios of 10 or more people** need a one-off commercial licence per major version: see [COMMERCIAL.md](COMMERCIAL.md) and ask for a quote.
 - Each version becomes **Apache-2.0** four years after its release. Code published before 30 October 2026 stays MIT.
 - Not covered: reselling it, or offering it as a hosted service.
 
